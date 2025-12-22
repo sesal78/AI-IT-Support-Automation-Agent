@@ -1,0 +1,187 @@
+{
+  "name": "AI IT Support - Error Handler",
+  "nodes": [
+    {
+      "id": "error-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "parameters": {},
+      "notes": "Catches all errors from the main workflow"
+    },
+    {
+      "id": "parse-error",
+      "name": "Parse Error Details",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const error = $json;\nconst errorDetails = {\n  error_id: `ERR-${Date.now()}`,\n  timestamp: new Date().toISOString(),\n  workflow: {\n    id: error.workflow?.id,\n    name: error.workflow?.name\n  },\n  execution: {\n    id: error.execution?.id,\n    url: error.execution?.url,\n    mode: error.execution?.mode\n  },\n  node: {\n    name: error.node?.name,\n    type: error.node?.type\n  },\n  error: {\n    message: error.message || 'Unknown error',\n    stack: error.stack,\n    cause: error.cause\n  },\n  input_data: error.execution?.data?.resultData?.lastNodeExecuted\n};\nreturn {json: errorDetails};"
+      },
+      "notes": "Extracts and structures error information"
+    },
+    {
+      "id": "classify-error",
+      "name": "Classify Error Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [650, 300],
+      "parameters": {
+        "rules": {
+          "rules": [
+            {"output": 0, "conditions": {"combinator": "and", "conditions": [{"operator": {"type": "string", "operation": "contains"}, "leftValue": "={{ $json.error.message }}", "rightValue": "rate limit"}]}},
+            {"output": 1, "conditions": {"combinator": "and", "conditions": [{"operator": {"type": "string", "operation": "contains"}, "leftValue": "={{ $json.error.message }}", "rightValue": "timeout"}]}},
+            {"output": 2, "conditions": {"combinator": "and", "conditions": [{"operator": {"type": "string", "operation": "contains"}, "leftValue": "={{ $json.error.message }}", "rightValue": "authentication"}]}},
+            {"output": 3, "conditions": {"combinator": "and", "conditions": [{"operator": {"type": "string", "operation": "contains"}, "leftValue": "={{ $json.node.type }}", "rightValue": "servicenow"}]}}
+          ],
+          "fallbackOutput": 4
+        },
+        "options": {}
+      },
+      "notes": "Routes errors by type: rate-limit, timeout, auth, servicenow, other"
+    },
+    {
+      "id": "rate-limit-handler",
+      "name": "Rate Limit - Queue for Retry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 100],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const retryInfo = {\n  ...$json,\n  retry_strategy: 'exponential_backoff',\n  retry_count: ($json.retry_count || 0) + 1,\n  max_retries: 3,\n  next_retry_delay_ms: Math.pow(2, ($json.retry_count || 0) + 1) * 1000,\n  action: 'queued_for_retry'\n};\nreturn {json: retryInfo};"
+      },
+      "notes": "Implements exponential backoff for rate limit errors"
+    },
+    {
+      "id": "timeout-handler",
+      "name": "Timeout - Retry Once",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 200],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const retryInfo = {\n  ...$json,\n  retry_strategy: 'immediate_once',\n  retry_count: ($json.retry_count || 0) + 1,\n  max_retries: 1,\n  action: ($json.retry_count || 0) >= 1 ? 'escalate_to_manual' : 'retry_immediately'\n};\nreturn {json: retryInfo};"
+      },
+      "notes": "Single retry for timeout errors, then escalate"
+    },
+    {
+      "id": "auth-handler",
+      "name": "Auth Error - Alert Immediately",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {json: {...$json, action: 'alert_critical', severity: 'critical', requires_immediate_attention: true, message: 'Authentication failure - check API credentials'}};"
+      },
+      "notes": "Critical alert for authentication failures"
+    },
+    {
+      "id": "servicenow-handler",
+      "name": "ServiceNow Error Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 400],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {json: {...$json, action: 'queue_for_manual', severity: 'high', message: 'ServiceNow API error - ticket queued for manual processing'}};"
+      },
+      "notes": "Queues failed ServiceNow operations for manual handling"
+    },
+    {
+      "id": "generic-handler",
+      "name": "Generic Error Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 500],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {json: {...$json, action: 'log_and_alert', severity: 'medium', message: 'Unexpected error occurred'}};"
+      },
+      "notes": "Default handler for unclassified errors"
+    },
+    {
+      "id": "merge-handlers",
+      "name": "Merge Error Paths",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [1100, 300],
+      "parameters": {"mode": "append"},
+      "notes": "Merges all error handling paths"
+    },
+    {
+      "id": "log-error",
+      "name": "Log Error to Database",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 300],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const errorLog = {\n  ...$json,\n  logged_at: new Date().toISOString(),\n  log_destination: 'error_log_table'\n};\nconsole.log('ERROR_LOG:', JSON.stringify(errorLog));\nreturn {json: errorLog};"
+      },
+      "notes": "Persists error to database/log system"
+    },
+    {
+      "id": "alert-check",
+      "name": "Check Alert Required",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1500, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [{"leftValue": "={{ $json.severity }}", "rightValue": "critical", "operator": {"type": "string", "operation": "equals"}}],
+          "combinator": "or"
+        }
+      },
+      "notes": "Routes critical errors to immediate alerting"
+    },
+    {
+      "id": "send-alert",
+      "name": "Send Slack Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1700, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_ALERT_WEBHOOK || 'https://hooks.slack.com/services/YOUR/WEBHOOK/URL' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"text\": \":rotating_light: *CRITICAL ERROR* :rotating_light:\\n*Error ID:* {{ $json.error_id }}\\n*Workflow:* {{ $json.workflow.name }}\\n*Node:* {{ $json.node.name }}\\n*Message:* {{ $json.error.message }}\\n*Action:* {{ $json.action }}\", \"attachments\": [{\"color\": \"danger\", \"text\": \"Immediate attention required\"}]}"
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Sends Slack notification for critical errors"
+    },
+    {
+      "id": "end-node",
+      "name": "End",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1900, 300],
+      "parameters": {},
+      "notes": "Workflow completion"
+    }
+  ],
+  "connections": {
+    "Error Trigger": {"main": [[{"node": "Parse Error Details", "type": "main", "index": 0}]]},
+    "Parse Error Details": {"main": [[{"node": "Classify Error Type", "type": "main", "index": 0}]]},
+    "Classify Error Type": {"main": [[{"node": "Rate Limit - Queue for Retry", "type": "main", "index": 0}], [{"node": "Timeout - Retry Once", "type": "main", "index": 0}], [{"node": "Auth Error - Alert Immediately", "type": "main", "index": 0}], [{"node": "ServiceNow Error Handler", "type": "main", "index": 0}], [{"node": "Generic Error Handler", "type": "main", "index": 0}]]},
+    "Rate Limit - Queue for Retry": {"main": [[{"node": "Merge Error Paths", "type": "main", "index": 0}]]},
+    "Timeout - Retry Once": {"main": [[{"node": "Merge Error Paths", "type": "main", "index": 0}]]},
+    "Auth Error - Alert Immediately": {"main": [[{"node": "Merge Error Paths", "type": "main", "index": 0}]]},
+    "ServiceNow Error Handler": {"main": [[{"node": "Merge Error Paths", "type": "main", "index": 0}]]},
+    "Generic Error Handler": {"main": [[{"node": "Merge Error Paths", "type": "main", "index": 0}]]},
+    "Merge Error Paths": {"main": [[{"node": "Log Error to Database", "type": "main", "index": 0}]]},
+    "Log Error to Database": {"main": [[{"node": "Check Alert Required", "type": "main", "index": 0}]]},
+    "Check Alert Required": {"main": [[{"node": "Send Slack Alert", "type": "main", "index": 0}], [{"node": "End", "type": "main", "index": 0}]]},
+    "Send Slack Alert": {"main": [[{"node": "End", "type": "main", "index": 0}]]}
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  },
+  "tags": [{"name": "Error Handler", "id": "4"}, {"name": "IT Support", "id": "1"}]
+}

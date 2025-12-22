@@ -1,0 +1,1102 @@
+[
+  {
+    "title": "Connectivity Issue - Common Problem 1",
+    "content": "Users may experience issues related to Connectivity. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Network",
+    "subcategory": "Connectivity",
+    "tags": [
+      "connectivity",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "Network Operations"
+  },
+  {
+    "title": "Outlook Issue - Common Problem 2",
+    "content": "Users may experience issues related to Outlook. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Email",
+    "subcategory": "Outlook",
+    "tags": [
+      "outlook",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "Messaging Support"
+  },
+  {
+    "title": "Windows Issue - Common Problem 3",
+    "content": "Users may experience issues related to Windows. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Endpoint",
+    "subcategory": "Windows",
+    "tags": [
+      "windows",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "2-High",
+    "assignment_group": "EUC Support"
+  },
+  {
+    "title": "MacOS Issue - Common Problem 4",
+    "content": "Users may experience issues related to MacOS. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Endpoint",
+    "subcategory": "MacOS",
+    "tags": [
+      "macos",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "EUC Support"
+  },
+  {
+    "title": "Active Directory Issue - Common Problem 5",
+    "content": "Users may experience issues related to Active Directory. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Identity",
+    "subcategory": "Active Directory",
+    "tags": [
+      "active directory",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "IAM Team"
+  },
+  {
+    "title": "MFA Issue - Common Problem 6",
+    "content": "Users may experience issues related to MFA. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Identity",
+    "subcategory": "MFA",
+    "tags": [
+      "mfa",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "2-High",
+    "assignment_group": "IAM Team"
+  },
+  {
+    "title": "Incidents Issue - Common Problem 7",
+    "content": "Users may experience issues related to Incidents. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "ServiceNow",
+    "subcategory": "Incidents",
+    "tags": [
+      "incidents",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "ITSM Platform"
+  },
+  {
+    "title": "Access Requests Issue - Common Problem 8",
+    "content": "Users may experience issues related to Access Requests. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "ServiceNow",
+    "subcategory": "Access Requests",
+    "tags": [
+      "access requests",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "ITSM Platform"
+  },
+  {
+    "title": "Microsoft 365 Issue - Common Problem 9",
+    "content": "Users may experience issues related to Microsoft 365. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Applications",
+    "subcategory": "Microsoft 365",
+    "tags": [
+      "microsoft 365",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "2-High",
+    "assignment_group": "Application Support"
+  },
+  {
+    "title": "VPN Issue - Common Problem 10",
+    "content": "Users may experience issues related to VPN. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Network",
+    "subcategory": "VPN",
+    "tags": [
+      "vpn",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "1-Critical",
+    "assignment_group": "Network Operations"
+  },
+  {
+    "title": "Connectivity Issue - Common Problem 11",
+    "content": "Users may experience issues related to Connectivity. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Network",
+    "subcategory": "Connectivity",
+    "tags": [
+      "connectivity",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "Network Operations"
+  },
+  {
+    "title": "Outlook Issue - Common Problem 12",
+    "content": "Users may experience issues related to Outlook. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Email",
+    "subcategory": "Outlook",
+    "tags": [
+      "outlook",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "2-High",
+    "assignment_group": "Messaging Support"
+  },
+  {
+    "title": "Windows Issue - Common Problem 13",
+    "content": "Users may experience issues related to Windows. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Endpoint",
+    "subcategory": "Windows",
+    "tags": [
+      "windows",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "EUC Support"
+  },
+  {
+    "title": "MacOS Issue - Common Problem 14",
+    "content": "Users may experience issues related to MacOS. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Endpoint",
+    "subcategory": "MacOS",
+    "tags": [
+      "macos",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "EUC Support"
+  },
+  {
+    "title": "Active Directory Issue - Common Problem 15",
+    "content": "Users may experience issues related to Active Directory. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Identity",
+    "subcategory": "Active Directory",
+    "tags": [
+      "active directory",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "2-High",
+    "assignment_group": "IAM Team"
+  },
+  {
+    "title": "MFA Issue - Common Problem 16",
+    "content": "Users may experience issues related to MFA. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Identity",
+    "subcategory": "MFA",
+    "tags": [
+      "mfa",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "IAM Team"
+  },
+  {
+    "title": "Incidents Issue - Common Problem 17",
+    "content": "Users may experience issues related to Incidents. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "ServiceNow",
+    "subcategory": "Incidents",
+    "tags": [
+      "incidents",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "ITSM Platform"
+  },
+  {
+    "title": "Access Requests Issue - Common Problem 18",
+    "content": "Users may experience issues related to Access Requests. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "ServiceNow",
+    "subcategory": "Access Requests",
+    "tags": [
+      "access requests",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "2-High",
+    "assignment_group": "ITSM Platform"
+  },
+  {
+    "title": "Microsoft 365 Issue - Common Problem 19",
+    "content": "Users may experience issues related to Microsoft 365. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Applications",
+    "subcategory": "Microsoft 365",
+    "tags": [
+      "microsoft 365",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "Application Support"
+  },
+  {
+    "title": "VPN Issue - Common Problem 20",
+    "content": "Users may experience issues related to VPN. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Network",
+    "subcategory": "VPN",
+    "tags": [
+      "vpn",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "1-Critical",
+    "assignment_group": "Network Operations"
+  },
+  {
+    "title": "Connectivity Issue - Common Problem 21",
+    "content": "Users may experience issues related to Connectivity. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Network",
+    "subcategory": "Connectivity",
+    "tags": [
+      "connectivity",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "2-High",
+    "assignment_group": "Network Operations"
+  },
+  {
+    "title": "Outlook Issue - Common Problem 22",
+    "content": "Users may experience issues related to Outlook. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Email",
+    "subcategory": "Outlook",
+    "tags": [
+      "outlook",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "Messaging Support"
+  },
+  {
+    "title": "Windows Issue - Common Problem 23",
+    "content": "Users may experience issues related to Windows. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Endpoint",
+    "subcategory": "Windows",
+    "tags": [
+      "windows",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "EUC Support"
+  },
+  {
+    "title": "MacOS Issue - Common Problem 24",
+    "content": "Users may experience issues related to MacOS. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Endpoint",
+    "subcategory": "MacOS",
+    "tags": [
+      "macos",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "2-High",
+    "assignment_group": "EUC Support"
+  },
+  {
+    "title": "Active Directory Issue - Common Problem 25",
+    "content": "Users may experience issues related to Active Directory. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Identity",
+    "subcategory": "Active Directory",
+    "tags": [
+      "active directory",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "IAM Team"
+  },
+  {
+    "title": "MFA Issue - Common Problem 26",
+    "content": "Users may experience issues related to MFA. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Identity",
+    "subcategory": "MFA",
+    "tags": [
+      "mfa",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "IAM Team"
+  },
+  {
+    "title": "Incidents Issue - Common Problem 27",
+    "content": "Users may experience issues related to Incidents. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "ServiceNow",
+    "subcategory": "Incidents",
+    "tags": [
+      "incidents",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "2-High",
+    "assignment_group": "ITSM Platform"
+  },
+  {
+    "title": "Access Requests Issue - Common Problem 28",
+    "content": "Users may experience issues related to Access Requests. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "ServiceNow",
+    "subcategory": "Access Requests",
+    "tags": [
+      "access requests",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "ITSM Platform"
+  },
+  {
+    "title": "Microsoft 365 Issue - Common Problem 29",
+    "content": "Users may experience issues related to Microsoft 365. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Applications",
+    "subcategory": "Microsoft 365",
+    "tags": [
+      "microsoft 365",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "Application Support"
+  },
+  {
+    "title": "VPN Issue - Common Problem 30",
+    "content": "Users may experience issues related to VPN. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Network",
+    "subcategory": "VPN",
+    "tags": [
+      "vpn",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "1-Critical",
+    "assignment_group": "Network Operations"
+  },
+  {
+    "title": "Connectivity Issue - Common Problem 31",
+    "content": "Users may experience issues related to Connectivity. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Network",
+    "subcategory": "Connectivity",
+    "tags": [
+      "connectivity",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "Network Operations"
+  },
+  {
+    "title": "Outlook Issue - Common Problem 32",
+    "content": "Users may experience issues related to Outlook. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Email",
+    "subcategory": "Outlook",
+    "tags": [
+      "outlook",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "Messaging Support"
+  },
+  {
+    "title": "Windows Issue - Common Problem 33",
+    "content": "Users may experience issues related to Windows. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Endpoint",
+    "subcategory": "Windows",
+    "tags": [
+      "windows",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "2-High",
+    "assignment_group": "EUC Support"
+  },
+  {
+    "title": "MacOS Issue - Common Problem 34",
+    "content": "Users may experience issues related to MacOS. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Endpoint",
+    "subcategory": "MacOS",
+    "tags": [
+      "macos",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "EUC Support"
+  },
+  {
+    "title": "Active Directory Issue - Common Problem 35",
+    "content": "Users may experience issues related to Active Directory. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Identity",
+    "subcategory": "Active Directory",
+    "tags": [
+      "active directory",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "IAM Team"
+  },
+  {
+    "title": "MFA Issue - Common Problem 36",
+    "content": "Users may experience issues related to MFA. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Identity",
+    "subcategory": "MFA",
+    "tags": [
+      "mfa",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "2-High",
+    "assignment_group": "IAM Team"
+  },
+  {
+    "title": "Incidents Issue - Common Problem 37",
+    "content": "Users may experience issues related to Incidents. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "ServiceNow",
+    "subcategory": "Incidents",
+    "tags": [
+      "incidents",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "ITSM Platform"
+  },
+  {
+    "title": "Access Requests Issue - Common Problem 38",
+    "content": "Users may experience issues related to Access Requests. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "ServiceNow",
+    "subcategory": "Access Requests",
+    "tags": [
+      "access requests",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "ITSM Platform"
+  },
+  {
+    "title": "Microsoft 365 Issue - Common Problem 39",
+    "content": "Users may experience issues related to Microsoft 365. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Applications",
+    "subcategory": "Microsoft 365",
+    "tags": [
+      "microsoft 365",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "2-High",
+    "assignment_group": "Application Support"
+  },
+  {
+    "title": "VPN Issue - Common Problem 40",
+    "content": "Users may experience issues related to VPN. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Network",
+    "subcategory": "VPN",
+    "tags": [
+      "vpn",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "1-Critical",
+    "assignment_group": "Network Operations"
+  },
+  {
+    "title": "Connectivity Issue - Common Problem 41",
+    "content": "Users may experience issues related to Connectivity. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Network",
+    "subcategory": "Connectivity",
+    "tags": [
+      "connectivity",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "Network Operations"
+  },
+  {
+    "title": "Outlook Issue - Common Problem 42",
+    "content": "Users may experience issues related to Outlook. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Email",
+    "subcategory": "Outlook",
+    "tags": [
+      "outlook",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "2-High",
+    "assignment_group": "Messaging Support"
+  },
+  {
+    "title": "Windows Issue - Common Problem 43",
+    "content": "Users may experience issues related to Windows. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Endpoint",
+    "subcategory": "Windows",
+    "tags": [
+      "windows",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "EUC Support"
+  },
+  {
+    "title": "MacOS Issue - Common Problem 44",
+    "content": "Users may experience issues related to MacOS. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Endpoint",
+    "subcategory": "MacOS",
+    "tags": [
+      "macos",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "EUC Support"
+  },
+  {
+    "title": "Active Directory Issue - Common Problem 45",
+    "content": "Users may experience issues related to Active Directory. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Identity",
+    "subcategory": "Active Directory",
+    "tags": [
+      "active directory",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "2-High",
+    "assignment_group": "IAM Team"
+  },
+  {
+    "title": "MFA Issue - Common Problem 46",
+    "content": "Users may experience issues related to MFA. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Identity",
+    "subcategory": "MFA",
+    "tags": [
+      "mfa",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "IAM Team"
+  },
+  {
+    "title": "Incidents Issue - Common Problem 47",
+    "content": "Users may experience issues related to Incidents. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "ServiceNow",
+    "subcategory": "Incidents",
+    "tags": [
+      "incidents",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "ITSM Platform"
+  },
+  {
+    "title": "Access Requests Issue - Common Problem 48",
+    "content": "Users may experience issues related to Access Requests. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "ServiceNow",
+    "subcategory": "Access Requests",
+    "tags": [
+      "access requests",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "2-High",
+    "assignment_group": "ITSM Platform"
+  },
+  {
+    "title": "Microsoft 365 Issue - Common Problem 49",
+    "content": "Users may experience issues related to Microsoft 365. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Applications",
+    "subcategory": "Microsoft 365",
+    "tags": [
+      "microsoft 365",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "3-Medium",
+    "assignment_group": "Application Support"
+  },
+  {
+    "title": "VPN Issue - Common Problem 50",
+    "content": "Users may experience issues related to VPN. Common causes include configuration errors, outdated software, permission issues, or backend service disruptions.",
+    "category": "Network",
+    "subcategory": "VPN",
+    "tags": [
+      "vpn",
+      "issue",
+      "troubleshooting",
+      "it-support"
+    ],
+    "resolution_steps": [
+      "1. Confirm the affected user and device",
+      "2. Validate the reported symptoms",
+      "3. Check for known outages or service alerts",
+      "4. Apply standard troubleshooting for the issue",
+      "5. Verify resolution with the user",
+      "6. Update the ticket with actions taken"
+    ],
+    "priority_hint": "1-Critical",
+    "assignment_group": "Network Operations"
+  }
+]

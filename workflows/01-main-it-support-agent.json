@@ -1,0 +1,424 @@
+{
+  "name": "AI IT Support Automation Agent - Main",
+  "nodes": [
+    {
+      "id": "webhook-intake",
+      "name": "Webhook - Ticket Intake",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [250, 300],
+      "webhookId": "it-support-ticket-intake",
+      "parameters": {
+        "path": "ticket-intake",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {"rawBody": true}
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Primary webhook endpoint for ticket intake from Slack, Teams, Email, or API"
+    },
+    {
+      "id": "rate-limiter",
+      "name": "Rate Limiter - Batch Control",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [450, 300],
+      "parameters": {"batchSize": 5, "options": {}},
+      "notes": "Controls concurrency - processes 5 tickets at a time to prevent API overload"
+    },
+    {
+      "id": "wait-between-batches",
+      "name": "Wait Between Batches",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [650, 300],
+      "parameters": {"amount": 2, "unit": "seconds"},
+      "notes": "2-second delay between batches to respect rate limits"
+    },
+    {
+      "id": "store-raw-ticket",
+      "name": "Store Raw Ticket (Audit)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const rawTicket = {\n  id: $json.id || `TKT-${Date.now()}`,\n  received_at: new Date().toISOString(),\n  source: $json.source || 'webhook',\n  raw_payload: JSON.stringify($json),\n  processing_status: 'received'\n};\nreturn {json: {...rawTicket, original: $json}};"
+      },
+      "notes": "Stores immutable raw ticket for compliance and audit purposes"
+    },
+    {
+      "id": "validate-schema",
+      "name": "Validate JSON Schema",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 300],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ticket = $json.original;\nconst errors = [];\nconst requiredFields = ['title', 'description'];\nfor (const field of requiredFields) {\n  if (!ticket[field]) errors.push(`Missing required field: ${field}`);\n}\nif (ticket.title && typeof ticket.title !== 'string') errors.push('title must be a string');\nif (ticket.description && typeof ticket.description !== 'string') errors.push('description must be a string');\nconst validatedTicket = {\n  id: $json.id, received_at: $json.received_at, source: $json.source,\n  title: ticket.title || '', description: ticket.description || '',\n  category: ticket.category || 'uncategorized', priority: ticket.priority || 'medium',\n  urgency: ticket.urgency || 'medium', suggested_resolution: ticket.suggested_resolution || '',\n  requester_email: ticket.requester_email || '', sys_id: ticket.sys_id || null,\n  is_update: !!ticket.sys_id\n};\nreturn {json: {...validatedTicket, validation_errors: errors, is_valid: errors.length === 0, raw_payload: $json.raw_payload}};"
+      },
+      "notes": "Validates incoming ticket against required JSON schema"
+    },
+    {
+      "id": "validation-switch",
+      "name": "Validation Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1250, 300],
+      "parameters": {
+        "conditions": {
+          "options": {"caseSensitive": true, "leftValue": "", "typeValidation": "strict"},
+          "conditions": [{"id": "valid-check", "leftValue": "={{ $json.is_valid }}", "rightValue": true, "operator": {"type": "boolean", "operation": "equals"}}],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "Routes valid tickets to processing, invalid to error handling"
+    },
+    {
+      "id": "pii-redaction",
+      "name": "PII/PHI Redaction",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 200],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const patterns = {\n  email: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}/gi,\n  phone: /(?:\\+?1[-.]?)?\\(?[0-9]{3}\\)?[-.]?[0-9]{3}[-.]?[0-9]{4}/g,\n  ssn: /\\b\\d{3}[-]?\\d{2}[-]?\\d{4}\\b/g,\n  creditCard: /\\b(?:\\d{4}[-\\s]?){3}\\d{4}\\b/g,\n  ipAddress: /\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b/g,\n  password: /(?:password|pwd|pass)[\\s:=]+[^\\s]+/gi,\n  apiKey: /(?:api[_-]?key|token|secret)[\\s:=]+[a-zA-Z0-9_-]+/gi,\n  phi: /\\b(?:diagnosis|medication|prescription|medical record|patient id|mrn|dob|date of birth|health condition|treatment)\\b[^.]*\\./gi\n};\nfunction redactText(text) {\n  if (!text || typeof text !== 'string') return {text, redactions: []};\n  let redacted = text;\n  const redactions = [];\n  for (const [type, pattern] of Object.entries(patterns)) {\n    const matches = redacted.match(pattern);\n    if (matches) {\n      redactions.push({type, count: matches.length});\n      redacted = redacted.replace(pattern, `[REDACTED_${type.toUpperCase()}]`);\n    }\n  }\n  return {text: redacted, redactions};\n}\nconst titleResult = redactText($json.title);\nconst descResult = redactText($json.description);\nreturn {json: {...$json, title_sanitized: titleResult.text, description_sanitized: descResult.text, redaction_log: {title_redactions: titleResult.redactions, description_redactions: descResult.redactions, redacted_at: new Date().toISOString()}, title_original: $json.title, description_original: $json.description}};"
+      },
+      "notes": "Redacts PII/PHI (emails, SSN, phone, passwords, health info) before AI processing"
+    },
+    {
+      "id": "sensitive-category-check",
+      "name": "Sensitive Category Bypass",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1650, 200],
+      "parameters": {
+        "conditions": {
+          "options": {"caseSensitive": false, "leftValue": "", "typeValidation": "loose"},
+          "conditions": [
+            {"id": "legal-check", "leftValue": "={{ $json.title_sanitized.toLowerCase() }}", "rightValue": "legal", "operator": {"type": "string", "operation": "contains"}},
+            {"id": "executive-check", "leftValue": "={{ $json.title_sanitized.toLowerCase() }}", "rightValue": "executive", "operator": {"type": "string", "operation": "contains"}},
+            {"id": "termination-check", "leftValue": "={{ $json.title_sanitized.toLowerCase() }}", "rightValue": "termination", "operator": {"type": "string", "operation": "contains"}}
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "notes": "Bypasses AI for sensitive categories (Legal, Executive, Termination) - direct escalation"
+    },
+    {
+      "id": "direct-escalation",
+      "name": "Direct Escalation (Sensitive)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1850, 100],
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {"id": "bypass-flag", "name": "ai_bypassed", "value": true, "type": "boolean"},
+            {"id": "bypass-reason", "name": "bypass_reason", "value": "Sensitive category detected - automatic escalation", "type": "string"},
+            {"id": "escalation-priority", "name": "priority", "value": "critical", "type": "string"},
+            {"id": "requires-human", "name": "requires_human_review", "value": true, "type": "boolean"}
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "notes": "Sets flags for sensitive tickets that bypass AI processing"
+    },
+    {
+      "id": "rag-context-retrieval",
+      "name": "RAG - Knowledge Base Retrieval",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1850, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.RAG_ENDPOINT || 'https://your-rag-endpoint.com/api/search' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"query\": \"{{ $json.title_sanitized }} {{ $json.description_sanitized }}\", \"top_k\": 3}",
+        "options": {"timeout": 10000}
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Retrieves relevant SOP/knowledge base context for AI classification"
+    },
+    {
+      "id": "ai-classification",
+      "name": "AI Classification (OpenAI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [2050, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {"parameters": [{"name": "Content-Type", "value": "application/json"}]},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"model\": \"gpt-4o\", \"temperature\": 0.1, \"max_tokens\": 500, \"response_format\": {\"type\": \"json_object\"}, \"messages\": [{\"role\": \"system\", \"content\": \"You are an IT Support Classification Agent. Analyze tickets and respond with JSON: {\\\"category\\\": \\\"string\\\", \\\"priority\\\": \\\"string\\\", \\\"urgency\\\": \\\"string\\\", \\\"suggested_resolution\\\": \\\"string\\\", \\\"confidence\\\": number}. Categories: Email/Authentication, Hardware/Performance, Hardware/Printer, Software/Installation, Network/VPN, Security, Access Request, Other. Priority/Urgency: critical, high, medium, low. Confidence: 0-1.\"}, {\"role\": \"user\", \"content\": \"Classify: Title: {{ $json.title_sanitized }} Description: {{ $json.description_sanitized }}\"}]}",
+        "options": {"timeout": 30000}
+      },
+      "onError": "continueRegularOutput",
+      "notes": "LLM classification with few-shot prompting via OpenAI API"
+    },
+    {
+      "id": "parse-ai-response",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2250, 300],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "let aiResponse;\ntry {\n  const content = $json.choices?.[0]?.message?.content || '{}';\n  aiResponse = JSON.parse(content);\n} catch (e) {\n  aiResponse = {category: 'Other', priority: 'medium', urgency: 'medium', suggested_resolution: 'Manual review required', confidence: 0.0};\n}\nlet confidence = parseFloat(aiResponse.confidence) || 0;\nconfidence = Math.max(0, Math.min(1, confidence));\nconst prevData = $('PII/PHI Redaction').first().json;\nreturn {json: {id: prevData.id, received_at: prevData.received_at, source: prevData.source, title: prevData.title_sanitized, description: prevData.description_sanitized, title_original: prevData.title_original, description_original: prevData.description_original, requester_email: prevData.requester_email, sys_id: prevData.sys_id, is_update: prevData.is_update, raw_payload: prevData.raw_payload, redaction_log: prevData.redaction_log, ai_classification: {category: aiResponse.category || 'Other', priority: aiResponse.priority || 'medium', urgency: aiResponse.urgency || 'medium', suggested_resolution: aiResponse.suggested_resolution || '', confidence: confidence, classified_at: new Date().toISOString(), model: 'gpt-4o'}, ai_bypassed: false, requires_human_review: confidence < 0.8}};"
+      },
+      "notes": "Parses AI JSON response and validates confidence score"
+    },
+    {
+      "id": "confidence-check",
+      "name": "Confidence Threshold Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [2450, 300],
+      "parameters": {
+        "conditions": {
+          "options": {"caseSensitive": true, "leftValue": "", "typeValidation": "strict"},
+          "conditions": [{"id": "confidence-threshold", "leftValue": "={{ $json.ai_classification.confidence }}", "rightValue": 0.8, "operator": {"type": "number", "operation": "gte"}}],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "Routes tickets based on confidence threshold (>= 0.8 = auto-process, < 0.8 = human review)"
+    },
+    {
+      "id": "human-review-notify",
+      "name": "Human Review - Slack Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [2650, 400],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL || 'https://hooks.slack.com/services/YOUR/WEBHOOK/URL' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"text\": \"*IT Ticket Requires Review*\\nTicket: {{ $json.id }}\\nTitle: {{ $json.title }}\\nAI Category: {{ $json.ai_classification.category }}\\nConfidence: {{ $json.ai_classification.confidence }}\\nSuggested: {{ $json.ai_classification.suggested_resolution }}\", \"attachments\": [{\"text\": \"Please review and approve/reject\", \"callback_id\": \"ticket_review_{{ $json.id }}\", \"actions\": [{\"name\": \"approve\", \"text\": \"Approve\", \"type\": \"button\", \"value\": \"approved\"}, {\"name\": \"reject\", \"text\": \"Reject\", \"type\": \"button\", \"value\": \"rejected\"}]}]}",
+        "options": {"timeout": 10000}
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Sends Slack notification for human review when confidence < 0.8"
+    },
+    {
+      "id": "human-review-wait",
+      "name": "Wait for Human Decision",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [2850, 400],
+      "parameters": {
+        "resume": "webhook",
+        "options": {"webhookSuffix": "={{ $json.id }}"}
+      },
+      "notes": "Waits for human approval callback (timeout: 2 hours)"
+    },
+    {
+      "id": "merge-paths",
+      "name": "Merge Processing Paths",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [3050, 250],
+      "parameters": {"mode": "append"},
+      "notes": "Merges auto-approved and human-approved ticket paths"
+    },
+    {
+      "id": "shadow-mode-check",
+      "name": "Shadow Mode Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [3250, 250],
+      "parameters": {
+        "conditions": {
+          "options": {"caseSensitive": true, "leftValue": "", "typeValidation": "loose"},
+          "conditions": [{"id": "shadow-mode", "leftValue": "={{ $env.SHADOW_MODE }}", "rightValue": "true", "operator": {"type": "string", "operation": "equals"}}],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "Checks SHADOW_MODE env var - if true, logs only without ServiceNow actions"
+    },
+    {
+      "id": "shadow-mode-log",
+      "name": "Shadow Mode - Log Only",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3450, 150],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const shadowLog = {\n  shadow_mode: true, logged_at: new Date().toISOString(), ticket_id: $json.id,\n  ai_decision: {category: $json.ai_classification?.category || $json.category, priority: $json.ai_classification?.priority || $json.priority, urgency: $json.ai_classification?.urgency || $json.urgency, suggested_resolution: $json.ai_classification?.suggested_resolution || '', confidence: $json.ai_classification?.confidence || 0, ai_bypassed: $json.ai_bypassed || false},\n  human_review: {required: $json.requires_human_review || false, decision: $json.human_decision || null, reviewer: $json.reviewer || null},\n  servicenow_action: {would_create: !$json.is_update, would_update: $json.is_update, sys_id: $json.sys_id},\n  validation: {pending_human_comparison: true, actual_human_action: null}\n};\nconsole.log('SHADOW_MODE_LOG:', JSON.stringify(shadowLog));\nreturn {json: {...shadowLog, status: 'shadow_logged', message: 'Shadow mode active - no ServiceNow changes made'}};"
+      },
+      "notes": "Logs AI decision without taking ServiceNow action (for 48-hour validation)"
+    },
+    {
+      "id": "servicenow-action-check",
+      "name": "ServiceNow Create or Update",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [3450, 350],
+      "parameters": {
+        "conditions": {
+          "options": {"caseSensitive": true, "leftValue": "", "typeValidation": "strict"},
+          "conditions": [{"id": "is-update", "leftValue": "={{ $json.is_update }}", "rightValue": true, "operator": {"type": "boolean", "operation": "equals"}}],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "Determines whether to create new ticket or update existing based on sys_id"
+    },
+    {
+      "id": "servicenow-create",
+      "name": "ServiceNow - Create Incident",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [3650, 450],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SERVICENOW_INSTANCE }}/api/now/table/incident",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {"parameters": [{"name": "Content-Type", "value": "application/json"}, {"name": "Accept", "value": "application/json"}]},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"short_description\": \"{{ $json.title }}\", \"description\": \"{{ $json.description }}\\n\\n---\\nAI Suggested Resolution:\\n{{ $json.ai_classification.suggested_resolution }}\\n\\nAI Confidence: {{ $json.ai_classification.confidence }}\", \"category\": \"{{ $json.ai_classification.category }}\", \"priority\": \"{{ $json.ai_classification.priority === 'critical' ? '1' : $json.ai_classification.priority === 'high' ? '2' : $json.ai_classification.priority === 'medium' ? '3' : '4' }}\", \"urgency\": \"{{ $json.ai_classification.urgency === 'critical' ? '1' : $json.ai_classification.urgency === 'high' ? '2' : $json.ai_classification.urgency === 'medium' ? '3' : '4' }}\", \"caller_id\": \"{{ $json.requester_email }}\", \"u_ai_classified\": \"true\", \"u_ai_confidence\": \"{{ $json.ai_classification.confidence }}\"}",
+        "options": {"timeout": 30000}
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Creates new incident in ServiceNow with AI classification data"
+    },
+    {
+      "id": "servicenow-update",
+      "name": "ServiceNow - Update Incident",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [3650, 250],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.SERVICENOW_INSTANCE }}/api/now/table/incident/{{ $json.sys_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {"parameters": [{"name": "Content-Type", "value": "application/json"}, {"name": "Accept", "value": "application/json"}]},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"work_notes\": \"AI Update:\\nCategory: {{ $json.ai_classification.category }}\\nPriority: {{ $json.ai_classification.priority }}\\nSuggested Resolution: {{ $json.ai_classification.suggested_resolution }}\\nConfidence: {{ $json.ai_classification.confidence }}\", \"priority\": \"{{ $json.ai_classification.priority === 'critical' ? '1' : $json.ai_classification.priority === 'high' ? '2' : $json.ai_classification.priority === 'medium' ? '3' : '4' }}\"}",
+        "options": {"timeout": 30000}
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Updates existing incident in ServiceNow using sys_id"
+    },
+    {
+      "id": "store-sys-id",
+      "name": "Store sys_id Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3850, 350],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const result = {\n  ticket_id: $json.id || $input.first()?.json?.id,\n  sys_id: $json.result?.sys_id || $input.first()?.json?.sys_id,\n  servicenow_number: $json.result?.number || null,\n  action_taken: $input.first()?.json?.is_update ? 'updated' : 'created',\n  action_timestamp: new Date().toISOString(),\n  ticket_data: {title: $input.first()?.json?.title, category: $input.first()?.json?.ai_classification?.category, priority: $input.first()?.json?.ai_classification?.priority, confidence: $input.first()?.json?.ai_classification?.confidence}\n};\nconsole.log('SERVICENOW_ACTION:', JSON.stringify(result));\nreturn {json: result};"
+      },
+      "notes": "Stores sys_id from ServiceNow response for future updates"
+    },
+    {
+      "id": "final-log",
+      "name": "Final Audit Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4050, 300],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const auditEntry = {\n  audit_id: `AUD-${Date.now()}`,\n  timestamp: new Date().toISOString(),\n  workflow_execution_id: $execution.id,\n  ticket: {id: $json.ticket_id || $json.id, sys_id: $json.sys_id, servicenow_number: $json.servicenow_number},\n  processing: {shadow_mode: $json.shadow_mode || false, ai_bypassed: $json.ai_bypassed || false, human_reviewed: !!$json.human_decision, action_taken: $json.action_taken || $json.status || 'completed'},\n  ai_metrics: {confidence: $json.ai_decision?.confidence || $json.ticket_data?.confidence, category: $json.ai_decision?.category || $json.ticket_data?.category},\n  status: 'completed'\n};\nconsole.log('AUDIT_LOG:', JSON.stringify(auditEntry));\nreturn {json: auditEntry};"
+      },
+      "notes": "Creates final audit log entry for compliance and monitoring"
+    },
+    {
+      "id": "webhook-response",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [4250, 300],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"success\": true, \"ticket_id\": \"{{ $json.ticket?.id || $json.ticket_id }}\", \"sys_id\": \"{{ $json.ticket?.sys_id || $json.sys_id }}\", \"status\": \"{{ $json.status }}\", \"audit_id\": \"{{ $json.audit_id }}\"}",
+        "options": {"responseCode": 200}
+      },
+      "notes": "Returns success response to webhook caller"
+    },
+    {
+      "id": "validation-error-handler",
+      "name": "Validation Error Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 400],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const errorResponse = {success: false, error: 'Validation failed', validation_errors: $json.validation_errors, ticket_id: $json.id, received_at: $json.received_at};\nconsole.log('VALIDATION_ERROR:', JSON.stringify(errorResponse));\nreturn {json: errorResponse};"
+      },
+      "notes": "Handles tickets that fail schema validation"
+    },
+    {
+      "id": "validation-error-response",
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [1650, 400],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {"responseCode": 400}
+      },
+      "notes": "Returns 400 error for invalid tickets"
+    }
+  ],
+  "connections": {
+    "Webhook - Ticket Intake": {"main": [[{"node": "Rate Limiter - Batch Control", "type": "main", "index": 0}]]},
+    "Rate Limiter - Batch Control": {"main": [[{"node": "Wait Between Batches", "type": "main", "index": 0}], [{"node": "Store Raw Ticket (Audit)", "type": "main", "index": 0}]]},
+    "Wait Between Batches": {"main": [[{"node": "Rate Limiter - Batch Control", "type": "main", "index": 0}]]},
+    "Store Raw Ticket (Audit)": {"main": [[{"node": "Validate JSON Schema", "type": "main", "index": 0}]]},
+    "Validate JSON Schema": {"main": [[{"node": "Validation Check", "type": "main", "index": 0}]]},
+    "Validation Check": {"main": [[{"node": "PII/PHI Redaction", "type": "main", "index": 0}], [{"node": "Validation Error Handler", "type": "main", "index": 0}]]},
+    "PII/PHI Redaction": {"main": [[{"node": "Sensitive Category Bypass", "type": "main", "index": 0}]]},
+    "Sensitive Category Bypass": {"main": [[{"node": "Direct Escalation (Sensitive)", "type": "main", "index": 0}], [{"node": "RAG - Knowledge Base Retrieval", "type": "main", "index": 0}]]},
+    "Direct Escalation (Sensitive)": {"main": [[{"node": "Merge Processing Paths", "type": "main", "index": 0}]]},
+    "RAG - Knowledge Base Retrieval": {"main": [[{"node": "AI Classification (OpenAI)", "type": "main", "index": 0}]]},
+    "AI Classification (OpenAI)": {"main": [[{"node": "Parse AI Response", "type": "main", "index": 0}]]},
+    "Parse AI Response": {"main": [[{"node": "Confidence Threshold Check", "type": "main", "index": 0}]]},
+    "Confidence Threshold Check": {"main": [[{"node": "Merge Processing Paths", "type": "main", "index": 0}], [{"node": "Human Review - Slack Notification", "type": "main", "index": 0}]]},
+    "Human Review - Slack Notification": {"main": [[{"node": "Wait for Human Decision", "type": "main", "index": 0}]]},
+    "Wait for Human Decision": {"main": [[{"node": "Merge Processing Paths", "type": "main", "index": 0}]]},
+    "Merge Processing Paths": {"main": [[{"node": "Shadow Mode Check", "type": "main", "index": 0}]]},
+    "Shadow Mode Check": {"main": [[{"node": "Shadow Mode - Log Only", "type": "main", "index": 0}], [{"node": "ServiceNow Create or Update", "type": "main", "index": 0}]]},
+    "Shadow Mode - Log Only": {"main": [[{"node": "Final Audit Log", "type": "main", "index": 0}]]},
+    "ServiceNow Create or Update": {"main": [[{"node": "ServiceNow - Update Incident", "type": "main", "index": 0}], [{"node": "ServiceNow - Create Incident", "type": "main", "index": 0}]]},
+    "ServiceNow - Create Incident": {"main": [[{"node": "Store sys_id Response", "type": "main", "index": 0}]]},
+    "ServiceNow - Update Incident": {"main": [[{"node": "Store sys_id Response", "type": "main", "index": 0}]]},
+    "Store sys_id Response": {"main": [[{"node": "Final Audit Log", "type": "main", "index": 0}]]},
+    "Final Audit Log": {"main": [[{"node": "Webhook Response", "type": "main", "index": 0}]]},
+    "Validation Error Handler": {"main": [[{"node": "Error Response", "type": "main", "index": 0}]]}
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true,
+    "maxRunTime": 300,
+    "errorWorkflow": "error-handler-workflow"
+  },
+  "staticData": null,
+  "tags": [{"name": "IT Support", "id": "1"}, {"name": "AI Agent", "id": "2"}, {"name": "ServiceNow", "id": "3"}],
+  "pinData": {},
+  "versionId": "1.0.0"
+}

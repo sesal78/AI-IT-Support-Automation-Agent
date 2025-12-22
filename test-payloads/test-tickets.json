@@ -1,0 +1,255 @@
+{
+  "test_cases": [
+    {
+      "name": "Standard IT Ticket - Password Reset",
+      "description": "Common password reset request with high confidence expected",
+      "payload": {
+        "title": "Cannot login to email",
+        "description": "I forgot my password and cannot access my corporate email. I've tried resetting it but the link expired. Need urgent access for client meeting.",
+        "requester_email": "john.doe@company.com",
+        "source": "slack"
+      },
+      "expected": {
+        "category": "Email/Authentication",
+        "priority": "high",
+        "urgency": "high",
+        "confidence_range": [0.85, 1.0],
+        "requires_human_review": false
+      }
+    },
+    {
+      "name": "Hardware Issue - Slow Computer",
+      "description": "Performance complaint that should route to Hardware category",
+      "payload": {
+        "title": "Computer running very slow",
+        "description": "My laptop has been extremely slow for the past week. Applications take forever to open and sometimes freeze completely.",
+        "requester_email": "jane.smith@company.com",
+        "source": "teams"
+      },
+      "expected": {
+        "category": "Hardware/Performance",
+        "priority": "medium",
+        "urgency": "low",
+        "confidence_range": [0.8, 1.0]
+      }
+    },
+    {
+      "name": "VPN Connection Issue",
+      "description": "Remote access problem with network/VPN",
+      "payload": {
+        "title": "VPN not connecting from home",
+        "description": "Working remotely today and VPN client shows 'connection failed' error. Was working fine yesterday. Error code: VPN_AUTH_001",
+        "requester_email": "remote.worker@company.com",
+        "source": "email"
+      },
+      "expected": {
+        "category": "Network/VPN",
+        "priority": "high",
+        "urgency": "high",
+        "confidence_range": [0.85, 1.0]
+      }
+    },
+    {
+      "name": "Software Installation Request",
+      "description": "Standard software request with lower priority",
+      "payload": {
+        "title": "Need Adobe Acrobat installed",
+        "description": "Requesting Adobe Acrobat Pro for PDF editing. Required for document processing tasks. Not urgent.",
+        "requester_email": "analyst@company.com",
+        "source": "api"
+      },
+      "expected": {
+        "category": "Software/Installation",
+        "priority": "low",
+        "urgency": "low",
+        "confidence_range": [0.75, 0.95]
+      }
+    },
+    {
+      "name": "Low Confidence - Vague Description",
+      "description": "Ticket with unclear description that should trigger human review",
+      "payload": {
+        "title": "Something is broken",
+        "description": "It doesn't work anymore since yesterday.",
+        "requester_email": "vague.user@company.com",
+        "source": "slack"
+      },
+      "expected": {
+        "category": "Other",
+        "priority": "medium",
+        "urgency": "medium",
+        "confidence_range": [0.0, 0.79],
+        "requires_human_review": true
+      }
+    },
+    {
+      "name": "Sensitive Category - Legal",
+      "description": "Should bypass AI and escalate directly",
+      "payload": {
+        "title": "Legal department system access issue",
+        "description": "Need access to legal case management system for ongoing litigation matter.",
+        "requester_email": "legal.counsel@company.com",
+        "source": "email"
+      },
+      "expected": {
+        "ai_bypassed": true,
+        "bypass_reason": "Sensitive category detected",
+        "priority": "critical",
+        "requires_human_review": true
+      }
+    },
+    {
+      "name": "Sensitive Category - Executive",
+      "description": "Executive request that should bypass AI",
+      "payload": {
+        "title": "Executive laptop replacement needed",
+        "description": "CEO requires immediate laptop replacement for board meeting tomorrow.",
+        "requester_email": "exec.assistant@company.com",
+        "source": "teams"
+      },
+      "expected": {
+        "ai_bypassed": true,
+        "bypass_reason": "Sensitive category detected",
+        "priority": "critical"
+      }
+    },
+    {
+      "name": "Sensitive Category - Termination",
+      "description": "HR-related termination that should bypass AI",
+      "payload": {
+        "title": "Employee termination - disable accounts",
+        "description": "Please disable all accounts for terminated employee effective immediately.",
+        "requester_email": "hr.manager@company.com",
+        "source": "api"
+      },
+      "expected": {
+        "ai_bypassed": true,
+        "bypass_reason": "Sensitive category detected",
+        "priority": "critical"
+      }
+    },
+    {
+      "name": "PII Redaction Test",
+      "description": "Ticket containing PII that should be redacted",
+      "payload": {
+        "title": "Password reset for user SSN 123-45-6789",
+        "description": "User email: sensitive.user@company.com called from 555-123-4567. Their API key is sk-abc123xyz. Credit card ending 4242 was mentioned. Password was 'SecretPass123'.",
+        "requester_email": "helpdesk@company.com",
+        "source": "api"
+      },
+      "expected": {
+        "pii_redacted": true,
+        "redaction_types": ["ssn", "email", "phone", "apiKey", "creditCard", "password"]
+      }
+    },
+    {
+      "name": "Update Existing Ticket",
+      "description": "Ticket with sys_id should trigger update flow",
+      "payload": {
+        "title": "Follow-up on INC0012345",
+        "description": "Additional information for my previous ticket. The issue is now happening more frequently.",
+        "requester_email": "follow.up@company.com",
+        "source": "email",
+        "sys_id": "abc123def456ghi789"
+      },
+      "expected": {
+        "is_update": true,
+        "servicenow_action": "update"
+      }
+    },
+    {
+      "name": "Printer Issue",
+      "description": "Hardware printer problem",
+      "payload": {
+        "title": "Printer on 3rd floor not working",
+        "description": "The HP printer near conference room 3B is showing paper jam error but there's no paper stuck. Already tried turning it off and on.",
+        "requester_email": "floor3.user@company.com",
+        "source": "slack"
+      },
+      "expected": {
+        "category": "Hardware/Printer",
+        "priority": "low",
+        "urgency": "medium",
+        "confidence_range": [0.85, 1.0]
+      }
+    },
+    {
+      "name": "Security Incident",
+      "description": "Potential security issue that needs urgent attention",
+      "payload": {
+        "title": "Suspicious email received with attachment",
+        "description": "Received an email claiming to be from IT asking me to click a link and enter my password. The sender address looks suspicious.",
+        "requester_email": "alert.user@company.com",
+        "source": "slack"
+      },
+      "expected": {
+        "category": "Security",
+        "priority": "critical",
+        "urgency": "critical",
+        "confidence_range": [0.8, 1.0]
+      }
+    },
+    {
+      "name": "Validation Failure - Missing Title",
+      "description": "Invalid ticket that should fail validation",
+      "payload": {
+        "description": "This ticket has no title",
+        "requester_email": "invalid@company.com",
+        "source": "api"
+      },
+      "expected": {
+        "is_valid": false,
+        "validation_errors": ["Missing required field: title"],
+        "http_status": 400
+      }
+    },
+    {
+      "name": "Validation Failure - Missing Description",
+      "description": "Invalid ticket that should fail validation",
+      "payload": {
+        "title": "No description ticket",
+        "requester_email": "invalid@company.com",
+        "source": "api"
+      },
+      "expected": {
+        "is_valid": false,
+        "validation_errors": ["Missing required field: description"],
+        "http_status": 400
+      }
+    },
+    {
+      "name": "Access Request",
+      "description": "Request for system access",
+      "payload": {
+        "title": "Need access to Salesforce",
+        "description": "I'm a new hire in the sales team and need access to Salesforce CRM. My manager is Bob Johnson.",
+        "requester_email": "new.hire@company.com",
+        "source": "teams"
+      },
+      "expected": {
+        "category": "Access Request",
+        "priority": "medium",
+        "urgency": "medium",
+        "confidence_range": [0.8, 1.0]
+      }
+    }
+  ],
+  "shadow_mode_test": {
+    "description": "Test case specifically for shadow mode validation",
+    "payload": {
+      "title": "Shadow mode test ticket",
+      "description": "This ticket tests shadow mode - should log but not create ServiceNow incident",
+      "requester_email": "test@company.com",
+      "source": "api"
+    },
+    "expected_with_shadow_mode_true": {
+      "shadow_mode": true,
+      "status": "shadow_logged",
+      "servicenow_action": null
+    },
+    "expected_with_shadow_mode_false": {
+      "shadow_mode": false,
+      "servicenow_action": "created"
+    }
+  }
+}
