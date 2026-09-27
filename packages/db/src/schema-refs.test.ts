@@ -27,7 +27,7 @@ describe("referencedSchemas", () => {
       "-- public.ignored_line_comment",
       "/* auth.ignored_block",
       "   comment */",
-      "select 'storage.not_a_ref', 'it''s public.also_not', E'x\'y';",
+      "select 'storage.not_a_ref', 'it''s public.also_not', E'x\\'y';",
       "create function itsupport.f() returns int language sql as $body$ select 1 $body$;",
       "select 1.5, '{}'::jsonb;",
     ].join("\n");
