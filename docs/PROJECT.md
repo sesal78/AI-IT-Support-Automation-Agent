@@ -442,6 +442,8 @@ at §6 phase sign-off of the final phase.
   | `ITSUPPORT_SERVICENOW_PASSWORD` | `SERVICENOW_PASSWORD` | pipeline (phase 5–6, `dev420188`) | future |
 
   Non-secret settings (`SUPABASE_URL`, `SUPABASE_DB_SCHEMA`, `SHADOW_MODE`, `APP_VERSION`, `LLM_BASE_URL`, `LLM_MODEL`, the ServiceNow instance URL and user name) are not stored in the key store.
+- 2026-09-27 — H5 skipped: GitHub branch protection (and rulesets) need GitHub Pro for a private repo (API returned HTTP 403). Chose to skip over paying or making the repo public; compensating controls: CI runs all §9 gates on every PR, and the review loop merges only after an explicit human approval. Revisit if the repo goes public or the plan changes.
+- 2026-09-27 — H3: Dokploy project "AI IT Support Agent", environment `staging`, app `itsupport-web-staging` (builds `apps/web/Dockerfile` from branch `dev`), domain `itsupport-staging.techiesandbox.com` (http on port 3000, TLS at Cloudflare, same pattern as `supabase.techiesandbox.com`). Secrets entered by the user; non-secret settings by Claude.
 
 ## 12. Constraints & Risks
 
