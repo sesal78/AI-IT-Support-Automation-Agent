@@ -446,6 +446,7 @@ at §6 phase sign-off of the final phase.
 - 2026-09-27 — H3: Dokploy project "AI IT Support Agent", environment `staging`, app `itsupport-web-staging` (builds `apps/web/Dockerfile` from branch `dev`), domain `itsupport-staging.techiesandbox.com` (http on port 3000, TLS at Cloudflare, same pattern as `supabase.techiesandbox.com`). Secrets entered by the user; non-secret settings by Claude.
 - 2026-09-27 — H4 done: migration 0001 applied to the shared Supabase by the user in Supabase Studio (Postgres 17.6; pre-tested by Claude on a throwaway `supabase/postgres:17.6.1.177` container). User-run check returned the expected 5 rows: tables `tickets` + `ticket_events`, `vector` 0.8.2, RLS on both tables. Staging `/api/health` returns 200 at https://itsupport-staging.techiesandbox.com.
 - 2026-09-27 — Trigger.dev tasks deployed to `prod` (version `20260927.1`, SDK 4.6.4; task `healthcheck` registered). Test run `run_06ge4tiha938vga7lmof1dja01` completed with `ok: true`. Deploy ran from the Sandbox clone; its installed packages and build output were deleted afterwards (OPERATING-RULES line 47).
+- 2026-09-27 — end-to-end pipeline check passed on staging: `POST /api/health/pipeline` returned `202` with `run_06ge50t9jilm5dbjjmgson1t01`, which completed on Trigger.dev `prod` with `ok: true, requestedBy: "api"`. The first `ADMIN_HEALTH_TOKEN` failed with 401 because of a character the env file changes; rule from now on: generated app tokens use letters and digits only.
 
 ## 12. Constraints & Risks
 
