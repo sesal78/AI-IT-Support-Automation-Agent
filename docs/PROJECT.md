@@ -159,8 +159,8 @@ flowchart LR
 | # | Phase | Done when | Status |
 |---|---|---|---|
 | 0 | Freeze legacy | Live n8n workflows exported to `legacy/n8n/`, deactivated, PR #1 merged | done (2026-09-27) |
-| 1 | Foundation | Monorepo scaffolded. CI green on `main`. Supabase migrations applied to staging. Env validated at boot. The staging URL on Dokploy loads. A Trigger.dev test task triggered from staging completes. | current |
-| 2 | Intake + safety | On staging: a form submit returns a ticket ID in < 5 s. The raw ticket is stored. The redacted copy replaces a test SSN/email/card with `[REDACTED_*]`. A spam submit without Turnstile is rejected with a 4xx. A ticket with a sensitive topic in the body is flagged. | pending |
+| 1 | Foundation | Monorepo scaffolded. CI green on `main`. Supabase migrations applied to staging. Env validated at boot. The staging URL on Dokploy loads. A Trigger.dev test task triggered from staging completes. | done (signed off 2026-09-27) |
+| 2 | Intake + safety | On staging: a form submit returns a ticket ID in < 5 s. The raw ticket is stored. The redacted copy replaces a test SSN/email/card with `[REDACTED_*]`. A spam submit without Turnstile is rejected with a 4xx. A ticket with a sensitive topic in the body is flagged. | current |
 | 3 | AI triage + KB | ~30 synthetic KB articles ingested. The eval run on ≥ 50 labeled tickets meets the §2 targets. Langfuse shows only redacted text in every AI call. | pending |
 | 4 | Slack review | A low-confidence or sensitive ticket posts to `#ai-it-support-automation-agent`. Approve resumes the run. Reject creates no incident. No answer before the timeout escalates the ticket to the manual queue. An invalid Slack signature returns 401. | pending |
 | 5 | Helpdesk connector + ServiceNow | `HelpdeskConnector` has contract tests that any connector must pass. On `dev420188`: an auto ticket creates 1 incident with one of the 6 verified categories and the right caller. A duplicate submit creates no second incident. The update path adds a work note. `SHADOW_MODE=true` writes nothing. The health check reports a sleeping instance clearly. | pending |
@@ -447,6 +447,7 @@ at §6 phase sign-off of the final phase.
 - 2026-09-27 — H4 done: migration 0001 applied to the shared Supabase by the user in Supabase Studio (Postgres 17.6; pre-tested by Claude on a throwaway `supabase/postgres:17.6.1.177` container). User-run check returned the expected 5 rows: tables `tickets` + `ticket_events`, `vector` 0.8.2, RLS on both tables. Staging `/api/health` returns 200 at https://itsupport-staging.techiesandbox.com.
 - 2026-09-27 — Trigger.dev tasks deployed to `prod` (version `20260927.1`, SDK 4.6.4; task `healthcheck` registered). Test run `run_06ge4tiha938vga7lmof1dja01` completed with `ok: true`. Deploy ran from the Sandbox clone; its installed packages and build output were deleted afterwards (OPERATING-RULES line 47).
 - 2026-09-27 — end-to-end pipeline check passed on staging: `POST /api/health/pipeline` returned `202` with `run_06ge50t9jilm5dbjjmgson1t01`, which completed on Trigger.dev `prod` with `ok: true, requestedBy: "api"`. The first `ADMIN_HEALTH_TOKEN` failed with 401 because of a character the env file changes; rule from now on: generated app tokens use letters and digits only.
+- 2026-09-27 — Phase 1 signed off by Seun Salami. Evidence: tasks P1-T1…P1-T6 merged via PRs #5–#10 with green CI; migration 0001 applied (user check: 5 rows); staging `/api/health` 200 at https://itsupport-staging.techiesandbox.com; `/api/health/pipeline` → 202 → Trigger.dev run completed ok; wrong token → 401. Accepted gaps: CI failure criteria for lint/secret proven locally only (P1-T6), H5 branch protection skipped. `dev` is merged into `main` after this entry.
 
 ## 12. Constraints & Risks
 
