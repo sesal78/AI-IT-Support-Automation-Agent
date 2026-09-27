@@ -13,6 +13,8 @@ The old n8n build is kept for reference only in [`legacy/`](legacy/) (see [`lega
 | `apps/web`          | Next.js (App Router) app: form, admin, API routes    |
 | `services/pipeline` | Pipeline package (Trigger.dev tasks in later phases) |
 | `packages/shared`   | Shared TypeScript package                            |
+| `packages/db`       | Migration checks and DB integration tests            |
+| `supabase/`         | SQL migrations (`itsupport` schema)                  |
 | `docs/`             | Build spec and task specs                            |
 | `legacy/`           | Old n8n build, read-only                             |
 
@@ -30,5 +32,6 @@ pnpm format:check   # Prettier
 pnpm typecheck      # tsc --noEmit per package
 pnpm test           # Vitest with coverage (80% floor)
 pnpm build          # production build
+pnpm test:integration   # migrations vs a throwaway local supabase/postgres container (needs Docker)
 pnpm --filter web dev   # dev server on http://localhost:3001
 ```
