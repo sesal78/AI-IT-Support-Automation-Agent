@@ -12,7 +12,8 @@
     "format": "prettier --write .",
     "typecheck": "turbo run typecheck",
     "test": "vitest run",
-    "build": "turbo run build"
+    "build": "turbo run build",
+    "test:integration": "pnpm --filter @ai-it-support/db test:integration"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
