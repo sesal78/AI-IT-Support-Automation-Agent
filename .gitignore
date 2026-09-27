@@ -1,0 +1,13 @@
+.worktrees/
+.loop-evidence/
+node_modules/
+.turbo/
+coverage/
+dist/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+.env
+.env.*
+!.env.example

@@ -1,0 +1,10 @@
+packages:
+  - apps/*
+  - services/*
+  - packages/*
+
+# Native install scripts are not needed: Next.js ships prebuilt binaries and
+# the lint resolver works without its postinstall step.
+allowBuilds:
+  sharp: false
+  unrs-resolver: false

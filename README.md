@@ -1,74 +1,34 @@
 # AI IT Support Automation Agent
 
-Production-ready n8n workflow for autonomous IT support ticket processing with AI classification, human-in-the-loop approval, and ServiceNow integration.
+An AI service-desk agent for IT support tickets, rebuilt as a TypeScript monorepo.
 
-## Quick Start
+**The build spec is [`docs/PROJECT.md`](docs/PROJECT.md).** Read it first: scope, architecture, phases, quality gates and decisions all live there.
 
-1. **Import workflow**: `n8n import:workflow --input=workflows/01-main-it-support-agent.json`
-2. **Set environment variables**:
-   ```bash
-   SHADOW_MODE=true
-   SERVICENOW_INSTANCE=https://your-instance.service-now.com
-   ```
-3. **Configure credentials** in n8n UI for ServiceNow and OpenAI
-4. **Activate workflow** and send test payload
+The old n8n build is kept for reference only in [`legacy/`](legacy/) (see [`legacy/n8n/README.md`](legacy/n8n/README.md)).
 
-## Project Structure
+## Layout
 
-```
-AI IT Support Automation Agent/
-├── workflows/
-│   ├── 01-main-it-support-agent.json  # Main workflow (26 nodes)
-│   └── 02-error-handler.json          # Error handling workflow
-├── docs/
-│   ├── shadow-mode-instructions.md    # 48-hour validation guide
-│   └── node-documentation.md          # Node-by-node reference
-├── test-payloads/
-│   └── test-tickets.json              # 15 test scenarios
-└── README.md
-```
+| Path                | What                                                 |
+| ------------------- | ---------------------------------------------------- |
+| `apps/web`          | Next.js (App Router) app: form, admin, API routes    |
+| `services/pipeline` | Pipeline package (Trigger.dev tasks in later phases) |
+| `packages/shared`   | Shared TypeScript package                            |
+| `docs/`             | Build spec and task specs                            |
+| `legacy/`           | Old n8n build, read-only                             |
 
-## Features
+## Requirements
 
-- **AI Classification** - GPT-4o with few-shot prompting (85%+ accuracy)
-- **Human-in-the-Loop** - Slack approval for low-confidence decisions
-- **PII Redaction** - Automatic redaction of SSN, emails, credit cards, etc.
-- **Sensitive Category Bypass** - Legal/Executive/Termination tickets bypass AI
-- **Shadow Mode** - 48-hour validation before production
-- **Rate Limiting** - Batch processing prevents API overload
-- **ServiceNow Integration** - Create/update incidents automatically
+- Node.js LTS (version in `.nvmrc`)
+- pnpm (version in `package.json` `packageManager`)
 
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `SHADOW_MODE` | Yes | `true` for validation, `false` for production |
-| `SERVICENOW_INSTANCE` | Yes | ServiceNow base URL |
-| `RAG_ENDPOINT` | No | Knowledge base search API |
-| `SLACK_WEBHOOK_URL` | No | Human approval notifications |
-
-## API Endpoint
+## Commands
 
 ```bash
-POST /webhook/ticket-intake
-Content-Type: application/json
-
-{
-  "title": "Cannot login to email",
-  "description": "Forgot password, need urgent access",
-  "requester_email": "user@company.com",
-  "source": "slack"
-}
+pnpm install --frozen-lockfile
+pnpm lint           # ESLint via Turborepo
+pnpm format:check   # Prettier
+pnpm typecheck      # tsc --noEmit per package
+pnpm test           # Vitest with coverage (80% floor)
+pnpm build          # production build
+pnpm --filter web dev   # dev server on http://localhost:3001
 ```
-
-## Validation Targets
-
-Before disabling shadow mode, ensure:
-- Category accuracy > 85%
-- Priority accuracy > 80%
-- Average confidence > 0.75
-- Human override rate < 25%
-
-## License
-
-Internal use only.
