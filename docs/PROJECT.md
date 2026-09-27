@@ -445,6 +445,7 @@ at §6 phase sign-off of the final phase.
 - 2026-09-27 — H5 skipped: GitHub branch protection (and rulesets) need GitHub Pro for a private repo (API returned HTTP 403). Chose to skip over paying or making the repo public; compensating controls: CI runs all §9 gates on every PR, and the review loop merges only after an explicit human approval. Revisit if the repo goes public or the plan changes.
 - 2026-09-27 — H3: Dokploy project "AI IT Support Agent", environment `staging`, app `itsupport-web-staging` (builds `apps/web/Dockerfile` from branch `dev`), domain `itsupport-staging.techiesandbox.com` (http on port 3000, TLS at Cloudflare, same pattern as `supabase.techiesandbox.com`). Secrets entered by the user; non-secret settings by Claude.
 - 2026-09-27 — H4 done: migration 0001 applied to the shared Supabase by the user in Supabase Studio (Postgres 17.6; pre-tested by Claude on a throwaway `supabase/postgres:17.6.1.177` container). User-run check returned the expected 5 rows: tables `tickets` + `ticket_events`, `vector` 0.8.2, RLS on both tables. Staging `/api/health` returns 200 at https://itsupport-staging.techiesandbox.com.
+- 2026-09-27 — Trigger.dev tasks deployed to `prod` (version `20260927.1`, SDK 4.6.4; task `healthcheck` registered). Test run `run_06ge4tiha938vga7lmof1dja01` completed with `ok: true`. Deploy ran from the Sandbox clone; its installed packages and build output were deleted afterwards (OPERATING-RULES line 47).
 
 ## 12. Constraints & Risks
 
