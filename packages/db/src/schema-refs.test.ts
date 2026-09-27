@@ -19,7 +19,13 @@ describe("referencedSchemas", () => {
       "grant usage on schema auth to service_role;",
       "grant select on all tables in schema storage to anon;",
     ].join("\n");
-    expect(referencedSchemas(sql)).toEqual(["auth", "extensions", "itsupport", "old_stuff", "storage"]);
+    expect(referencedSchemas(sql)).toEqual([
+      "auth",
+      "extensions",
+      "itsupport",
+      "old_stuff",
+      "storage",
+    ]);
   });
 
   it("ignores comments, string literals and dollar-quote tags", () => {
@@ -35,7 +41,8 @@ describe("referencedSchemas", () => {
   });
 
   it("still inspects code inside dollar-quoted function bodies", () => {
-    const sql = "create function itsupport.f() returns void language plpgsql as $$ begin delete from auth.users; end $$;";
+    const sql =
+      "create function itsupport.f() returns void language plpgsql as $$ begin delete from auth.users; end $$;";
     expect(referencedSchemas(sql)).toEqual(["auth", "itsupport"]);
   });
 

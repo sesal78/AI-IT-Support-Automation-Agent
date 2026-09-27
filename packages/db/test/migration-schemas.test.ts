@@ -4,7 +4,10 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { referencedSchemas, unqualifiedCreates } from "../src/schema-refs.js";
 
-const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../../supabase/migrations");
+const migrationsDir = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../supabase/migrations",
+);
 
 // The shared Supabase stack hosts other apps: this project may only touch its
 // own schema and the shared extensions schema (docs/PROJECT.md §11).
@@ -17,7 +20,10 @@ const migrationFiles = readdirSync(migrationsDir)
 describe("supabase migrations", () => {
   it("has the 0001 foundation up and down files", () => {
     expect(migrationFiles).toEqual(
-      expect.arrayContaining(["0001_itsupport_foundation.sql", "0001_itsupport_foundation.down.sql"]),
+      expect.arrayContaining([
+        "0001_itsupport_foundation.sql",
+        "0001_itsupport_foundation.down.sql",
+      ]),
     );
   });
 
