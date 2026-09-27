@@ -390,6 +390,7 @@ the rollback once on staging so the first real execution isn't during a fire.
 | OpenCode Zen monthly spend cap | amount TBD | Phase 3 | No | Yes | open |
 | Env var name of the TypeSafe key in the Homebase key store | name only, from the user | Phase 1 | Yes | Yes | 2026-09-27: `TYPESAFE_API_KEY` (confirmed by the user) |
 | Staging environment | separate Dokploy app + Trigger.dev `staging` env / N/A with reason | Phase 1 | Yes | Yes | 2026-09-27: separate Dokploy staging app built from `dev` + Trigger.dev `staging` env |
+| Separate Trigger.dev environment for production | upgrade Trigger.dev plan (adds `staging`) / preview branches / keep sharing `prod` | before the first real production release | No | Yes | open — until decided, the Dokploy staging app uses the Trigger.dev `prod` environment |
 
 Rules: an agent that hits a pending decision mid-task STOPS and asks — it never
 picks an option itself. A decision that blocks release cannot still be pending
@@ -424,6 +425,23 @@ at §6 phase sign-off of the final phase.
 - 2026-09-27 — staging: a separate Dokploy app built from `dev`, plus the Trigger.dev `staging` environment
 - 2026-09-27 — pgvector is enabled in phase 1: migration 0001 (task P1-T3) enables `vector` in schema `extensions`. The user applies it to the shared Supabase (human step H4); agents never connect to the shared database.
 - 2026-09-27 — phase 1 tasks P1-T1…P1-T6 filed to ClickUp list 901616104690 (Build Loop) through Composio (account TopuesAI); spec in `docs/specs/2026-09-27-phase-1-foundation.md`
+- 2026-09-27 — Trigger.dev cloud project `proj_sefqgwbhymcyikibqjmo` ("AI IT Support Agent", org Topues) created in human step H2
+- 2026-09-27 — supersedes the staging line above for Trigger.dev only: the Trigger.dev free plan has only `dev` and `prod` (`staging` needs a paid plan), so the Dokploy staging app uses the `prod` environment; local runs use `dev`
+- 2026-09-27 — key store names are project-prefixed to avoid clashes between projects; apps still read `TRIGGER_SECRET_KEY`. Trigger.dev keys: `ITSUPPORT_TRIGGER_SECRET_KEY_DEV` (local) and `ITSUPPORT_TRIGGER_SECRET_KEY_PROD` (Dokploy staging app), each a named key with Trigger-only access
+- 2026-09-27 — key store naming rule: one flat `NAME=VALUE` store, so a key that belongs to ONE project/environment gets the `ITSUPPORT_` prefix (plus `_DEV`/`_PROD` where the service has per-environment keys); a key that belongs to a whole account or shared stack keeps an account/stack name and may be shared. The app always reads its standard env name; the mapping happens where the value is placed (Dokploy env per app, or the approved loader locally). Values never appear in the repo, CI, comments or chat.
+
+  | Key store name | App reads it as | Used by | Status |
+  |---|---|---|---|
+  | `ITSUPPORT_TRIGGER_SECRET_KEY_DEV` | `TRIGGER_SECRET_KEY` | local runs (Trigger.dev `dev`) | to create |
+  | `ITSUPPORT_TRIGGER_SECRET_KEY_PROD` | `TRIGGER_SECRET_KEY` | Dokploy staging app (Trigger.dev `prod`) | to create |
+  | `ITSUPPORT_ADMIN_HEALTH_TOKEN` | `ADMIN_HEALTH_TOKEN` | Dokploy staging app + local | to create (random value) |
+  | `SUPABASE_SERVICE_ROLE_KEY` | `SUPABASE_SERVICE_ROLE_KEY` | Dokploy staging app + local | exists (shared key of the self-hosted stack `supabase.techiesandbox.com`; user to confirm it holds the current stack key, not the retired cloud key) |
+  | `TYPESAFE_API_KEY` | `TYPESAFE_API_KEY` | pipeline (phase 3) | exists (account key, shared) |
+  | `ITSUPPORT_LLM_API_KEY` | `LLM_API_KEY` | pipeline (phase 3, OpenCode Zen) | future |
+  | `ITSUPPORT_SLACK_BOT_TOKEN`, `ITSUPPORT_SLACK_SIGNING_SECRET` | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` | web + pipeline (phase 4) | future — or reuse the shared `SLACK_BOT_TOKEN` / `SLACK_SIGNING_SECRET` if the same Slack app is used |
+  | `ITSUPPORT_SERVICENOW_PASSWORD` | `SERVICENOW_PASSWORD` | pipeline (phase 5–6, `dev420188`) | future |
+
+  Non-secret settings (`SUPABASE_URL`, `SUPABASE_DB_SCHEMA`, `SHADOW_MODE`, `APP_VERSION`, `LLM_BASE_URL`, `LLM_MODEL`, the ServiceNow instance URL and user name) are not stored in the key store.
 
 ## 12. Constraints & Risks
 
