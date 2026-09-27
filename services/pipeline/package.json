@@ -16,5 +16,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@trigger.dev/sdk": "4.6.4",
+    "zod": "^4.6.5"
   }
 }
