@@ -383,12 +383,12 @@ the rollback once on staging so the first real execution isn't during a fire.
 | ServiceNow role for editing `sys_user` on `dev420188` | smallest role that can update `locked_out` / `password_needs_reset` | Phase 6 | Yes (phase 6) | Yes | open — confirm on the instance, never grant `admin` |
 | Auto-fix allow-list beyond `unlock_account` and `force_password_reset` | e.g. add to group for access requests | after Phase 6 | No | No | open |
 | Supabase hosting | Supabase cloud / self-hosted on Dokploy | Phase 1 | Yes | Yes | 2026-09-27: existing self-hosted Supabase on Dokploy |
-| Isolation on the shared Supabase stack | dedicated Postgres schema (e.g. `itsupport`) / table prefix (e.g. `its_`) | Phase 1 | Yes | Yes | open — no change to the shared stack before this is decided and approved |
-| Is pgvector enabled on the shared stack? | already enabled / enable (needs approval) | Phase 1 | Yes (phase 3) | Yes | open — check read-only first |
+| Isolation on the shared Supabase stack | dedicated Postgres schema (e.g. `itsupport`) / table prefix (e.g. `its_`) | Phase 1 | Yes | Yes | 2026-09-27: dedicated schema `itsupport` |
+| Is pgvector enabled on the shared stack? | already enabled / enable (needs approval) | Phase 1 | Yes (phase 3) | Yes | open — 2026-09-27: pgvector 0.8.2 is installed in the `db` image (`vector.control` present). Whether it is enabled in the database is unverified: run `select extversion from pg_extension where extname = 'vector';` in Supabase Studio. Enabling it needs approval. |
 | Slack approval timeout | 2 h (old plan) / 24 h | Phase 4 | No | Yes | open |
 | Requester reply channel | email via Resend / none in v1 | Phase 5 | No | No | open |
 | OpenCode Zen monthly spend cap | amount TBD | Phase 3 | No | Yes | open |
-| Env var name of the TypeSafe key in the Homebase key store | name only, from the user | Phase 1 | Yes | Yes | open — the key exists in the store |
+| Env var name of the TypeSafe key in the Homebase key store | name only, from the user | Phase 1 | Yes | Yes | 2026-09-27: `TYPSAFE_API_KEY` (spelling as given by the user; confirm it matches the store) |
 | Staging environment | separate Dokploy app + Trigger.dev `staging` env / N/A with reason | Phase 1 | Yes | Yes | open |
 
 Rules: an agent that hits a pending decision mid-task STOPS and asks — it never
@@ -415,6 +415,8 @@ at §6 phase sign-off of the final phase.
 - 2026-09-27 — verified `dev420188` is reachable (ServiceNow MCP connected), with incident categories `database`, `inquiry`, `software`, `hardware`, `password_reset`, `network`
 - 2026-09-27 — database: the existing self-hosted Supabase on Dokploy, chosen over Supabase cloud; it is shared with other apps, so isolation is a pending decision
 - 2026-09-27 — spec approved by Seun Salami; this confirms the drafted proposals: the §2 success criteria, synthetic data only (§3), moving old top-level files to `legacy/` in phase 1, the read-only admin dashboard, triage p95 < 30 s, the auto-fix success criterion, and the default stack layers (Supabase Auth, Sentry, Langfuse, Cloudflare Turnstile, Resend inbound)
+- 2026-09-27 — chose a dedicated Postgres schema `itsupport` over a table prefix, to isolate this project on the shared Supabase stack
+- 2026-09-27 — TypeSafe key env var name: `TYPSAFE_API_KEY` (as given; value stays in the Homebase key store)
 - 2026-09-27 — dependency installs and builds run in a working copy under `D:/Homebase/Sandbox`, deleted after each test run, per OPERATING-RULES lines 46–47
 
 ## 12. Constraints & Risks
