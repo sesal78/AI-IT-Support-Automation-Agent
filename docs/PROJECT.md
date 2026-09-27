@@ -435,7 +435,7 @@ at §6 phase sign-off of the final phase.
   | `ITSUPPORT_TRIGGER_SECRET_KEY_DEV` | `TRIGGER_SECRET_KEY` | local runs (Trigger.dev `dev`) | to create |
   | `ITSUPPORT_TRIGGER_SECRET_KEY_PROD` | `TRIGGER_SECRET_KEY` | Dokploy staging app (Trigger.dev `prod`) | to create |
   | `ITSUPPORT_ADMIN_HEALTH_TOKEN` | `ADMIN_HEALTH_TOKEN` | Dokploy staging app + local | to create (random value) |
-  | `SUPABASE_TECHIESANDBOX_SERVICE_ROLE_KEY` | `SUPABASE_SERVICE_ROLE_KEY` | Dokploy staging app + local | to add (shared stack key) |
+  | `SUPABASE_SERVICE_ROLE_KEY` | `SUPABASE_SERVICE_ROLE_KEY` | Dokploy staging app + local | exists (shared key of the self-hosted stack `supabase.techiesandbox.com`; user to confirm it holds the current stack key, not the retired cloud key) |
   | `TYPESAFE_API_KEY` | `TYPESAFE_API_KEY` | pipeline (phase 3) | exists (account key, shared) |
   | `ITSUPPORT_LLM_API_KEY` | `LLM_API_KEY` | pipeline (phase 3, OpenCode Zen) | future |
   | `ITSUPPORT_SLACK_BOT_TOKEN`, `ITSUPPORT_SLACK_SIGNING_SECRET` | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` | web + pipeline (phase 4) | future — or reuse the shared `SLACK_BOT_TOKEN` / `SLACK_SIGNING_SECRET` if the same Slack app is used |
