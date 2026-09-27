@@ -23,6 +23,18 @@ The old n8n build is kept for reference only in [`legacy/`](legacy/) (see [`lega
 - Node.js LTS (version in `.nvmrc`)
 - pnpm (version in `package.json` `packageManager`)
 
+## Docker
+
+`apps/web/Dockerfile` builds the web app as a Next.js standalone server (non-root `node` user, `HEALTHCHECK` on `/api/health`, port 3000). The build context is the repo root; `apps/web/Dockerfile.dockerignore` keeps it to tracked source.
+
+```bash
+docker build -f apps/web/Dockerfile -t itsupport-web .
+```
+
+The server validates env at boot (`src/instrumentation.ts`) and exits non-zero, naming the variable, if any is missing or invalid.
+
+Playwright needs Chromium once: `pnpm --filter web exec playwright install chromium`.
+
 ## Commands
 
 ```bash
@@ -33,6 +45,8 @@ pnpm typecheck      # tsc --noEmit per package
 pnpm test           # Vitest with coverage (80% floor)
 pnpm build          # production build
 pnpm test:integration   # migrations vs a throwaway local supabase/postgres container (needs Docker)
+pnpm test:e2e           # Playwright smoke test vs the production build on :3002 (run pnpm build first)
+pnpm test:e2e:docker    # builds apps/web/Dockerfile and checks the container (needs Docker)
 pnpm --filter web dev   # dev server on http://localhost:3001
 ```
 

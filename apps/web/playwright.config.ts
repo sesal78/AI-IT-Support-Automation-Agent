@@ -1,6 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// Smoke tests against the production (standalone) build. Run `pnpm build` first.
+// Smoke tests against the production build (`.next`). Run `pnpm build` first.
+// `next start` is used locally because standalone output from pnpm on Windows
+// contains file-type symlinks to directories that Node cannot resolve; the
+// standalone server itself is covered in Linux by `pnpm test:e2e:docker`.
 const port = 3002;
 const baseURL = `http://127.0.0.1:${port}`;
 
@@ -13,14 +16,12 @@ export default defineConfig({
   use: { baseURL },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
-    command: "node scripts/serve-standalone.mjs",
+    command: `next start --port ${port} --hostname 127.0.0.1`,
     url: `${baseURL}/api/health`,
     reuseExistingServer: false,
     timeout: 60_000,
     // Obvious fakes: the smoke test never talks to real services.
     env: {
-      PORT: String(port),
-      HOSTNAME: "127.0.0.1",
       SUPABASE_URL: "https://fake-e2e.supabase.invalid",
       SUPABASE_SERVICE_ROLE_KEY: "fake-e2e-service-role-key",
       TRIGGER_SECRET_KEY: "fake-e2e-trigger-secret",

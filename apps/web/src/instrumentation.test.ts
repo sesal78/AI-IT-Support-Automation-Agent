@@ -17,32 +17,42 @@ function stubAll(overrides: Record<string, string | undefined> = {}) {
 }
 
 describe("instrumentation register()", () => {
+  let exit: ReturnType<typeof vi.spyOn>;
+  let logError: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     vi.resetModules();
     vi.stubEnv("NEXT_PHASE", undefined);
+    exit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    logError = vi.spyOn(console, "error").mockImplementation(() => {});
   });
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.restoreAllMocks();
   });
 
-  it("validates env at server boot and names SUPABASE_URL when it is unset", async () => {
+  it("exits non-zero at server boot and logs SUPABASE_URL when it is unset", async () => {
     vi.stubEnv("NEXT_RUNTIME", "nodejs");
     stubAll({ SUPABASE_URL: undefined });
     const { register } = await import("./instrumentation");
-    await expect(register()).rejects.toThrow(/SUPABASE_URL/);
+    await register();
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(String(logError.mock.calls[0]?.[0])).toMatch(/SUPABASE_URL/);
   });
 
-  it("resolves when all variables are set", async () => {
+  it("does not exit when all variables are set", async () => {
     vi.stubEnv("NEXT_RUNTIME", "nodejs");
     stubAll();
     const { register } = await import("./instrumentation");
-    await expect(register()).resolves.toBeUndefined();
+    await register();
+    expect(exit).not.toHaveBeenCalled();
   });
 
   it("does not load the server env module in the edge runtime", async () => {
     vi.stubEnv("NEXT_RUNTIME", "edge");
     stubAll({ SUPABASE_URL: undefined });
     const { register } = await import("./instrumentation");
-    await expect(register()).resolves.toBeUndefined();
+    await register();
+    expect(exit).not.toHaveBeenCalled();
   });
 });

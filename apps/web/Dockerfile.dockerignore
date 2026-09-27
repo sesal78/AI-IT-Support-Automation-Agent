@@ -1,0 +1,18 @@
+# Per-Dockerfile ignore file (BuildKit uses it for `-f apps/web/Dockerfile`).
+# Paths are relative to the build context, which is the repo root.
+**/node_modules
+**/.next
+**/.turbo
+**/coverage
+**/dist
+**/*.tsbuildinfo
+**/next-env.d.ts
+**/test-results
+**/playwright-report
+.worktrees
+.loop-evidence
+.git
+legacy
+**/.env
+**/.env.*
+!.env.example

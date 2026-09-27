@@ -11,3 +11,5 @@ coverage/
 .turbo/
 .worktrees/
 .loop-evidence/
+test-results/
+playwright-report/
