@@ -1,0 +1,23 @@
+{
+  "id": "WVbA0fr4CaOgzig8",
+  "name": "AI IT Support - Error Handler",
+  "versionId": "4dd62dac-0b1d-43e4-af27-4b620ea4f12b",
+  "settings": {"executionOrder": "v1", "saveManualExecutions": true, "callerPolicy": "workflowsFromSameOwner", "availableInMCP": true},
+  "nodes": [
+    {"parameters": {}, "id": "error-trigger", "name": "Error Trigger", "type": "n8n-nodes-base.errorTrigger", "position": [144, 304], "typeVersion": 1},
+    {"parameters": {"mode": "runOnceForEachItem", "jsCode": "const error = $json;\nconst errorDetails = {\n  error_id: `ERR-${Date.now()}`,\n  timestamp: new Date().toISOString(),\n  workflow: { id: error.workflow?.id, name: error.workflow?.name },\n  execution: { id: error.execution?.id, url: error.execution?.url },\n  node: { name: error.node?.name, type: error.node?.type },\n  error: { message: error.message || 'Unknown error', stack: error.stack }\n};\n// Classify error type\nconst msg = (error.message || '').toLowerCase();\nlet severity = 'medium';\nlet action = 'log_and_alert';\nif (msg.includes('rate limit')) { severity = 'low'; action = 'queued_for_retry'; }\nelse if (msg.includes('timeout')) { severity = 'medium'; action = 'retry_once'; }\nelse if (msg.includes('authentication') || msg.includes('auth')) { severity = 'critical'; action = 'alert_immediately'; }\nelse if ((error.node?.type || '').includes('servicenow')) { severity = 'high'; action = 'queue_for_manual'; }\nreturn {json: {...errorDetails, severity, action}};"}, "id": "parse-error", "name": "Parse Error Details", "type": "n8n-nodes-base.code", "position": [320, 304], "typeVersion": 2},
+    {"parameters": {"mode": "runOnceForEachItem", "jsCode": "const errorLog = {...$json, logged_at: new Date().toISOString()};\nconsole.log('ERROR_LOG:', JSON.stringify(errorLog));\nreturn {json: errorLog};"}, "id": "log-error", "name": "Log Error to Database", "type": "n8n-nodes-base.code", "position": [656, 304], "typeVersion": 2},
+    {"parameters": {"conditions": {"options": {"version": 2, "leftValue": "", "caseSensitive": true, "typeValidation": "strict"}, "combinator": "or", "conditions": [{"operator": {"type": "string", "operation": "equals"}, "leftValue": "={{ $json.severity }}", "rightValue": "critical", "id": "condition-1766355244585-e5h9sktsk"}]}, "options": {}}, "id": "alert-check", "name": "Check Alert Required", "type": "n8n-nodes-base.if", "position": [864, 304], "typeVersion": 2.2},
+    {"parameters": {"select": "channel", "channelId": {"__rl": true, "mode": "id", "value": "={{ $env.SLACK_ALERT_CHANNEL || 'it-support-alerts' }}"}, "text": "=:rotating_light: *CRITICAL ERROR*\n\n*Error ID:* {{ $json.error_id }}\n*Workflow:* {{ $json.workflow.name }}\n*Node:* {{ $json.node.name }}\n*Severity:* {{ $json.severity }}\n\n*Message:* {{ $json.error.message }}\n\n*Timestamp:* {{ $json.timestamp }}", "otherOptions": {}}, "id": "send-alert", "name": "Send Slack Alert", "type": "n8n-nodes-base.slack", "position": [1072, 144], "typeVersion": 2.4, "webhookId": "e38adee8-10cc-4971-b691-49a6bdf9332e", "credentials": {"slackApi": {"id": "slack-credentials", "name": "Slack API"}}},
+    {"parameters": {}, "id": "end-node", "name": "End", "type": "n8n-nodes-base.noOp", "position": [1264, 304], "typeVersion": 1},
+    {"parameters": {"content": "## Error Capture & Classification\n\n- **Error Trigger** catches all workflow errors\n- **Parse Error Details** extracts error info, classifies severity\n- Severity levels: critical, high, medium, low", "height": 368, "width": 480, "color": 6}, "id": "sticky-error-trigger", "name": "Error Capture", "type": "n8n-nodes-base.stickyNote", "typeVersion": 1, "position": [112, 64]},
+    {"parameters": {"content": "## Logging & Alerting\n\n- **Log Error** persists to database/console for audit\n- **Alert Check** routes critical errors to immediate notification\n- **Slack Alert** sends real-time notification for critical issues", "height": 368, "width": 616, "color": 7}, "id": "sticky-error-logging", "name": "Logging & Alerting", "type": "n8n-nodes-base.stickyNote", "typeVersion": 1, "position": [608, 80]}
+  ],
+  "connections": {
+    "Error Trigger": {"main": [[{"node": "Parse Error Details", "type": "main", "index": 0}]]},
+    "Parse Error Details": {"main": [[{"node": "Log Error to Database", "type": "main", "index": 0}]]},
+    "Log Error to Database": {"main": [[{"node": "Check Alert Required", "type": "main", "index": 0}]]},
+    "Check Alert Required": {"main": [[{"node": "Send Slack Alert", "type": "main", "index": 0}], [{"node": "End", "type": "main", "index": 0}]]},
+    "Send Slack Alert": {"main": [[{"node": "End", "type": "main", "index": 0}]]}
+  }
+}
