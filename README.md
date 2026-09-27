@@ -56,5 +56,5 @@ pnpm --filter web dev   # dev server on http://localhost:3001
 `healthcheck` Trigger.dev task and returns `202 { runId }` (`401` on a missing or wrong token,
 `502 { error: "pipeline_unavailable" }` if Trigger.dev cannot be reached).
 
-`services/pipeline/trigger.config.ts` holds a placeholder project ref (`proj_placeholder_h2`).
-Replace it with the real ref once the Trigger.dev project exists (human step H2).
+`services/pipeline/trigger.config.ts` points at the Trigger.dev cloud project
+`proj_sefqgwbhymcyikibqjmo` ("AI IT Support Agent", org Topues).

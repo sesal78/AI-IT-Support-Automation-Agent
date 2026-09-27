@@ -1,8 +1,8 @@
 import { defineConfig } from "@trigger.dev/sdk";
 
-// PLACEHOLDER project ref. Human step H2 creates the Trigger.dev project
-// (dev + staging + prod envs); replace this with its real ref then.
-const PROJECT_REF = "proj_placeholder_h2";
+// Trigger.dev cloud project "AI IT Support Agent" (org Topues), created in
+// human step H2 on 2026-09-27. The ref is not a secret.
+const PROJECT_REF = "proj_sefqgwbhymcyikibqjmo";
 
 export default defineConfig({
   project: PROJECT_REF,
