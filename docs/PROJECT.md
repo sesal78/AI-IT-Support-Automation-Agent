@@ -389,7 +389,7 @@ the rollback once on staging so the first real execution isn't during a fire.
 | Requester reply channel | email via Resend / none in v1 | Phase 5 | No | No | open |
 | OpenCode Zen monthly spend cap | amount TBD | Phase 3 | No | Yes | open |
 | Env var name of the TypeSafe key in the Homebase key store | name only, from the user | Phase 1 | Yes | Yes | 2026-09-27: `TYPESAFE_API_KEY` (confirmed by the user) |
-| Staging environment | separate Dokploy app + Trigger.dev `staging` env / N/A with reason | Phase 1 | Yes | Yes | open |
+| Staging environment | separate Dokploy app + Trigger.dev `staging` env / N/A with reason | Phase 1 | Yes | Yes | 2026-09-27: separate Dokploy staging app built from `dev` + Trigger.dev `staging` env |
 
 Rules: an agent that hits a pending decision mid-task STOPS and asks — it never
 picks an option itself. A decision that blocks release cannot still be pending
@@ -420,6 +420,10 @@ at §6 phase sign-off of the final phase.
 - 2026-09-27 — supersedes the line above: TypeSafe key env var name is `TYPESAFE_API_KEY` (confirmed by the user)
 - 2026-09-27 — pgvector is NOT enabled on the shared Supabase database (query returned no rows); enabling it is a phase 1 task that needs explicit approval
 - 2026-09-27 — dependency installs and builds run in a working copy under `D:/Homebase/Sandbox`, deleted after each test run, per OPERATING-RULES lines 46–47
+- 2026-09-27 — supersedes the line above for the build loop: the loop works long-term in the clone `D:/Homebase/Sandbox/ai-it-support-agent` (branch `dev`). The user chose this knowing OPERATING-RULES line 47 says Sandbox is for short tests only and may be deleted at any time. GitHub stays the source of truth.
+- 2026-09-27 — staging: a separate Dokploy app built from `dev`, plus the Trigger.dev `staging` environment
+- 2026-09-27 — pgvector is enabled in phase 1: migration 0001 (task P1-T3) enables `vector` in schema `extensions`. The user applies it to the shared Supabase (human step H4); agents never connect to the shared database.
+- 2026-09-27 — phase 1 tasks P1-T1…P1-T6 filed to ClickUp list 901616104690 (Build Loop) through Composio (account TopuesAI); spec in `docs/specs/2026-09-27-phase-1-foundation.md`
 
 ## 12. Constraints & Risks
 
