@@ -1,0 +1,15 @@
+# Read-only reference material: never reformat.
+legacy/
+# Human-authored specs: formatting is owned by their authors.
+docs/
+# Generated or local-only.
+pnpm-lock.yaml
+node_modules/
+dist/
+coverage/
+.next/
+.turbo/
+.worktrees/
+.loop-evidence/
+test-results/
+playwright-report/

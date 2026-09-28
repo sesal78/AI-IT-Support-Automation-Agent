@@ -1,74 +1,60 @@
 # AI IT Support Automation Agent
 
-Production-ready n8n workflow for autonomous IT support ticket processing with AI classification, human-in-the-loop approval, and ServiceNow integration.
+An AI service-desk agent for IT support tickets, rebuilt as a TypeScript monorepo.
 
-## Quick Start
+**The build spec is [`docs/PROJECT.md`](docs/PROJECT.md).** Read it first: scope, architecture, phases, quality gates and decisions all live there.
 
-1. **Import workflow**: `n8n import:workflow --input=workflows/01-main-it-support-agent.json`
-2. **Set environment variables**:
-   ```bash
-   SHADOW_MODE=true
-   SERVICENOW_INSTANCE=https://your-instance.service-now.com
-   ```
-3. **Configure credentials** in n8n UI for ServiceNow and OpenAI
-4. **Activate workflow** and send test payload
+The old n8n build is kept for reference only in [`legacy/`](legacy/) (see [`legacy/n8n/README.md`](legacy/n8n/README.md)).
 
-## Project Structure
+## Layout
 
-```
-AI IT Support Automation Agent/
-├── workflows/
-│   ├── 01-main-it-support-agent.json  # Main workflow (26 nodes)
-│   └── 02-error-handler.json          # Error handling workflow
-├── docs/
-│   ├── shadow-mode-instructions.md    # 48-hour validation guide
-│   └── node-documentation.md          # Node-by-node reference
-├── test-payloads/
-│   └── test-tickets.json              # 15 test scenarios
-└── README.md
-```
+| Path                | What                                                       |
+| ------------------- | ---------------------------------------------------------- |
+| `apps/web`          | Next.js (App Router) app: form, admin, API routes          |
+| `services/pipeline` | Trigger.dev tasks (`src/trigger/`) and `trigger.config.ts` |
+| `packages/shared`   | Shared TypeScript package                                  |
+| `packages/db`       | Migration checks and DB integration tests                  |
+| `supabase/`         | SQL migrations (`itsupport` schema)                        |
+| `docs/`             | Build spec and task specs                                  |
+| `legacy/`           | Old n8n build, read-only                                   |
 
-## Features
+## Requirements
 
-- **AI Classification** - GPT-4o with few-shot prompting (85%+ accuracy)
-- **Human-in-the-Loop** - Slack approval for low-confidence decisions
-- **PII Redaction** - Automatic redaction of SSN, emails, credit cards, etc.
-- **Sensitive Category Bypass** - Legal/Executive/Termination tickets bypass AI
-- **Shadow Mode** - 48-hour validation before production
-- **Rate Limiting** - Batch processing prevents API overload
-- **ServiceNow Integration** - Create/update incidents automatically
+- Node.js LTS (version in `.nvmrc`)
+- pnpm (version in `package.json` `packageManager`)
 
-## Environment Variables
+## Docker
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `SHADOW_MODE` | Yes | `true` for validation, `false` for production |
-| `SERVICENOW_INSTANCE` | Yes | ServiceNow base URL |
-| `RAG_ENDPOINT` | No | Knowledge base search API |
-| `SLACK_WEBHOOK_URL` | No | Human approval notifications |
-
-## API Endpoint
+`apps/web/Dockerfile` builds the web app as a Next.js standalone server (non-root `node` user, `HEALTHCHECK` on `/api/health`, port 3000). The build context is the repo root; `apps/web/Dockerfile.dockerignore` keeps it to tracked source.
 
 ```bash
-POST /webhook/ticket-intake
-Content-Type: application/json
-
-{
-  "title": "Cannot login to email",
-  "description": "Forgot password, need urgent access",
-  "requester_email": "user@company.com",
-  "source": "slack"
-}
+docker build -f apps/web/Dockerfile -t itsupport-web .
 ```
 
-## Validation Targets
+The server validates env at boot (`src/instrumentation.ts`) and exits non-zero, naming the variable, if any is missing or invalid.
 
-Before disabling shadow mode, ensure:
-- Category accuracy > 85%
-- Priority accuracy > 80%
-- Average confidence > 0.75
-- Human override rate < 25%
+Playwright needs Chromium once: `pnpm --filter web exec playwright install chromium`.
 
-## License
+## Commands
 
-Internal use only.
+```bash
+pnpm install --frozen-lockfile
+pnpm lint           # ESLint via Turborepo
+pnpm format:check   # Prettier
+pnpm typecheck      # tsc --noEmit per package
+pnpm test           # Vitest with coverage (80% floor)
+pnpm build          # production build
+pnpm test:integration   # migrations vs a throwaway local supabase/postgres container (needs Docker)
+pnpm test:e2e           # Playwright smoke test vs the production build on :3002 (run pnpm build first)
+pnpm test:e2e:docker    # builds apps/web/Dockerfile and checks the container (needs Docker)
+pnpm --filter web dev   # dev server on http://localhost:3001
+```
+
+## Pipeline health check
+
+`POST /api/health/pipeline` with header `x-admin-token: <ADMIN_HEALTH_TOKEN>` triggers the
+`healthcheck` Trigger.dev task and returns `202 { runId }` (`401` on a missing or wrong token,
+`502 { error: "pipeline_unavailable" }` if Trigger.dev cannot be reached).
+
+`services/pipeline/trigger.config.ts` points at the Trigger.dev cloud project
+`proj_sefqgwbhymcyikibqjmo` ("AI IT Support Agent", org Topues).

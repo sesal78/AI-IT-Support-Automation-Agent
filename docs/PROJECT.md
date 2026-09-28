@@ -159,8 +159,8 @@ flowchart LR
 | # | Phase | Done when | Status |
 |---|---|---|---|
 | 0 | Freeze legacy | Live n8n workflows exported to `legacy/n8n/`, deactivated, PR #1 merged | done (2026-09-27) |
-| 1 | Foundation | Monorepo scaffolded. CI green on `main`. Supabase migrations applied to staging. Env validated at boot. The staging URL on Dokploy loads. A Trigger.dev test task triggered from staging completes. | current |
-| 2 | Intake + safety | On staging: a form submit returns a ticket ID in < 5 s. The raw ticket is stored. The redacted copy replaces a test SSN/email/card with `[REDACTED_*]`. A spam submit without Turnstile is rejected with a 4xx. A ticket with a sensitive topic in the body is flagged. | pending |
+| 1 | Foundation | Monorepo scaffolded. CI green on `main`. Supabase migrations applied to staging. Env validated at boot. The staging URL on Dokploy loads. A Trigger.dev test task triggered from staging completes. | done (signed off 2026-09-27) |
+| 2 | Intake + safety | On staging: a form submit returns a ticket ID in < 5 s. The raw ticket is stored. The redacted copy replaces a test SSN/email/card with `[REDACTED_*]`. A spam submit without Turnstile is rejected with a 4xx. A ticket with a sensitive topic in the body is flagged. | current |
 | 3 | AI triage + KB | ~30 synthetic KB articles ingested. The eval run on ≥ 50 labeled tickets meets the §2 targets. Langfuse shows only redacted text in every AI call. | pending |
 | 4 | Slack review | A low-confidence or sensitive ticket posts to `#ai-it-support-automation-agent`. Approve resumes the run. Reject creates no incident. No answer before the timeout escalates the ticket to the manual queue. An invalid Slack signature returns 401. | pending |
 | 5 | Helpdesk connector + ServiceNow | `HelpdeskConnector` has contract tests that any connector must pass. On `dev420188`: an auto ticket creates 1 incident with one of the 6 verified categories and the right caller. A duplicate submit creates no second incident. The update path adds a work note. `SHADOW_MODE=true` writes nothing. The health check reports a sleeping instance clearly. | pending |
@@ -389,7 +389,8 @@ the rollback once on staging so the first real execution isn't during a fire.
 | Requester reply channel | email via Resend / none in v1 | Phase 5 | No | No | open |
 | OpenCode Zen monthly spend cap | amount TBD | Phase 3 | No | Yes | open |
 | Env var name of the TypeSafe key in the Homebase key store | name only, from the user | Phase 1 | Yes | Yes | 2026-09-27: `TYPESAFE_API_KEY` (confirmed by the user) |
-| Staging environment | separate Dokploy app + Trigger.dev `staging` env / N/A with reason | Phase 1 | Yes | Yes | open |
+| Staging environment | separate Dokploy app + Trigger.dev `staging` env / N/A with reason | Phase 1 | Yes | Yes | 2026-09-27: separate Dokploy staging app built from `dev` + Trigger.dev `staging` env |
+| Separate Trigger.dev environment for production | upgrade Trigger.dev plan (adds `staging`) / preview branches / keep sharing `prod` | before the first real production release | No | Yes | open — until decided, the Dokploy staging app uses the Trigger.dev `prod` environment |
 
 Rules: an agent that hits a pending decision mid-task STOPS and asks — it never
 picks an option itself. A decision that blocks release cannot still be pending
@@ -420,6 +421,33 @@ at §6 phase sign-off of the final phase.
 - 2026-09-27 — supersedes the line above: TypeSafe key env var name is `TYPESAFE_API_KEY` (confirmed by the user)
 - 2026-09-27 — pgvector is NOT enabled on the shared Supabase database (query returned no rows); enabling it is a phase 1 task that needs explicit approval
 - 2026-09-27 — dependency installs and builds run in a working copy under `D:/Homebase/Sandbox`, deleted after each test run, per OPERATING-RULES lines 46–47
+- 2026-09-27 — supersedes the line above for the build loop: the loop works long-term in the clone `D:/Homebase/Sandbox/ai-it-support-agent` (branch `dev`). The user chose this knowing OPERATING-RULES line 47 says Sandbox is for short tests only and may be deleted at any time. GitHub stays the source of truth.
+- 2026-09-27 — staging: a separate Dokploy app built from `dev`, plus the Trigger.dev `staging` environment
+- 2026-09-27 — pgvector is enabled in phase 1: migration 0001 (task P1-T3) enables `vector` in schema `extensions`. The user applies it to the shared Supabase (human step H4); agents never connect to the shared database.
+- 2026-09-27 — phase 1 tasks P1-T1…P1-T6 filed to ClickUp list 901616104690 (Build Loop) through Composio (account TopuesAI); spec in `docs/specs/2026-09-27-phase-1-foundation.md`
+- 2026-09-27 — Trigger.dev cloud project `proj_sefqgwbhymcyikibqjmo` ("AI IT Support Agent", org Topues) created in human step H2
+- 2026-09-27 — supersedes the staging line above for Trigger.dev only: the Trigger.dev free plan has only `dev` and `prod` (`staging` needs a paid plan), so the Dokploy staging app uses the `prod` environment; local runs use `dev`
+- 2026-09-27 — key store names are project-prefixed to avoid clashes between projects; apps still read `TRIGGER_SECRET_KEY`. Trigger.dev keys: `ITSUPPORT_TRIGGER_SECRET_KEY_DEV` (local) and `ITSUPPORT_TRIGGER_SECRET_KEY_PROD` (Dokploy staging app), each a named key with Trigger-only access
+- 2026-09-27 — key store naming rule: one flat `NAME=VALUE` store, so a key that belongs to ONE project/environment gets the `ITSUPPORT_` prefix (plus `_DEV`/`_PROD` where the service has per-environment keys); a key that belongs to a whole account or shared stack keeps an account/stack name and may be shared. The app always reads its standard env name; the mapping happens where the value is placed (Dokploy env per app, or the approved loader locally). Values never appear in the repo, CI, comments or chat.
+
+  | Key store name | App reads it as | Used by | Status |
+  |---|---|---|---|
+  | `ITSUPPORT_TRIGGER_SECRET_KEY_DEV` | `TRIGGER_SECRET_KEY` | local runs (Trigger.dev `dev`) | to create |
+  | `ITSUPPORT_TRIGGER_SECRET_KEY_PROD` | `TRIGGER_SECRET_KEY` | Dokploy staging app (Trigger.dev `prod`) | to create |
+  | `ITSUPPORT_ADMIN_HEALTH_TOKEN` | `ADMIN_HEALTH_TOKEN` | Dokploy staging app + local | to create (random value) |
+  | `SUPABASE_SERVICE_ROLE_KEY` | `SUPABASE_SERVICE_ROLE_KEY` | Dokploy staging app + local | exists (shared key of the self-hosted stack `supabase.techiesandbox.com`; user to confirm it holds the current stack key, not the retired cloud key) |
+  | `TYPESAFE_API_KEY` | `TYPESAFE_API_KEY` | pipeline (phase 3) | exists (account key, shared) |
+  | `ITSUPPORT_LLM_API_KEY` | `LLM_API_KEY` | pipeline (phase 3, OpenCode Zen) | future |
+  | `ITSUPPORT_SLACK_BOT_TOKEN`, `ITSUPPORT_SLACK_SIGNING_SECRET` | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` | web + pipeline (phase 4) | future — or reuse the shared `SLACK_BOT_TOKEN` / `SLACK_SIGNING_SECRET` if the same Slack app is used |
+  | `ITSUPPORT_SERVICENOW_PASSWORD` | `SERVICENOW_PASSWORD` | pipeline (phase 5–6, `dev420188`) | future |
+
+  Non-secret settings (`SUPABASE_URL`, `SUPABASE_DB_SCHEMA`, `SHADOW_MODE`, `APP_VERSION`, `LLM_BASE_URL`, `LLM_MODEL`, the ServiceNow instance URL and user name) are not stored in the key store.
+- 2026-09-27 — H5 skipped: GitHub branch protection (and rulesets) need GitHub Pro for a private repo (API returned HTTP 403). Chose to skip over paying or making the repo public; compensating controls: CI runs all §9 gates on every PR, and the review loop merges only after an explicit human approval. Revisit if the repo goes public or the plan changes.
+- 2026-09-27 — H3: Dokploy project "AI IT Support Agent", environment `staging`, app `itsupport-web-staging` (builds `apps/web/Dockerfile` from branch `dev`), domain `itsupport-staging.techiesandbox.com` (http on port 3000, TLS at Cloudflare, same pattern as `supabase.techiesandbox.com`). Secrets entered by the user; non-secret settings by Claude.
+- 2026-09-27 — H4 done: migration 0001 applied to the shared Supabase by the user in Supabase Studio (Postgres 17.6; pre-tested by Claude on a throwaway `supabase/postgres:17.6.1.177` container). User-run check returned the expected 5 rows: tables `tickets` + `ticket_events`, `vector` 0.8.2, RLS on both tables. Staging `/api/health` returns 200 at https://itsupport-staging.techiesandbox.com.
+- 2026-09-27 — Trigger.dev tasks deployed to `prod` (version `20260927.1`, SDK 4.6.4; task `healthcheck` registered). Test run `run_06ge4tiha938vga7lmof1dja01` completed with `ok: true`. Deploy ran from the Sandbox clone; its installed packages and build output were deleted afterwards (OPERATING-RULES line 47).
+- 2026-09-27 — end-to-end pipeline check passed on staging: `POST /api/health/pipeline` returned `202` with `run_06ge50t9jilm5dbjjmgson1t01`, which completed on Trigger.dev `prod` with `ok: true, requestedBy: "api"`. The first `ADMIN_HEALTH_TOKEN` failed with 401 because of a character the env file changes; rule from now on: generated app tokens use letters and digits only.
+- 2026-09-27 — Phase 1 signed off by Seun Salami. Evidence: tasks P1-T1…P1-T6 merged via PRs #5–#10 with green CI; migration 0001 applied (user check: 5 rows); staging `/api/health` 200 at https://itsupport-staging.techiesandbox.com; `/api/health/pipeline` → 202 → Trigger.dev run completed ok; wrong token → 401. Accepted gaps: CI failure criteria for lint/secret proven locally only (P1-T6), H5 branch protection skipped. `dev` is merged into `main` after this entry.
 
 ## 12. Constraints & Risks
 
