@@ -3,8 +3,8 @@ import { randomBytes } from "node:crypto";
 import pg from "pg";
 
 // Pinned test image. Must match the major version of the Dokploy `db`
-// container; the exact tag is confirmed by a human in phase 1 step H4.
-export const SUPABASE_POSTGRES_IMAGE = "supabase/postgres:15.14.1.177";
+// container, which runs Postgres 17 (confirmed in phase 1 step H4).
+export const SUPABASE_POSTGRES_IMAGE = "supabase/postgres:17.6.1.177";
 
 // Every container this harness creates carries this name prefix and label,
 // so it can be told apart from anything else running on the machine.
