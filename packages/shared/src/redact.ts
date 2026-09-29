@@ -1,8 +1,18 @@
 // PII / secret redaction. Pure: no I/O, no network, no stored state.
 //
 // Rules run in a fixed order; each one replaces its matches with
-// `[REDACTED_<TYPE>]` before the next rule runs. Placeholders contain no
-// digits, `@`, `:` or `=`, so a second pass matches nothing (idempotent).
+// `[REDACTED_<TYPE>]` before the next rule runs. The whole pipeline then
+// repeats until a pass changes nothing, so the result is a fixed point and a
+// second redact() call is a no-op (idempotent by construction). This loop
+// always terminates: every match contains a digit, `@`, `:` or `=`, and
+// placeholders contain none of them, so each changing pass strictly shrinks
+// the count of those characters.
+//
+// Boundaries: a space separates tokens, while `-` and `.` join digits into one
+// number. A rule therefore never starts or ends inside a word or a dash/dot
+// joined number, but it may sit right next to other digits across a space
+// (e.g. a card followed by its CVV). A candidate rejected by its checksum does
+// not consume text: scanning resumes one character later.
 // Every pattern is anchored with lookbehinds so a match can only start at the
 // beginning of a run, and all repetition is bounded or unambiguous, which
 // keeps matching linear on adversarial input.
@@ -19,6 +29,8 @@ interface Rule {
   pattern: RegExp;
   /** Extra check on a candidate match; a rejected match is left unchanged. */
   accept?: (match: string) => boolean;
+  /** Returns the accepted prefix of a candidate match ("" rejects it). */
+  fit?: (match: string) => string;
 }
 
 const digitsOf = (s: string): string => s.replace(/\D/g, "");
@@ -66,7 +78,7 @@ const RULES: Rule[] = [
     // groups, with one consistent space or dash separator.
     type: "CARD",
     pattern:
-      /(?<![\w+]|\d[ -])(?:\d{13,19}|\d{4}([ -])\d{4}\1\d{4}\1\d{1,4}|\d{4}([ -])\d{6}\2\d{4,5})(?!\w|[ -]\d)/g,
+      /(?<![\w+]|\d-)(?:\d{13,19}|\d{4}([ -])\d{4}\1\d{4}\1\d{1,4}|\d{4}([ -])\d{6}\2\d{4,5})(?!\w|-\d)/g,
     accept: luhnValid,
   },
   {
@@ -82,40 +94,78 @@ const RULES: Rule[] = [
     pattern: new RegExp(
       [
         // International: +CC, optional (area), then 2–5 digit groups.
-        "(?<![\\w+])\\+\\d{1,3}[ .-]?(?:\\(\\d{1,4}\\)[ .-]?)?\\d{1,4}(?:[ .-]?\\d{1,4}){1,4}(?!\\w|[ .-]\\d)",
+        "(?<![\\w+])\\+\\d{1,3}[ .-]?(?:\\(\\d{1,4}\\)[ .-]?)?\\d{1,4}(?:[ .-]?\\d{1,4}){1,4}(?!\\w|[.-]\\d)",
         // AU mobile 04xx xxx xxx, landline (0X) xxxx xxxx, 1300/1800 xxx xxx.
-        "(?<!\\w|\\d[ .-])(?:04\\d{2}[ -]?\\d{3}[ -]?\\d{3}|(?:\\(0[2378]\\) ?|0[2378][ -]?)\\d{4}[ -]?\\d{4}|1[38]00[ -]?\\d{3}[ -]?\\d{3})(?!\\w|[ .-]\\d)",
-        // US: optional 1-, then (xxx) xxx-xxxx or xxx-xxx-xxxx / xxx.xxx.xxxx.
-        "(?<!\\w|\\d[ .-])(?:1[ .-])?(?:\\(\\d{3}\\) ?|\\d{3}[.-])\\d{3}[.-]\\d{4}(?!\\w|[.-]\\d)",
+        "(?<!\\w|\\d[.-])(?:04\\d{2}[ -]?\\d{3}[ -]?\\d{3}|(?:\\(0[2378]\\) ?|0[2378][ -]?)\\d{4}[ -]?\\d{4}|1[38]00[ -]?\\d{3}[ -]?\\d{3})(?!\\w|[.-]\\d)",
+        // US: optional 1-, then (xxx) xxx-xxxx, xxx-xxx-xxxx / xxx.xxx.xxxx,
+        // or xxx xxx xxxx.
+        "(?<!\\w|\\d[.-])(?:1[ .-])?(?:(?:\\(\\d{3}\\) ?|\\d{3}[.-])\\d{3}[.-]|\\d{3} \\d{3} )\\d{4}(?!\\w|[.-]\\d)",
       ].join("|"),
       "g",
     ),
-    accept: (m) => {
-      const n = digitsOf(m).length;
-      return n >= 8 && n <= 15;
+    // A greedy match may run into neighbouring digit groups; drop trailing
+    // groups until it fits the 15-digit E.164 limit instead of rejecting it.
+    fit: (m) => {
+      let s = m;
+      while (digitsOf(s).length > 15) {
+        const cut = s.search(/[ .-]\d+$/);
+        if (cut < 0) return "";
+        s = s.slice(0, cut);
+      }
+      return digitsOf(s).length >= 8 ? s : "";
     },
   },
   {
     type: "AU_TFN",
-    pattern: /(?<!\w|\d[ -])\d{3}([ -]?)\d{3}\1\d{3}(?!\w|[ -]\d)/g,
+    pattern: /(?<!\w|\d-)\d{3}([ -]?)\d{3}\1\d{3}(?!\w|-\d)/g,
     accept: tfnValid,
   },
 ];
+
+/** Applies one rule; returns the new text and the number of replacements. */
+function applyRule(text: string, rule: Rule): { text: string; count: number } {
+  const { pattern } = rule;
+  pattern.lastIndex = 0;
+  let out = "";
+  let last = 0;
+  let count = 0;
+  let m: RegExpExecArray | null;
+  while ((m = pattern.exec(text)) !== null) {
+    const hit = rule.fit ? rule.fit(m[0]) : !rule.accept || rule.accept(m[0]) ? m[0] : "";
+    if (hit === "") {
+      // Rejected candidates consume nothing; retry from the next character.
+      pattern.lastIndex = m.index + 1;
+      continue;
+    }
+    out += text.slice(last, m.index) + `[REDACTED_${rule.type}]`;
+    last = m.index + hit.length;
+    pattern.lastIndex = last;
+    count++;
+  }
+  return { text: out + text.slice(last), count };
+}
 
 export function redact(text: string): RedactionResult {
   if (typeof text !== "string") {
     throw new TypeError(`redact() expects a string, got ${text === null ? "null" : typeof text}`);
   }
-  const log: RedactionResult["log"] = [];
+  const counts = new Map<RedactionType, number>();
   let out = text;
-  for (const rule of RULES) {
-    let count = 0;
-    out = out.replace(rule.pattern, (match: string) => {
-      if (rule.accept && !rule.accept(match)) return match;
-      count++;
-      return `[REDACTED_${rule.type}]`;
-    });
-    if (count > 0) log.push({ type: rule.type, count });
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const rule of RULES) {
+      const res = applyRule(out, rule);
+      if (res.count > 0) {
+        out = res.text;
+        changed = true;
+        counts.set(rule.type, (counts.get(rule.type) ?? 0) + res.count);
+      }
+    }
   }
+  const log = RULES.filter((r) => counts.has(r.type)).map((r) => ({
+    type: r.type as string,
+    count: counts.get(r.type)!,
+  }));
   return { text: out, log };
 }

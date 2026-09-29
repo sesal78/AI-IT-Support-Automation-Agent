@@ -28,6 +28,49 @@ const fixtures: string[] = [
   "First.Last+tag@mail.example.com wrote",
   "",
   "plain text with no personal data",
+  // Reviewer failure report (retry 1): cards next to other digits.
+  "card 4111 1111 1111 1111 12/28",
+  "4111 1111 1111 1111 123",
+  "cards 4111111111111111 5555555555554444",
+  "4111111111111111 10.0.0.1",
+  "4111 1111 1111 1111 123-45-6789",
+  "call 415 555 0132 today",
+];
+
+// Sensitive items for the pairwise property tests. Every one must be redacted
+// wherever it appears next to any other item.
+const sensitive: string[] = [
+  "jo@x.com",
+  "+61 412 345 678",
+  "0412 345 678",
+  "(02) 9876 5432",
+  "1800 123 456",
+  "(555) 555-0199",
+  "555-555-0123",
+  "1-800-555-0199",
+  "415 555 0132",
+  "123-45-6789",
+  "4111 1111 1111 1111",
+  "4111-1111-1111-1111",
+  "4111111111111111",
+  "5555555555554444",
+  "3782 822463 10005",
+  "192.0.2.10",
+  "10.0.0.1",
+  "123 456 782",
+  "123456782",
+  kv("password", ": ", "hunter2"),
+];
+
+// Non-sensitive neighbours that sit next to sensitive items in real tickets.
+const benign: string[] = [
+  "123",
+  "12/28",
+  "INC0012345",
+  "2026-09-28",
+  "1.2.3",
+  "4111 1111 1111 1112",
+  "123 456 789",
 ];
 
 describe("redact", () => {
@@ -117,6 +160,68 @@ describe("redact", () => {
     for (const input of fixtures) {
       const once = redact(input).text;
       expect(redact(once).text).toBe(once);
+    }
+  });
+
+  it("redacts cards followed by an expiry, a CVV or another card", () => {
+    expect(redact("card 4111 1111 1111 1111 12/28")).toEqual({
+      text: "card [REDACTED_CARD] 12/28",
+      log: [{ type: "CARD", count: 1 }],
+    });
+    expect(redact("4111 1111 1111 1111 123")).toEqual({
+      text: "[REDACTED_CARD] 123",
+      log: [{ type: "CARD", count: 1 }],
+    });
+    expect(redact("cards 4111111111111111 5555555555554444")).toEqual({
+      text: "cards [REDACTED_CARD] [REDACTED_CARD]",
+      log: [{ type: "CARD", count: 2 }],
+    });
+  });
+
+  it("redacts a card and a following IPv4 or SSN in a single pass", () => {
+    expect(redact("4111111111111111 10.0.0.1")).toEqual({
+      text: "[REDACTED_CARD] [REDACTED_IPV4]",
+      log: [
+        { type: "CARD", count: 1 },
+        { type: "IPV4", count: 1 },
+      ],
+    });
+    expect(redact("4111 1111 1111 1111 123-45-6789")).toEqual({
+      text: "[REDACTED_CARD] [REDACTED_SSN]",
+      log: [
+        { type: "CARD", count: 1 },
+        { type: "SSN", count: 1 },
+      ],
+    });
+  });
+
+  it("redacts a US phone number written with spaces", () => {
+    expect(redact("call 415 555 0132 today")).toEqual({
+      text: "call [REDACTED_PHONE] today",
+      log: [{ type: "PHONE", count: 1 }],
+    });
+  });
+
+  it("is idempotent over every space-separated pair of items", () => {
+    const all = [...sensitive, ...benign];
+    for (const a of all) {
+      for (const b of all) {
+        const input = `${a} ${b}`;
+        const once = redact(input).text;
+        expect(redact(once).text, input).toBe(once);
+      }
+    }
+  });
+
+  it("redacts both items of every space-separated sensitive pair", () => {
+    for (const a of sensitive) {
+      for (const b of [...sensitive, ...benign]) {
+        for (const input of [`${a} ${b}`, `${b} ${a}`]) {
+          const out = redact(input).text;
+          expect(out, input).not.toContain(a);
+          if (sensitive.includes(b)) expect(out, input).not.toContain(b);
+        }
+      }
     }
   });
 
