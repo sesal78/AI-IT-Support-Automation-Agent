@@ -21,5 +21,10 @@
   "devDependencies": {
     "@types/pg": "^8.23.1",
     "pg": "^8.23.0"
+  },
+  "dependencies": {
+    "@ai-it-support/shared": "workspace:*",
+    "@supabase/supabase-js": "2.117.2",
+    "zod": "^4.6.5"
   }
 }
