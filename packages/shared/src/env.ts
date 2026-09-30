@@ -14,6 +14,13 @@ export const phase1EnvShape = {
   APP_VERSION: z.string().min(1),
 };
 
+/** Phase 2 intake variables (apps/web only): Cloudflare Turnstile keys. */
+export const intakeEnvShape = {
+  TURNSTILE_SECRET_KEY: z.string().min(1),
+  // Public site key, read at run time by the form's server component (P2-T5).
+  TURNSTILE_SITE_KEY: z.string().min(1),
+};
+
 type PathSegment = PropertyKey | { key: PropertyKey };
 
 export interface EnvIssue {
