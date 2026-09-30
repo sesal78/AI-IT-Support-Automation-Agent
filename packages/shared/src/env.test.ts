@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { formatEnvIssues, intakeEnvShape, parseEnv, phase1EnvShape } from "./env.js";
+import {
+  formatEnvIssues,
+  intakeEnvShape,
+  parseEnv,
+  phase1EnvShape,
+  sensitiveCheckEnvShape,
+} from "./env.js";
 
 const valid = {
   SUPABASE_URL: "https://example.supabase.co",
@@ -70,5 +76,32 @@ describe("formatEnvIssues", () => {
     ]);
     expect(message).toContain("APP_VERSION: Required");
     expect(message).toContain("(root): Bad input");
+  });
+});
+
+describe("sensitiveCheckEnvShape", () => {
+  const base = { TYPESAFE_API_KEY: "fake-typesafe-key" };
+
+  it("defaults SENSITIVE_THRESHOLD to 0.5 when unset or empty", () => {
+    expect(parseEnv(sensitiveCheckEnvShape, base).SENSITIVE_THRESHOLD).toBe(0.5);
+    expect(
+      parseEnv(sensitiveCheckEnvShape, { ...base, SENSITIVE_THRESHOLD: "" }).SENSITIVE_THRESHOLD,
+    ).toBe(0.5);
+  });
+
+  it.each(["0", "0.35", "1"])("accepts SENSITIVE_THRESHOLD=%s as a number", (value) => {
+    expect(
+      parseEnv(sensitiveCheckEnvShape, { ...base, SENSITIVE_THRESHOLD: value }).SENSITIVE_THRESHOLD,
+    ).toBe(Number(value));
+  });
+
+  it.each(["abc", "-0.1", "1.5"])("rejects SENSITIVE_THRESHOLD=%s, naming it", (value) => {
+    expect(() => parseEnv(sensitiveCheckEnvShape, { ...base, SENSITIVE_THRESHOLD: value })).toThrow(
+      /SENSITIVE_THRESHOLD/,
+    );
+  });
+
+  it("requires TYPESAFE_API_KEY", () => {
+    expect(() => parseEnv(sensitiveCheckEnvShape, {})).toThrow(/TYPESAFE_API_KEY/);
   });
 });
