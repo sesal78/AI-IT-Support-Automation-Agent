@@ -5,15 +5,22 @@ import {
   dbEnvShape,
   type Repositories,
 } from "@ai-it-support/db";
-import { parseEnv, redact, sensitiveCheckEnvShape } from "@ai-it-support/shared";
+import {
+  INTAKE_TICKET_TASK_ID,
+  parseEnv,
+  redact,
+  sensitiveCheckEnvShape,
+  type IntakeTicketPayload,
+} from "@ai-it-support/shared";
 import { AbortTaskRunError, logger, schemaTask } from "@trigger.dev/sdk";
 import { z } from "zod";
 
+// Payload type is shared with the POST /api/tickets caller (packages/shared).
 export const intakeTicketPayload = z.object({
   ticketId: z.uuid(),
-});
+}) satisfies z.ZodType<IntakeTicketPayload>;
 
-export type IntakeTicketPayload = z.infer<typeof intakeTicketPayload>;
+export type { IntakeTicketPayload };
 
 export interface IntakeTicketResult {
   ticketId: string;
@@ -122,7 +129,7 @@ function mergeLogs(...logs: Array<Array<{ type: string; count: number }>>) {
  * Env is validated at the start of each run.
  */
 export const intakeTicket = schemaTask({
-  id: "intake-ticket",
+  id: INTAKE_TICKET_TASK_ID,
   schema: intakeTicketPayload,
   run: async (payload, { ctx }) =>
     runIntakeTicket(payload, createIntakeDeps(process.env), ctx.attempt.number),
