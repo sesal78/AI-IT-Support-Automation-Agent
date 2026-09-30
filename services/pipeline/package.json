@@ -18,6 +18,9 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
+    "@ai-it-support/ai": "workspace:*",
+    "@ai-it-support/db": "workspace:*",
+    "@ai-it-support/shared": "workspace:*",
     "@trigger.dev/sdk": "4.6.4",
     "zod": "^4.6.5"
   }
