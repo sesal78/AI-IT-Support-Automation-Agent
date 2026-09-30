@@ -2,12 +2,22 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
-@custom-variant dark (&:is(.dark *));
+/* Dark styles follow the system setting, or a `.dark` class on an ancestor. */
+@custom-variant dark {
+  &:is(.dark *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:not(.light *) {
+      @slot;
+    }
+  }
+}
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
+  --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
   --font-heading: var(--font-sans);
   --color-sidebar-ring: var(--sidebar-ring);
@@ -39,6 +49,8 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+  --color-ticket: var(--ticket);
+  --color-ticket-foreground: var(--ticket-foreground);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -49,6 +61,9 @@
 }
 
 :root {
+  color-scheme: light;
+  --ticket: oklch(0.86 0.15 88);
+  --ticket-foreground: oklch(0.25 0.04 70);
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -84,6 +99,9 @@
 }
 
 .dark {
+  color-scheme: dark;
+  --ticket: oklch(0.8 0.14 85);
+  --ticket-foreground: oklch(0.2 0.03 70);
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
@@ -117,6 +135,46 @@
   --sidebar-ring: oklch(0.556 0 0);
 }
 
+/* Same values as .dark, applied from the system setting. */
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    color-scheme: dark;
+    --ticket: oklch(0.8 0.14 85);
+    --ticket-foreground: oklch(0.2 0.03 70);
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: oklch(0.205 0 0);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.922 0 0);
+    --primary-foreground: oklch(0.205 0 0);
+    --secondary: oklch(0.269 0 0);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.556 0 0);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --sidebar: oklch(0.205 0 0);
+    --sidebar-foreground: oklch(0.985 0 0);
+    --sidebar-primary: oklch(0.488 0.243 264.376);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.269 0 0);
+    --sidebar-accent-foreground: oklch(0.985 0 0);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.556 0 0);
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -126,5 +184,17 @@
   }
   html {
     @apply font-sans;
+  }
+}
+
+/* Ticket stub: a punched tear line between the stub header and the form. */
+@layer components {
+  .ticket-perforation {
+    height: 12px;
+    margin-top: -6px;
+    background-image: radial-gradient(circle, var(--background) 3px, transparent 3.5px);
+    background-size: 14px 12px;
+    background-position: center;
+    background-repeat: repeat-x;
   }
 }
