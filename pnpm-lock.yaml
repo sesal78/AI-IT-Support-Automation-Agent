@@ -41,6 +41,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@ai-it-support/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@ai-it-support/pipeline':
         specifier: workspace:*
         version: link:../../services/pipeline

@@ -13,6 +13,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@ai-it-support/db": "workspace:*",
     "@ai-it-support/pipeline": "workspace:*",
     "@ai-it-support/shared": "workspace:*",
     "@t3-oss/env-nextjs": "^0.13.11",
