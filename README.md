@@ -50,6 +50,17 @@ pnpm test:e2e:docker    # builds apps/web/Dockerfile and checks the container (n
 pnpm --filter web dev   # dev server on http://localhost:3001
 ```
 
+## Ticket intake
+
+`POST /api/tickets` takes JSON `{ name, email, department, title, description, turnstileToken }`
+(schema: `ticketSubmissionSchema` in `packages/shared`). Order: validate (`400 { error: "invalid_body", fieldErrors }`)
+→ Turnstile siteverify with `TURNSTILE_SECRET_KEY` and the client IP (`cf-connecting-ip`, else `x-forwarded-for`;
+`403 { error: "turnstile_failed" }`) → 5 submits per IP per 10 minutes, in memory (`429 { error: "rate_limited" }`)
+→ store the ticket and a `received` event → trigger the `intake-ticket` Trigger.dev task → `201 { ticketId, queued: true }`.
+If the trigger call fails the ticket is kept, an `enqueue_failed` event is recorded and the response is
+`201 { ticketId, queued: false }`. An `Idempotency-Key` header (or, without it, a hash of
+email + title + description + UTC date) makes a repeat return the same `ticketId` without triggering again.
+
 ## Pipeline health check
 
 `POST /api/health/pipeline` with header `x-admin-token: <ADMIN_HEALTH_TOKEN>` triggers the

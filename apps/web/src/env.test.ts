@@ -49,6 +49,21 @@ describe("web env module", () => {
     expect(env.SHADOW_MODE).toBe(true);
   });
 
+  it.each(["TURNSTILE_SECRET_KEY", "TURNSTILE_SITE_KEY"])(
+    "throws naming %s when it is unset",
+    async (key) => {
+      stubAll({ TURNSTILE_SECRET_KEY: "fake-secret", TURNSTILE_SITE_KEY: "fake-site", [key]: "" });
+      await expect(import("./env")).rejects.toThrow(key);
+    },
+  );
+
+  it("exposes the Turnstile keys", async () => {
+    stubAll({ TURNSTILE_SECRET_KEY: "fake-secret", TURNSTILE_SITE_KEY: "fake-site" });
+    const { env } = await import("./env");
+    expect(env.TURNSTILE_SECRET_KEY).toBe("fake-secret");
+    expect(env.TURNSTILE_SITE_KEY).toBe("fake-site");
+  });
+
   it("skips validation during next build", async () => {
     vi.stubEnv("NEXT_PHASE", "phase-production-build");
     stubAll({ SUPABASE_URL: undefined });

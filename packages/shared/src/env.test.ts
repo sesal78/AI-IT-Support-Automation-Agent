@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatEnvIssues, parseEnv, phase1EnvShape } from "./env.js";
+import { formatEnvIssues, intakeEnvShape, parseEnv, phase1EnvShape } from "./env.js";
 
 const valid = {
   SUPABASE_URL: "https://example.supabase.co",
@@ -47,6 +47,18 @@ describe("parseEnv", () => {
     }
     expect(message).toContain("SUPABASE_URL");
     expect(message).not.toContain("not-a-url-secret-ish");
+  });
+});
+
+describe("intakeEnvShape", () => {
+  const turnstile = { TURNSTILE_SECRET_KEY: "fake-secret", TURNSTILE_SITE_KEY: "fake-site-key" };
+
+  it("parses both Turnstile keys", () => {
+    expect(parseEnv(intakeEnvShape, turnstile)).toEqual(turnstile);
+  });
+
+  it.each(["TURNSTILE_SECRET_KEY", "TURNSTILE_SITE_KEY"])("names %s when it is unset", (key) => {
+    expect(() => parseEnv(intakeEnvShape, { ...turnstile, [key]: "" })).toThrow(key);
   });
 });
 

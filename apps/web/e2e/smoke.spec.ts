@@ -10,3 +10,19 @@ test("GET /api/health returns 200", async ({ request }) => {
   expect(res.status()).toBe(200);
   expect(await res.json()).toMatchObject({ status: "ok" });
 });
+
+// An invalid body is rejected before Turnstile, so this makes no network call.
+test("POST /api/tickets rejects an invalid body with 400 field errors", async ({ request }) => {
+  const res = await request.post("/api/tickets", {
+    data: {
+      name: "E2E",
+      email: "e2e@example.com",
+      department: "IT",
+      title: "ab",
+      description: "long enough description",
+      turnstileToken: "x",
+    },
+  });
+  expect(res.status()).toBe(400);
+  expect((await res.json()).fieldErrors).toHaveProperty("title");
+});
