@@ -13,7 +13,7 @@ The old n8n build is kept for reference only in [`legacy/`](legacy/) (see [`lega
 | `apps/web`          | Next.js (App Router) app: form, admin, API routes          |
 | `services/pipeline` | Trigger.dev tasks (`src/trigger/`) and `trigger.config.ts` |
 | `packages/shared`   | Shared TypeScript package                                  |
-| `packages/db`       | Migration checks and DB integration tests                  |
+| `packages/db`       | supabase-js client, repositories, migration checks         |
 | `supabase/`         | SQL migrations (`itsupport` schema)                        |
 | `docs/`             | Build spec and task specs                                  |
 | `legacy/`           | Old n8n build, read-only                                   |
@@ -44,11 +44,22 @@ pnpm format:check   # Prettier
 pnpm typecheck      # tsc --noEmit per package
 pnpm test           # Vitest with coverage (80% floor)
 pnpm build          # production build
-pnpm test:integration   # migrations vs a throwaway local supabase/postgres container (needs Docker)
+pnpm test:integration   # migrations + repositories vs throwaway local supabase/postgres + PostgREST containers (needs Docker)
 pnpm test:e2e           # Playwright smoke test vs the production build on :3002 (run pnpm build first)
 pnpm test:e2e:docker    # builds apps/web/Dockerfile and checks the container (needs Docker)
 pnpm --filter web dev   # dev server on http://localhost:3001
 ```
+
+## Ticket intake
+
+`POST /api/tickets` takes JSON `{ name, email, department, title, description, turnstileToken }`
+(schema: `ticketSubmissionSchema` in `packages/shared`). Order: validate (`400 { error: "invalid_body", fieldErrors }`)
+→ Turnstile siteverify with `TURNSTILE_SECRET_KEY` and the client IP (`cf-connecting-ip`, else `x-forwarded-for`;
+`403 { error: "turnstile_failed" }`) → 5 submits per IP per 10 minutes, in memory (`429 { error: "rate_limited" }`)
+→ store the ticket and a `received` event → trigger the `intake-ticket` Trigger.dev task → `201 { ticketId, queued: true }`.
+If the trigger call fails the ticket is kept, an `enqueue_failed` event is recorded and the response is
+`201 { ticketId, queued: false }`. An `Idempotency-Key` header (or, without it, a hash of
+email + title + description + UTC date) makes a repeat return the same `ticketId` without triggering again.
 
 ## Pipeline health check
 

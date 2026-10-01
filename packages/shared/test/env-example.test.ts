@@ -2,7 +2,10 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { parseEnv, phase1EnvShape } from "../src/env.js";
+import { intakeEnvShape, parseEnv, phase1EnvShape, sensitiveCheckEnvShape } from "../src/env.js";
+
+// Every env shape whose keys belong in .env.example.
+const allEnvShapes = { ...phase1EnvShape, ...intakeEnvShape, ...sensitiveCheckEnvShape };
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const example = readFileSync(resolve(repoRoot, ".env.example"), "utf8");
@@ -20,7 +23,7 @@ const entries = example
 describe(".env.example", () => {
   it("has exactly the keys of the env schemas", () => {
     const keys = entries.map(([key]) => key).sort();
-    expect(keys).toEqual(Object.keys(phase1EnvShape).sort());
+    expect(keys).toEqual(Object.keys(allEnvShapes).sort());
   });
 
   it("contains only short placeholder values", () => {
@@ -34,6 +37,6 @@ describe(".env.example", () => {
   });
 
   it("parses against the schema", () => {
-    expect(() => parseEnv(phase1EnvShape, Object.fromEntries(entries))).not.toThrow();
+    expect(() => parseEnv(allEnvShapes, Object.fromEntries(entries))).not.toThrow();
   });
 });

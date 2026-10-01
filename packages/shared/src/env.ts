@@ -14,6 +14,23 @@ export const phase1EnvShape = {
   APP_VERSION: z.string().min(1),
 };
 
+/** Phase 2 intake variables (apps/web only): Cloudflare Turnstile keys. */
+export const intakeEnvShape = {
+  TURNSTILE_SECRET_KEY: z.string().min(1),
+  // Public site key, read at run time by the form's server component (P2-T5).
+  TURNSTILE_SITE_KEY: z.string().min(1),
+};
+
+/**
+ * Sensitive-topic check env for the intake-ticket task (services/pipeline).
+ * SENSITIVE_THRESHOLD is the TypeSafe Noul probability at or above which a
+ * topic is flagged; phase 3 evals tune the 0.5 starting value.
+ */
+export const sensitiveCheckEnvShape = {
+  TYPESAFE_API_KEY: z.string().min(1),
+  SENSITIVE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
+};
+
 type PathSegment = PropertyKey | { key: PropertyKey };
 
 export interface EnvIssue {

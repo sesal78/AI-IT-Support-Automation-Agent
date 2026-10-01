@@ -5,3 +5,8 @@ export {
   type HealthcheckPayload,
   type HealthcheckResult,
 } from "./trigger/healthcheck.js";
+export {
+  intakeTicket,
+  type IntakeTicketPayload,
+  type IntakeTicketResult,
+} from "./trigger/intake-ticket.js";

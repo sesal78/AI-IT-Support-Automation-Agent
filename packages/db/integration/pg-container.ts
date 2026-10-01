@@ -3,13 +3,16 @@ import { randomBytes } from "node:crypto";
 import pg from "pg";
 
 // Pinned test image. Must match the major version of the Dokploy `db`
-// container; the exact tag is confirmed by a human in phase 1 step H4.
-export const SUPABASE_POSTGRES_IMAGE = "supabase/postgres:15.14.1.177";
+// container, which runs Postgres 17 (confirmed in phase 1 step H4).
+export const SUPABASE_POSTGRES_IMAGE = "supabase/postgres:17.6.1.177";
 
 // Every container this harness creates carries this name prefix and label,
 // so it can be told apart from anything else running on the machine.
 export const CONTAINER_PREFIX = "itsupport-it-";
-const LABEL = "itsupport-it=true";
+export const LABEL = "itsupport-it=true";
+
+// Host name of the Postgres container on a harness network.
+export const PG_NETWORK_ALIAS = "db";
 
 export interface PgContainer {
   name: string;
@@ -64,8 +67,15 @@ async function waitUntilReady(container: PgContainer, timeoutMs: number): Promis
   );
 }
 
-/** Starts a throwaway supabase/postgres container bound to 127.0.0.1 only. */
-export async function startPgContainer(timeoutMs = 180_000): Promise<PgContainer> {
+/**
+ * Starts a throwaway supabase/postgres container bound to 127.0.0.1 only.
+ * With `network`, it also joins that Docker network under the alias `db`, so a
+ * sibling container (PostgREST) can reach it.
+ */
+export async function startPgContainer(
+  timeoutMs = 180_000,
+  network?: string,
+): Promise<PgContainer> {
   const name = `${CONTAINER_PREFIX}${randomBytes(4).toString("hex")}`;
   // Fake, per-run password: this database only lives for one test run.
   const password = randomBytes(18).toString("hex");
@@ -82,6 +92,7 @@ export async function startPgContainer(timeoutMs = 180_000): Promise<PgContainer
       `POSTGRES_PASSWORD=${password}`,
       "--publish",
       "127.0.0.1::5432",
+      ...(network ? ["--network", network, "--network-alias", PG_NETWORK_ALIAS] : []),
       SUPABASE_POSTGRES_IMAGE,
     ]);
     const mapping = docker(["port", name, "5432/tcp"]).split(/\r?\n/)[0] ?? "";
