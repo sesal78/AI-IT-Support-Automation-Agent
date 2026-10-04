@@ -4,7 +4,15 @@ packages:
   - packages/*
 
 # Native install scripts are not needed: Next.js ships prebuilt binaries and
-# the lint resolver works without its postinstall step.
+# the lint resolver works without its postinstall step. The trigger.dev CLI's
+# esbuild and Depot binaries come from their platform packages.
 allowBuilds:
+  "@depot/cli": false
+  esbuild: false
   sharp: false
   unrs-resolver: false
+
+# The trigger.dev CLI's config loader (c12 > giget) asks for tar 6, which has a
+# critical advisory (GHSA-23hp-3jrh-7fpw). Give it the patched tar 7 instead.
+overrides:
+  "giget>tar": ^7.5.22

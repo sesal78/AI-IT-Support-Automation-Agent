@@ -31,6 +31,18 @@ export const sensitiveCheckEnvShape = {
   SENSITIVE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
 };
 
+/**
+ * Deploy-time variable for services/pipeline: the Trigger.dev project that
+ * `trigger.config.ts` targets. Optional; unset means the main project.
+ * `services/pipeline/src/project-ref.ts` applies the same rule without zod.
+ */
+export const triggerProjectEnvShape = {
+  TRIGGER_PROJECT_REF: z
+    .string()
+    .regex(/^proj_[a-z0-9]+$/, "must be proj_ followed by lower-case letters and digits")
+    .optional(),
+};
+
 type PathSegment = PropertyKey | { key: PropertyKey };
 
 export interface EnvIssue {

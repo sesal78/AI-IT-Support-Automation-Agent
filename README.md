@@ -48,6 +48,7 @@ pnpm test:integration   # migrations + repositories vs throwaway local supabase/
 pnpm test:e2e           # Playwright smoke test vs the production build on :3002 (run pnpm build first)
 pnpm test:e2e:docker    # builds apps/web/Dockerfile and checks the container (needs Docker)
 pnpm --filter web dev   # dev server on http://localhost:3001
+pnpm deploy:pipeline    # builds packages/*, then trigger deploy (project: TRIGGER_PROJECT_REF, else the main one)
 ```
 
 ## Ticket intake
@@ -67,5 +68,5 @@ email + title + description + UTC date) makes a repeat return the same `ticketId
 `healthcheck` Trigger.dev task and returns `202 { runId }` (`401` on a missing or wrong token,
 `502 { error: "pipeline_unavailable" }` if Trigger.dev cannot be reached).
 
-`services/pipeline/trigger.config.ts` points at the Trigger.dev cloud project
-`proj_sefqgwbhymcyikibqjmo` ("AI IT Support Agent", org Topues).
+`services/pipeline/trigger.config.ts` takes its Trigger.dev cloud project from `TRIGGER_PROJECT_REF`;
+unset, it is the main project `proj_sefqgwbhymcyikibqjmo` ("AI IT Support Agent", org Topues).
