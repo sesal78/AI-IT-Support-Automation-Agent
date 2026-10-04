@@ -61,6 +61,9 @@ pnpm deploy:pipeline    # builds packages/*, then trigger deploy (project: TRIGG
 If the trigger call fails the ticket is kept, an `enqueue_failed` event is recorded and the response is
 `201 { ticketId, queued: false }`. An `Idempotency-Key` header (or, without it, a hash of
 email + title + description + UTC date) makes a repeat return the same `ticketId` without triggering again.
+The server stores every form key under the `web:` namespace (`web:<header>`, `web:h:<sha256>` for a header over
+200 characters, `web:<hash>` without a header). A prefix sent by the client is neither trusted nor stripped
+(`email:abc` is stored as `web:email:abc`), so a form request cannot claim a key in the `email:` or `test:` namespace.
 
 ## Pipeline health check
 
