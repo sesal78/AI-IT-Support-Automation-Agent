@@ -23,5 +23,8 @@
     "@ai-it-support/shared": "workspace:*",
     "@trigger.dev/sdk": "4.6.4",
     "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "trigger.dev": "4.6.4"
   }
 }
