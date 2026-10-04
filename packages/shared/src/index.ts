@@ -12,6 +12,13 @@ export {
 } from "./env.js";
 export { redact, type RedactionResult, type RedactionType } from "./redact.js";
 export {
+  assertTransition,
+  canTransition,
+  IllegalTransitionError,
+  TICKET_STATUSES,
+  type TicketStatus,
+} from "./status.js";
+export {
   INTAKE_TICKET_TASK_ID,
   ticketSubmissionSchema,
   type IntakeTicketPayload,
