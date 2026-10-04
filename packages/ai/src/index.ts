@@ -1,3 +1,11 @@
+export {
+  FixParseError,
+  buildFixPrompt,
+  fixStepsSchema,
+  parseFixSteps,
+  type FixPromptInput,
+  type FixSteps,
+} from "./fix-steps.js";
 export { keywordFlags } from "./keywords.js";
 export {
   SENSITIVE_TOPICS,
