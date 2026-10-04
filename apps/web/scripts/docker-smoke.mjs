@@ -53,7 +53,7 @@ async function waitForHealth() {
   const started = Date.now();
   while (Date.now() - started < healthDeadlineMs) {
     try {
-      const res = await fetch(`http://127.0.0.1:${hostPort}/api/health`);
+      const res = await fetch(`http://127.0.0.1:${hostPort}/api/health`); // Loopback call to the container this script started; no TLS there. nosemgrep: typescript.react.security.react-insecure-request.react-insecure-request
       if (res.status === 200) return Date.now() - started;
     } catch {
       // Not listening yet.

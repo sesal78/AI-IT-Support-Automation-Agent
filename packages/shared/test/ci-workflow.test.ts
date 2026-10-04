@@ -39,6 +39,7 @@ const gateCommands: Record<string, string> = {
   integration: "pnpm test:integration",
   e2e: "pnpm test:e2e",
   docker: "pnpm test:e2e:docker",
+  semgrep: "pnpm scan:semgrep",
 };
 
 // `owner/repo[/path]@<full 40-hex commit SHA>`. Tags, branches, short SHAs,
@@ -151,5 +152,22 @@ describe(".github/workflows/ci.yml", () => {
     const checkout = (job?.steps ?? []).find((step) => step.uses?.startsWith("actions/checkout@"));
     expect(checkout?.with?.["fetch-depth"]).toBe(0);
     expect(runScript(job)).toMatch(/sha256sum (--check|-c)/);
+  });
+
+  it("keeps the semgrep job blocking: no `if:`, no `continue-on-error`, no path filter", () => {
+    const { on = {}, jobs = {} } = load();
+    expect(jobs.semgrep, "job semgrep").toBeDefined();
+    for (const part of [jobs.semgrep, ...(jobs.semgrep?.steps ?? [])]) {
+      expect(Object.keys(part ?? {})).not.toContain("if");
+      expect(Object.keys(part ?? {})).not.toContain("continue-on-error");
+    }
+    for (const [event, trigger] of Object.entries(on)) {
+      expect(Object.keys(trigger ?? {}), event).not.toContain("paths");
+      expect(Object.keys(trigger ?? {}), event).not.toContain("paths-ignore");
+    }
+  });
+
+  it("references no secrets", () => {
+    expect(readFileSync(workflowPath, "utf8")).not.toContain("secrets.");
   });
 });

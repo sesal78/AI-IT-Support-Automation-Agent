@@ -21,6 +21,7 @@ const allowedFiles = new Set([
   ".nvmrc",
   ".prettierrc.json",
   ".prettierignore",
+  ".semgrepignore",
   ".env.example",
   "README.md",
   "package.json",
