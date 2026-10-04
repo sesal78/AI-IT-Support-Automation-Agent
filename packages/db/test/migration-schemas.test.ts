@@ -33,6 +33,12 @@ describe("supabase migrations", () => {
     );
   });
 
+  it("has the 0003 triage-kb up and down files", () => {
+    expect(migrationFiles).toEqual(
+      expect.arrayContaining(["0003_itsupport_triage_kb.sql", "0003_itsupport_triage_kb.down.sql"]),
+    );
+  });
+
   it.each(migrationFiles)("%s only touches the itsupport and extensions schemas", (file) => {
     const sql = readFileSync(join(migrationsDir, file), "utf8");
     const schemas = referencedSchemas(sql);
