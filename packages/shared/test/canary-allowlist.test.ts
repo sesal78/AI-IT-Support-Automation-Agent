@@ -23,8 +23,9 @@ describe(".gitleaks.toml", () => {
   });
 
   it("allow-lists the canary fixture path and nothing near it", () => {
-    const [allowlist] = config.allowlists as Array<{ paths: string[] }>;
-    const pattern = new RegExp(allowlist.paths[0]);
+    const { allowlists } = config as { allowlists: Array<{ paths: string[] }> };
+    // "(?!)" matches nothing, so a missing pattern fails the first check below.
+    const pattern = new RegExp(allowlists[0]?.paths[0] ?? "(?!)");
 
     expect(pattern.test(canaryPath)).toBe(true);
     for (const other of [

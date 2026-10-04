@@ -22,6 +22,7 @@ const allowedFiles = new Set([
   ".prettierrc.json",
   ".prettierignore",
   ".semgrepignore",
+  ".gitleaks.toml",
   ".env.example",
   "README.md",
   "package.json",

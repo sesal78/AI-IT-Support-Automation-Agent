@@ -6,3 +6,5 @@
 legacy/
 # Semgrep self-test fixtures: semgrep-bad holds a finding on purpose.
 packages/shared/integration/fixtures/
+# PII canary test fixtures (plan §4.3): documentation examples, not real secrets.
+packages/shared/src/canaries.ts
