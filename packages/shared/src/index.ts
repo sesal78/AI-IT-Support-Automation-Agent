@@ -2,6 +2,15 @@
 export const packageName = "@ai-it-support/shared";
 
 export {
+  buildCanaries,
+  CANARY_TYPES,
+  canaryTicketText,
+  findCanaries,
+  type Canary,
+  type CanaryHit,
+  type CanaryType,
+} from "./canaries.js";
+export {
   formatEnvIssues,
   intakeEnvShape,
   parseEnv,
