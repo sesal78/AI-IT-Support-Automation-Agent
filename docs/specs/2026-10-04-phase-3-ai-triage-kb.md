@@ -2228,3 +2228,62 @@ Universal DoD (plan §3):
 | 10  | Goal check                          | Orchestrator, by hand: 3 tickets on e2e (locked account, printer fault with a phone number, HR complaint), read through §2.5 and Langfuse                          |
 | 11  | Evidence file                       | `docs/evidence/phase-3.md` (orchestrator), with the report files from `.loop-evidence/`                                                                            |
 | 12  | PROJECT §6/§11 updated, release PR  | Orchestrator; one §11 line per new dependency named in the task reports                                                                                            |
+
+## Filed tasks (ClickUp, Build Loop list 901616104690)
+
+| Task                                                                                 | Status at filing                                               | Tags      | Link                                  |
+| ------------------------------------------------------------------------------------ | -------------------------------------------------------------- | --------- | ------------------------------------- |
+| P3-T14 — Trigger.dev project ref from env, and a deploy script                       | backlog                                                        | —         | https://app.clickup.com/t/14zdkkvuf9t |
+| P3-T14b — `healthcheck` task reports pipeline readiness                              | backlog                                                        | —         | https://app.clickup.com/t/14zdkkvuf9u |
+| P3-T15a — CI: `semgrep` job                                                          | backlog                                                        | high-risk | https://app.clickup.com/t/14zdkkvuf9v |
+| P3-T15b — PII canary fixtures and the `.gitleaks.toml` allow-list                    | blocked (held for P3-T15a)                                     | high-risk | https://app.clickup.com/t/14zdkkvuf9w |
+| P3-T15c — Guard-module list and per-module coverage floors                           | backlog                                                        | high-risk | https://app.clickup.com/t/14zdkkvuf9x |
+| P3-T15d — CI: `mutation` job (Stryker) on guard modules                              | blocked (held for P3-T15a + P3-T15c)                           | high-risk | https://app.clickup.com/t/14zdkkvuf9y |
+| P3-T2a — Ticket status transition function                                           | backlog                                                        | high-risk | https://app.clickup.com/t/14zdkkvuf9z |
+| P3-T2b — Migration 0003, part 1: `tickets` and `triage_results`                      | blocked (held for P3-T2a)                                      | high-risk | https://app.clickup.com/t/14zdkkvufa0 |
+| P3-T2c — Migration 0003, part 2: `kb_articles` and `kb_search`                       | blocked (held for P3-T2b)                                      | high-risk | https://app.clickup.com/t/14zdkkvufa1 |
+| P3-T2d — Migration 0003, part 3: `ai_calls` and the budget functions                 | blocked (held for P3-T2c)                                      | high-risk | https://app.clickup.com/t/14zdkkvufa2 |
+| P3-T2e — Migration 0003, part 4: `security_events`, and the full up → down → up test | blocked (held for P3-T2d)                                      | high-risk | https://app.clickup.com/t/14zdkkvufa3 |
+| P3-T3a — Redaction: key and token patterns                                           | backlog                                                        | high-risk | https://app.clickup.com/t/14zdkkvufa4 |
+| P3-T3b — Redaction: IPv6, the canary sweep and the mutation floor                    | blocked (held for P3-T3a + P3-T15b + P3-T15d)                  | high-risk | https://app.clickup.com/t/14zdkkvufa5 |
+| P3-T4 — Server-side idempotency namespacing                                          | backlog                                                        | high-risk | https://app.clickup.com/t/14zdkkvufa6 |
+| P3-T12a — Egress recorder fixture and the pipeline integration config                | blocked (held for P3-T15b + P3-T2e)                            | —         | https://app.clickup.com/t/14zdkkvufa7 |
+| P3-T1a — Internal API: token guard and security events                               | blocked (held for P3-T2e + P3-T15d)                            | high-risk | https://app.clickup.com/t/14zdkkvufa8 |
+| P3-T1b — `GET /api/health/config`                                                    | blocked (held for P3-T2e)                                      | high-risk | https://app.clickup.com/t/14zdkkvufa9 |
+| P3-T1c — `GET /api/internal/tickets/:id`                                             | blocked (held for P3-T1a)                                      | high-risk | https://app.clickup.com/t/14zdkkvufaa |
+| P3-T1d — `GET /api/internal/usage` and `GET /api/internal/security-events`           | blocked (held for P3-T1a)                                      | high-risk | https://app.clickup.com/t/14zdkkvufab |
+| P3-T1e — Shared intake function, `is_test` marking and the test-switch gate          | blocked (held for P3-T1b + P3-T4)                              | high-risk | https://app.clickup.com/t/14zdkkvufac |
+| P3-T1f — `POST /api/internal/test-tickets` (e2e only)                                | blocked (held for P3-T1a + P3-T1e)                             | high-risk | https://app.clickup.com/t/14zdkkvufad |
+| P3-T1g — Internal API integration suite                                              | blocked (held for P3-T1b + P3-T1c + P3-T1d + P3-T1f + P3-T12a) | high-risk | https://app.clickup.com/t/14zdkkvufae |
+| P3-T6a — Triage taxonomy and result schema                                           | blocked (held for P3-T2b)                                      | —         | https://app.clickup.com/t/14zdkkvufaf |
+| P3-T5a — KB seed: 30 synthetic articles                                              | blocked (held for P3-T6a)                                      | —         | https://app.clickup.com/t/14zdkkvufag |
+| P3-T5b — `kb-ingest` task                                                            | blocked (held for P3-T2e + P3-T5a + P3-T12a)                   | —         | https://app.clickup.com/t/14zdkkvufah |
+| P3-T6b — Metered AI call wrapper and alert sink                                      | blocked (held for P3-T2e + P3-T1a)                             | —         | https://app.clickup.com/t/14zdkkvufaj |
+| P3-T6c — AI runtime: trace sink for Langfuse                                         | blocked (held for P3-T6b + P3-T12a)                            | —         | https://app.clickup.com/t/14zdkkvufak |
+| P3-T6d — Triage judgments via TypeSafe                                               | blocked (held for P3-T6a + P3-T6c)                             | —         | https://app.clickup.com/t/14zdkkvufam |
+| P3-T6e — Meter and trace the intake sensitive check                                  | blocked (held for P3-T6c)                                      | —         | https://app.clickup.com/t/14zdkkvufan |
+| P3-T7a — KB query builder and search repository                                      | blocked (held for P3-T2e)                                      | —         | https://app.clickup.com/t/14zdkkvufap |
+| P3-T7b — KB rerank with TypeSafe Score                                               | blocked (held for P3-T7a + P3-T6c)                             | —         | https://app.clickup.com/t/14zdkkvufaq |
+| P3-T8a — Fix-step schema, parser and prompt builder                                  | backlog                                                        | —         | https://app.clickup.com/t/14zdkkvufar |
+| P3-T8b — LLM client on OpenCode Go                                                   | blocked (held for P3-T8a + P3-T6c)                             | —         | https://app.clickup.com/t/14zdkkvufat |
+| P3-T13 — Fix-step grounding                                                          | blocked (held for P3-T7b + P3-T8b)                             | —         | https://app.clickup.com/t/14zdkkvufau |
+| P3-T9 — Policy engine                                                                | blocked (held for P3-T6a + P3-T15d)                            | high-risk | https://app.clickup.com/t/14zdkkvufav |
+| P3-T10a — Pipeline repositories: status, triage result, redaction                    | blocked (held for P3-T2e + P3-T6a)                             | —         | https://app.clickup.com/t/14zdkkvufaw |
+| P3-T10b — `triage-ticket` task: main path                                            | blocked (held for P3-T10a + P3-T6d + P3-T7b + P3-T13 + P3-T9)  | —         | https://app.clickup.com/t/14zdkkvufax |
+| P3-T10c — `triage-ticket`: caps, LLM 429, failure handler and test switches          | blocked (held for P3-T10b + P3-T1e)                            | —         | https://app.clickup.com/t/14zdkkvufay |
+| P3-T10d — `intake-ticket` chaining: status `redacted` and the triage trigger         | blocked (held for P3-T10c + P3-T6e)                            | —         | https://app.clickup.com/t/14zdkkvufaz |
+| P3-T10e — Pipeline integration suite 1: happy path and edges                         | blocked (held for P3-T10d + P3-T5b)                            | —         | https://app.clickup.com/t/14zdkkvufb0 |
+| P3-T10f — Pipeline integration suite 2: failures, caps and the enqueue error         | blocked (held for P3-T10e)                                     | —         | https://app.clickup.com/t/14zdkkvufb1 |
+| P3-T10g — Local pipeline runner for end-to-end tests                                 | blocked (held for P3-T10f)                                     | —         | https://app.clickup.com/t/14zdkkvufb2 |
+| P3-T10h — Local end-to-end test: form to `triaged`                                   | blocked (held for P3-T10g + P3-T1g)                            | —         | https://app.clickup.com/t/14zdkkvufb3 |
+| P3-T16a — Live-suite harness: core                                                   | blocked (held for P3-T1g)                                      | —         | https://app.clickup.com/t/14zdkkvufb5 |
+| P3-T16b — Live scenarios: security                                                   | blocked (held for P3-T16a)                                     | —         | https://app.clickup.com/t/14zdkkvufb6 |
+| P3-T16c — Live scenarios: pipeline                                                   | blocked (held for P3-T16b + P3-T10d)                           | —         | https://app.clickup.com/t/14zdkkvufb7 |
+| P3-T12b — `scan:traces` and `scan:logs`                                              | blocked (held for P3-T16a + P3-T6c)                            | —         | https://app.clickup.com/t/14zdkkvufb8 |
+| P3-T16d — Live scenarios: browser form and Langfuse                                  | blocked (held for P3-T16c + P3-T12b)                           | —         | https://app.clickup.com/t/14zdkkvufb9 |
+| P3-T11a — Eval dataset: 100 labeled tickets                                          | blocked (held for P3-T6a)                                      | —         | https://app.clickup.com/t/14zdkkvufba |
+| P3-T11b — Eval metrics and report                                                    | blocked (held for P3-T11a + P3-T16a)                           | —         | https://app.clickup.com/t/14zdkkvufbb |
+| P3-T11c — Eval runner: `pnpm eval`                                                   | blocked (held for P3-T11b)                                     | —         | https://app.clickup.com/t/14zdkkvufbd |
+| P3-T11d — Judge task and e2e-only judgment endpoints                                 | blocked (held for P3-T1f + P3-T6c)                             | —         | https://app.clickup.com/t/14zdkkvufbe |
+| P3-T11e — Judges J1–J4 and their calibration                                         | blocked (held for P3-T11c + P3-T11d)                           | —         | https://app.clickup.com/t/14zdkkvufbf |
+| P3-T11f — Judge pass over an eval run, and the Langfuse dataset run                  | blocked (held for P3-T11e)                                     | —         | https://app.clickup.com/t/14zdkkvufbg |
