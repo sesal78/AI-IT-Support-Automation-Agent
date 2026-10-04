@@ -1,0 +1,8 @@
+# Paths that `pnpm scan:semgrep` never scans. This file replaces Semgrep's
+# built-in ignore list, so installs and build output (node_modules, dist,
+# .next, .turbo, coverage, ...) come from .gitignore.
+:include .gitignore
+# Read-only reference material.
+legacy/
+# Semgrep self-test fixtures: semgrep-bad holds a finding on purpose.
+packages/shared/integration/fixtures/
