@@ -5,6 +5,7 @@ import {
   parseEnv,
   phase1EnvShape,
   sensitiveCheckEnvShape,
+  triggerProjectEnvShape,
 } from "./env.js";
 
 const valid = {
@@ -103,5 +104,24 @@ describe("sensitiveCheckEnvShape", () => {
 
   it("requires TYPESAFE_API_KEY", () => {
     expect(() => parseEnv(sensitiveCheckEnvShape, {})).toThrow(/TYPESAFE_API_KEY/);
+  });
+});
+
+describe("triggerProjectEnvShape", () => {
+  it("accepts a Trigger.dev project ref", () => {
+    const env = { TRIGGER_PROJECT_REF: "proj_abc123" };
+    expect(parseEnv(triggerProjectEnvShape, env)).toEqual(env);
+  });
+
+  it.each([undefined, ""])("leaves TRIGGER_PROJECT_REF undefined for %j", (value) => {
+    expect(
+      parseEnv(triggerProjectEnvShape, { TRIGGER_PROJECT_REF: value }).TRIGGER_PROJECT_REF,
+    ).toBeUndefined();
+  });
+
+  it.each(["my project", "PROJ_ABC", "proj_"])('rejects "%s", naming the variable', (value) => {
+    expect(() => parseEnv(triggerProjectEnvShape, { TRIGGER_PROJECT_REF: value })).toThrow(
+      /TRIGGER_PROJECT_REF/,
+    );
   });
 });

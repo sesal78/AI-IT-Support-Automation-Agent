@@ -7,6 +7,7 @@ export {
   parseEnv,
   phase1EnvShape,
   sensitiveCheckEnvShape,
+  triggerProjectEnvShape,
   type EnvIssue,
 } from "./env.js";
 export { redact, type RedactionResult, type RedactionType } from "./redact.js";
