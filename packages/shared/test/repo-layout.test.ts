@@ -26,6 +26,7 @@ const allowedFiles = new Set([
   "package.json",
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
+  "guard-modules.json",
   "turbo.json",
   "tsconfig.base.json",
   "eslint.config.mjs",
