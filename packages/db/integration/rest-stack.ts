@@ -20,7 +20,11 @@ import {
 export const POSTGREST_IMAGE = "postgrest/postgrest:v16.4";
 
 const SCHEMA = "itsupport";
-const MIGRATIONS = ["0001_itsupport_foundation.sql", "0002_itsupport_intake.sql"];
+const MIGRATIONS = [
+  "0001_itsupport_foundation.sql",
+  "0002_itsupport_intake.sql",
+  "0003_itsupport_triage_kb.sql",
+];
 const migrationsDir = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../../../supabase/migrations",
@@ -106,7 +110,7 @@ async function waitForRest(url: string, key: string, timeoutMs: number): Promise
   throw new Error(`PostgREST not ready after ${timeoutMs} ms: ${last}`);
 }
 
-/** Starts Postgres 17 with migrations 0001 + 0002 applied, then PostgREST exposing `itsupport`. */
+/** Starts Postgres 17 with migrations 0001 to 0003 applied, then PostgREST exposing `itsupport`. */
 export async function startRestStack(timeoutMs = 180_000): Promise<RestStack> {
   const suffix = randomBytes(4).toString("hex");
   const network = `${CONTAINER_PREFIX}net-${suffix}`;
