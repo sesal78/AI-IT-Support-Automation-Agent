@@ -129,7 +129,7 @@ describe("POST /api/tickets", () => {
       requester_email: valid.email,
       requester_name: valid.name,
       department: valid.department,
-      idempotency_key: expect.stringMatching(/^[0-9a-f]{64}$/),
+      idempotency_key: expect.stringMatching(/^web:[0-9a-f]{64}$/),
     });
     expect(addEvent).toHaveBeenCalledTimes(1);
     expect(addEvent).toHaveBeenCalledWith(json.ticketId, "received");
@@ -261,10 +261,20 @@ describe("POST /api/tickets", () => {
     expect((await second.json()).ticketId).toBe(id);
     expect(createTicket).toHaveBeenCalledTimes(2);
     for (const call of createTicket.mock.calls) {
-      expect(call[0].idempotency_key).toBe("key-1");
+      expect(call[0].idempotency_key).toBe("web:key-1");
     }
     expect(trigger).toHaveBeenCalledTimes(1);
     expect(addEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("stores a client-sent email: key under the web namespace", async () => {
+    const POST = await loadPost();
+    const res = await POST(request(valid, { headers: { "Idempotency-Key": "email:abc" } }));
+    expect(res.status).toBe(201);
+    expect(createTicket).toHaveBeenCalledTimes(1);
+    expect(createTicket).toHaveBeenCalledWith(
+      expect.objectContaining({ source: "web", idempotency_key: "web:email:abc" }),
+    );
   });
 
   it("returns 201 queued:false and records enqueue_failed when the trigger call fails", async () => {
