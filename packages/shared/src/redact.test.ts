@@ -407,3 +407,60 @@ describe("redact: fixed-length key patterns", () => {
     }
   });
 });
+
+// Review failure report (part 1, review 3): a `-` in front of a key is not
+// part of a word, so the key is still redacted.
+describe("redact: key boundaries", () => {
+  it("redacts a key directly after a dash", () => {
+    const rows: Array<[string, string]> = [
+      ["-" + awsKey, "-[REDACTED_AWS_KEY]"],
+      ["access-key-" + awsKey, "access-key-[REDACTED_AWS_KEY]"],
+      ["prod-" + awsKey + ".csv", "prod-[REDACTED_AWS_KEY].csv"],
+      ["--pat-" + ghToken, "--pat-[REDACTED_GITHUB_TOKEN]"],
+      ["my-token-" + ghToken, "my-token-[REDACTED_GITHUB_TOKEN]"],
+    ];
+    for (const [input, expected] of rows) {
+      expect(redact(input).text, input).toBe(expected);
+      expect(redact(expected).text, input).toBe(expected);
+    }
+    expect(redact(`-${awsKey}\n-${ghToken}\n`)).toEqual({
+      text: "-[REDACTED_AWS_KEY]\n-[REDACTED_GITHUB_TOKEN]\n",
+      log: [
+        { type: "AWS_KEY", count: 1 },
+        { type: "GITHUB_TOKEN", count: 1 },
+      ],
+    });
+  });
+
+  it("leaves a GitHub token with a letter in front or 37 characters unchanged", () => {
+    for (const input of ["x" + ghToken, ghToken + "a"]) {
+      expect(redact(input), input).toEqual({ text: input, log: [] });
+    }
+  });
+
+  it("keeps the key rules out of the legacy rule set", () => {
+    for (const key of [awsKey, ghToken]) {
+      expect(redactLegacy("key " + key)).toEqual({ text: "key " + key, log: [] });
+    }
+  });
+
+  it("redacts a card and an SSN glued in front of +<key>@domain", () => {
+    for (const key of [awsKey, ghToken]) {
+      const spaced = `4111 1111 1111 1111 123-45-6789+${key}@site7.example`;
+      const glued = `4111111111111111-123-45-6789+${key}@site7.example`;
+      for (const fn of [redact, redactLegacy]) {
+        expect(fn(spaced)).toEqual({
+          text: "[REDACTED_CARD] [REDACTED_EMAIL]",
+          log: [
+            { type: "EMAIL", count: 1 },
+            { type: "CARD", count: 1 },
+          ],
+        });
+        expect(fn(glued)).toEqual({
+          text: "[REDACTED_EMAIL]",
+          log: [{ type: "EMAIL", count: 1 }],
+        });
+      }
+    }
+  });
+});
