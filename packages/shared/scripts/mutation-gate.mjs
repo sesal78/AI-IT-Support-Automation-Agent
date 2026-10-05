@@ -10,11 +10,7 @@ import { readFileSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseGuardModules } from "../src/guard-modules.ts";
-import {
-  checkMutationReport,
-  guardFilesTouched,
-  parseMutationReport,
-} from "../src/mutation-gate.ts";
+import * as gate from "../src/mutation-gate.ts";
 
 // Stryker runs from the repo root, so its report keys are the guard paths.
 process.chdir(resolve(dirname(fileURLToPath(import.meta.url)), "../../.."));
@@ -49,18 +45,15 @@ function changedFiles() {
 }
 
 const list = parseGuardModules(JSON.parse(readFileSync("guard-modules.json", "utf8")));
-if (!all && !guardFilesTouched(fakeChanged ?? changedFiles(), list)) {
+if (!all && !gate.guardFilesTouched(fakeChanged ?? changedFiles(), list)) {
   console.log("mutation: skipped (no guard module changed)");
   process.exit(0);
 }
 
-// The Stryker options (no separate config file). The command runner runs Vitest
-// once per mutant on the tests that import the module (`vitest related`), so no
-// Vitest plugin is involved; coverage is off because the per-file floors would
-// fail a partial run. In place: Stryker edits the module in the working tree
-// and restores it from .stryker-tmp/ at the end. Guard-module paths are plain
-// (REPO_PATH), so the command needs no quoting. The default thresholds are
-// whole numbers, as checkMutationReport requires.
+// The Stryker options (no config file). The command runner runs Vitest per mutant
+// on the tests that import the module, coverage off (per-file floors would fail a
+// partial run). In place: Stryker restores the module from .stryker-tmp/ at the
+// end. Guard paths need no quoting (REPO_PATH); default thresholds are integers.
 const { Stryker } = await import("@stryker-mutator/core");
 let failed = false;
 for (const module of list.filter(({ mutation }) => mutation !== null)) {
@@ -80,9 +73,8 @@ for (const module of list.filter(({ mutation }) => mutation !== null)) {
       jsonReporter: { fileName },
       concurrency: 4,
     }).runMutationTest();
-    const checks = checkMutationReport(parseMutationReport(readFileSync(fileName, "utf8")), [
-      module,
-    ]);
+    const report = gate.parseMutationReport(readFileSync(fileName, "utf8"));
+    const checks = gate.checkMutationReport(report, [module]);
     const seconds = Math.round((Date.now() - started) / 1000);
     for (const { message } of checks) console.log(`mutation: ${message}, in ${seconds} s`);
     failed ||= checks.length === 0 || checks.some(({ passed }) => !passed);
