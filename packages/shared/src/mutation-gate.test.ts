@@ -146,9 +146,20 @@ describe("checkMutationReport", () => {
     ["all upper case", request.path.toUpperCase()],
     ["a trailing space", `${request.path} `],
     ["a case-only change", request.path.replace("request", "Request")],
+    ["a file name ending in .", `${request.path}.`],
+    ["a folder name ending in .", request.path.replace("intake/", "intake./")],
   ])("throws a MutationReportError for an alias key with %s", (_case, alias) => {
     const exact = report(request.path, { Killed: 10 });
     const input = { ...exact, files: { ...exact.files, ...report(alias, { Survived: 90 }).files } };
+    expect(() => checkMutationReport(input, list)).toThrow(MutationReportError);
+  });
+
+  it("throws a MutationReportError for a trailing-dot alias key listed before the exact key", () => {
+    const alias = report(`${request.path}.`, { Survived: 90 });
+    const input = {
+      ...alias,
+      files: { ...alias.files, ...report(request.path, { Killed: 10 }).files },
+    };
     expect(() => checkMutationReport(input, list)).toThrow(MutationReportError);
   });
 
