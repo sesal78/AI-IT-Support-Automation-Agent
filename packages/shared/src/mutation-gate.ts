@@ -87,7 +87,8 @@ export function checkMutationReport(
   const ids = new Set<string>();
   for (const [key, { mutants }] of Object.entries(parsed.data.files)) {
     const path = key.replaceAll("\\", "/");
-    if (!REPO_PATH.test(path)) {
+    // Windows drops a trailing `.` from a name, so `a./b.ts.` opens `a/b.ts`.
+    if (!REPO_PATH.test(path) || path.split("/").some((name) => name.endsWith("."))) {
       throw new MutationReportError(`report key ${JSON.stringify(key)} is not repo-relative`);
     }
     if (lowerPaths.has(path.toLowerCase())) {
