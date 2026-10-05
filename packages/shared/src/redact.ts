@@ -24,8 +24,10 @@
 // the older rules alone to their fixed point, exactly as before the key rules
 // existed, and every later step only replaces more text with placeholders.
 // The full rule set then runs to its fixed point, so redact() stays
-// idempotent. Key rules start only at the beginning of a word/dash run and
-// match letters and digits only, so no older rule can match inside a key.
+// idempotent. A key never starts right after a word character, but a `-` in
+// front is fine (`prod-<key>`). A key is one unbroken run of word characters
+// (letters, digits and the `_` of `ghp_`), and every older rule rejects a word
+// character in front of its start, so no older match starts inside a key.
 
 export type RedactionType =
   "SECRET" | "EMAIL" | "AWS_KEY" | "GITHUB_TOKEN" | "CARD" | "SSN" | "IPV4" | "PHONE" | "AU_TFN";
@@ -87,12 +89,12 @@ const RULES: Rule[] = [
   {
     // Fixed length: exactly 16 upper-case letters or digits after the prefix.
     type: "AWS_KEY",
-    pattern: /(?<![\w-])AKIA[A-Z0-9]{16}(?![A-Z0-9])/g,
+    pattern: /(?<!\w)AKIA[A-Z0-9]{16}(?![A-Z0-9])/g,
   },
   {
     // Fixed length: exactly 36 letters or digits after the prefix.
     type: "GITHUB_TOKEN",
-    pattern: /(?<![\w-])ghp_[A-Za-z0-9]{36}(?![A-Za-z0-9])/g,
+    pattern: /(?<!\w)ghp_[A-Za-z0-9]{36}(?![A-Za-z0-9])/g,
   },
   {
     // 13–19 contiguous digits, 4-4-4-(1..4) groups, or 4-6-(4..5) Amex/Diners
