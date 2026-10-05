@@ -31,12 +31,25 @@ const KILLED = ["Killed", "Timeout"];
 const SURVIVED = ["Survived", "NoCoverage"];
 const LEFT_OUT = ["Ignored", "CompileError", "RuntimeError"];
 
+// The fields that the official mutation-testing-report-schema (3.x) requires.
+const position = z.object({ line: z.int().min(1), column: z.int().min(1) });
+const percent = z.int().min(0).max(100);
 const reportSchema = z.object({
-  schemaVersion: z.string(),
+  schemaVersion: z.string().regex(/^[12](\.(0|[1-9]\d*)){0,2}$/),
+  thresholds: z.object({ high: percent, low: percent }),
   files: z.record(
     z.string(),
     z.object({
-      mutants: z.array(z.object({ status: z.enum([...KILLED, ...SURVIVED, ...LEFT_OUT]) })),
+      language: z.string(),
+      source: z.string(),
+      mutants: z.array(
+        z.object({
+          id: z.string(),
+          mutatorName: z.string(),
+          location: z.object({ start: position, end: position }),
+          status: z.enum([...KILLED, ...SURVIVED, ...LEFT_OUT]),
+        }),
+      ),
     }),
   ),
 });
@@ -67,9 +80,24 @@ export function checkMutationReport(
   if (!parsed.success) {
     throw new MutationReportError(`not a Stryker JSON report: ${z.prettifyError(parsed.error)}`);
   }
+  // A repeated mutant or a second key for the same file would skew the score.
+  const statusesByPath = new Map<string, string[]>();
+  const ids = new Set<string>();
+  for (const [key, { mutants }] of Object.entries(parsed.data.files)) {
+    const path = key.replaceAll("\\", "/");
+    if (statusesByPath.has(path)) throw new MutationReportError(`two report keys name ${path}`);
+    statusesByPath.set(
+      path,
+      mutants.map((mutant) => mutant.status),
+    );
+    for (const { id } of mutants) {
+      if (ids.has(id)) throw new MutationReportError(`repeated mutant id ${id} in ${path}`);
+      ids.add(id);
+    }
+  }
   return list.flatMap(({ path, mutation: floor }): MutationCheck[] => {
     if (floor === null) return [];
-    const statuses = (parsed.data.files[path]?.mutants ?? []).map((mutant) => mutant.status);
+    const statuses = statusesByPath.get(path) ?? [];
     const killed = statuses.filter((status) => KILLED.includes(status)).length;
     const scored = killed + statuses.filter((status) => SURVIVED.includes(status)).length;
     if (scored === 0) {
