@@ -582,6 +582,13 @@ describe("redact: glued runs split from their start", () => {
       [`(${ghMixed}${awsDigits}${ghDigits})`, `(${G}${A}${G})`],
       [awsDigits + ghSeeded + "_x", A + G + "_x"],
       ["id-" + ghSeeded + awsSeeded, "id-" + G + A],
+      // Review 2: AKIA at token body offsets 0 and 20, then K3 and K4.
+      [
+        ` ${H}${P}${"Q7".repeat(8)}${P}${"9".repeat(12)}${P}${P}${"8".repeat(12)}${P}${"X".repeat(16)} `,
+        ` ${G}${A}${A} `,
+      ],
+      [`ann@corp.example.${ghMixed}${P}${P}${"8".repeat(12)}`, `[REDACTED_EMAIL]${G}${A}`],
+      [awsDigits + ghMixed + P + P + "8".repeat(12), A + G + A],
       ["[REDACTED_CARD]" + ghMixed + awsDigits + ".", "[REDACTED_CARD]" + G + A + "."],
     ];
     for (const [input, text] of rows) {
