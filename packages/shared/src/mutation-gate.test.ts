@@ -134,4 +134,26 @@ describe("checkMutationReport", () => {
     expect(() => checkMutationReport(input, list)).toThrow(MutationReportError);
     expect(() => checkMutationReport(input, list)).toThrow(`two report keys name ${request.path}`);
   });
+
+  // Review 3 of P3-T15d: an alias key once scored PASS 100 at floor 80.
+  it.each([
+    ["a ./ prefix", `./${request.path}`],
+    ["a .\\ prefix", `.\\${request.path.replaceAll("/", "\\")}`],
+    ["an inner ./", request.path.replace("web/", "web/./")],
+    ["a double slash", request.path.replace("/", "//")],
+    ["a .. segment", request.path.replace("src/", "src/../src/")],
+    ["a leading /", `/${request.path}`],
+    ["all upper case", request.path.toUpperCase()],
+    ["a trailing space", `${request.path} `],
+    ["a case-only change", request.path.replace("request", "Request")],
+  ])("throws a MutationReportError for an alias key with %s", (_case, alias) => {
+    const exact = report(request.path, { Killed: 10 });
+    const input = { ...exact, files: { ...exact.files, ...report(alias, { Survived: 90 }).files } };
+    expect(() => checkMutationReport(input, list)).toThrow(MutationReportError);
+  });
+
+  it("throws a MutationReportError for a lone key that is not repo-relative", () => {
+    const input = report(`./${request.path}`, { Killed: 10 });
+    expect(() => checkMutationReport(input, list)).toThrow(MutationReportError);
+  });
 });
