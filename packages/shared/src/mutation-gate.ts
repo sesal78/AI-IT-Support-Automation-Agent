@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { GuardModule } from "./guard-modules.js";
+import { type GuardModule, REPO_PATH } from "./guard-modules.js";
 
 // The mutation gate behind the root script `pnpm test:mutation` (plan §9,
 // T3.S.06). This file holds the decisions; packages/shared/scripts/
@@ -81,11 +81,19 @@ export function checkMutationReport(
     throw new MutationReportError(`not a Stryker JSON report: ${z.prettifyError(parsed.error)}`);
   }
   // A repeated mutant or a second key for the same file would skew the score.
+  // Stryker writes plain repo-relative keys, so any other spelling is refused.
   const statusesByPath = new Map<string, string[]>();
+  const lowerPaths = new Set<string>();
   const ids = new Set<string>();
   for (const [key, { mutants }] of Object.entries(parsed.data.files)) {
     const path = key.replaceAll("\\", "/");
-    if (statusesByPath.has(path)) throw new MutationReportError(`two report keys name ${path}`);
+    if (!REPO_PATH.test(path)) {
+      throw new MutationReportError(`report key ${JSON.stringify(key)} is not repo-relative`);
+    }
+    if (lowerPaths.has(path.toLowerCase())) {
+      throw new MutationReportError(`two report keys name ${path}`);
+    }
+    lowerPaths.add(path.toLowerCase());
     statusesByPath.set(
       path,
       mutants.map((mutant) => mutant.status),

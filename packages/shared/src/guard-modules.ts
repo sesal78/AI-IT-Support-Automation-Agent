@@ -10,7 +10,7 @@ import { z } from "zod";
 // A plain repo-relative file path: forward slashes, at least one folder, no
 // glob characters and no `.` or `..` segment. Vitest reads a threshold key as
 // a glob on the root-relative path and skips a key that matches no file.
-const REPO_PATH = /^[\w-][\w.-]*(\/[\w-][\w.-]*)+$/;
+export const REPO_PATH = /^[\w-][\w.-]*(\/[\w-][\w.-]*)+$/;
 
 const guardModuleSchema = z.strictObject({
   path: z.string().regex(REPO_PATH, "must be a repo-relative file path with forward slashes"),
