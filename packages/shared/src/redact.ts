@@ -4,9 +4,10 @@
 // `[REDACTED_<TYPE>]` before the next rule runs. The whole pipeline then
 // repeats until a pass changes nothing, so the result is a fixed point and a
 // second redact() call is a no-op (idempotent by construction). This loop
-// always terminates: every match contains a digit, `@`, `:` or `=`, and
-// placeholders contain none of them, so each changing pass strictly shrinks
-// the count of those characters.
+// always terminates: every match contains a digit, a lower-case letter, `@`,
+// `:`, `=` or the upper-case prefix `AKIA`, and placeholders contain none of
+// them (their brackets also stop an `AKIA` forming across an edge), so each
+// changing pass strictly shrinks the count of those.
 //
 // Boundaries: a space separates tokens, while `-` and `.` join digits into one
 // number. A rule therefore never starts or ends inside a word or a dash/dot
@@ -16,8 +17,20 @@
 // Every pattern is anchored with lookbehinds so a match can only start at the
 // beginning of a run, and all repetition is bounded or unambiguous, which
 // keeps matching linear on adversarial input.
+//
+// Key rules are added on top of the older rules (all the others).
+// Invariant: whatever the older rules remove at their own fixed point is also
+// gone from redact()'s output. It holds by construction: redact() first runs
+// the older rules alone to their fixed point, exactly as before the key rules
+// existed, and every later step only replaces more text with placeholders.
+// The full rule set then runs to its fixed point, so redact() stays
+// idempotent. A key never starts right after a word character, but a `-` in
+// front is fine (`prod-<key>`). A key is one unbroken run of word characters
+// (letters, digits and the `_` of `ghp_`), and every older rule rejects a word
+// character in front of its start, so no older match starts inside a key.
 
-export type RedactionType = "SECRET" | "EMAIL" | "CARD" | "SSN" | "IPV4" | "PHONE" | "AU_TFN";
+export type RedactionType =
+  "SECRET" | "EMAIL" | "AWS_KEY" | "GITHUB_TOKEN" | "CARD" | "SSN" | "IPV4" | "PHONE" | "AU_TFN";
 
 export interface RedactionResult {
   text: string;
@@ -72,6 +85,16 @@ const RULES: Rule[] = [
     type: "EMAIL",
     pattern:
       /(?<![\w.%+-])[\w.%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?![A-Za-z0-9-])/g,
+  },
+  {
+    // Fixed length: exactly 16 upper-case letters or digits after the prefix.
+    type: "AWS_KEY",
+    pattern: /(?<!\w)AKIA[A-Z0-9]{16}(?![A-Z0-9])/g,
+  },
+  {
+    // Fixed length: exactly 36 letters or digits after the prefix.
+    type: "GITHUB_TOKEN",
+    pattern: /(?<!\w)ghp_[A-Za-z0-9]{36}(?![A-Za-z0-9])/g,
   },
   {
     // 13–19 contiguous digits, 4-4-4-(1..4) groups, or 4-6-(4..5) Amex/Diners
@@ -145,16 +168,18 @@ function applyRule(text: string, rule: Rule): { text: string; count: number } {
   return { text: out + text.slice(last), count };
 }
 
-export function redact(text: string): RedactionResult {
-  if (typeof text !== "string") {
-    throw new TypeError(`redact() expects a string, got ${text === null ? "null" : typeof text}`);
-  }
-  const counts = new Map<RedactionType, number>();
+const KEY_TYPES = new Set<string>(["AWS_KEY", "GITHUB_TOKEN"]);
+const LEGACY_RULES = RULES.filter((r) => !KEY_TYPES.has(r.type));
+
+type Counts = Map<RedactionType, number>;
+
+/** Repeats the given rules, in order, until a pass changes nothing. */
+function toFixedPoint(text: string, rules: Rule[], counts: Counts): string {
   let out = text;
   let changed = true;
   while (changed) {
     changed = false;
-    for (const rule of RULES) {
+    for (const rule of rules) {
       const res = applyRule(out, rule);
       if (res.count > 0) {
         out = res.text;
@@ -163,9 +188,31 @@ export function redact(text: string): RedactionResult {
       }
     }
   }
+  return out;
+}
+
+function run(text: string, stages: Rule[][]): RedactionResult {
+  if (typeof text !== "string") {
+    throw new TypeError(`redact() expects a string, got ${text === null ? "null" : typeof text}`);
+  }
+  const counts: Counts = new Map();
+  let out = text;
+  for (const rules of stages) out = toFixedPoint(out, rules, counts);
   const log = RULES.filter((r) => counts.has(r.type)).map((r) => ({
     type: r.type as string,
     count: counts.get(r.type)!,
   }));
   return { text: out, log };
+}
+
+export function redact(text: string): RedactionResult {
+  return run(text, [LEGACY_RULES, RULES]);
+}
+
+/**
+ * The rule set as it was before the key rules. Not exported from the package
+ * index: it exists so a test can compare redact() against it.
+ */
+export function redactLegacy(text: string): RedactionResult {
+  return run(text, [LEGACY_RULES]);
 }

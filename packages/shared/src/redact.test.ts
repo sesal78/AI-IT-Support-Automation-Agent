@@ -1,5 +1,8 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { redact } from "./index.js";
+import { redactLegacy } from "./redact.js";
 
 // Secret-shaped fixtures are assembled at runtime so the literal
 // "keyword: value" text never appears in the repo (CI runs gitleaks over the
@@ -251,5 +254,213 @@ describe("redact", () => {
     const start = performance.now();
     for (const input of inputs) redact(input);
     expect(performance.now() - start).toBeLessThan(2_000);
+  });
+});
+
+// Key fixtures, built from pieces at run time so no key-shaped literal is in
+// this file (the scan test below enforces that).
+const card16 = "4111111111111111";
+const awsKey = "AK" + "IA" + "X7Q2".repeat(4);
+const ghToken = "gh" + "p_" + "ab12CD".repeat(6);
+// The same two shapes with a Luhn-valid 16-digit run inside.
+const keys = [
+  awsKey,
+  ghToken,
+  "AK" + "IA" + card16,
+  "gh" + "p_" + "ab12CD".repeat(3) + card16 + "xy",
+];
+const KEY_TYPES = ["AWS_KEY", "GITHUB_TOKEN"];
+const keyNearMisses = [
+  "AK" + "IA" + "X7Q2X7Q2",
+  "Z" + awsKey,
+  awsKey.toLowerCase(),
+  "gh" + "p_" + "a".repeat(10),
+];
+
+describe("redact: fixed-length key patterns", () => {
+  it("redacts a bare AWS access key with a per-type log", () => {
+    expect(redact("key " + awsKey)).toEqual({
+      text: "key [REDACTED_AWS_KEY]",
+      log: [{ type: "AWS_KEY", count: 1 }],
+    });
+  });
+
+  it("redacts a GitHub token", () => {
+    expect(redact(`(${ghToken})`)).toEqual({
+      text: "([REDACTED_GITHUB_TOKEN])",
+      log: [{ type: "GITHUB_TOKEN", count: 1 }],
+    });
+  });
+
+  it("leaves near-misses unchanged", () => {
+    for (const input of keyNearMisses) {
+      expect(redact(input), input).toEqual({ text: input, log: [] });
+    }
+  });
+
+  it("replaces a key that holds a Luhn-valid digit run with one placeholder", () => {
+    expect(redact(keys[2]!)).toEqual({
+      text: "[REDACTED_AWS_KEY]",
+      log: [{ type: "AWS_KEY", count: 1 }],
+    });
+    expect(redact(keys[3]!)).toEqual({
+      text: "[REDACTED_GITHUB_TOKEN]",
+      log: [{ type: "GITHUB_TOKEN", count: 1 }],
+    });
+  });
+
+  it("redacts both a key and a card joined to it by a dash", () => {
+    expect(redact(`${awsKey}-4111 1111 1111 1111`).text).toBe("[REDACTED_AWS_KEY]-[REDACTED_CARD]");
+  });
+
+  it("logs types and counts only, never a matched value", () => {
+    const out = redact(keys.join(" "));
+    expect(out.log).toEqual([
+      { type: "AWS_KEY", count: 2 },
+      { type: "GITHUB_TOKEN", count: 2 },
+    ]);
+    for (const key of keys) {
+      expect(out.text).not.toContain(key);
+      expect(JSON.stringify(out.log)).not.toContain(key);
+    }
+  });
+
+  it("is idempotent over old and new fixtures, alone and in pairs", () => {
+    for (const a of [...fixtures, ...keys, ...keyNearMisses]) {
+      for (const input of [a, ...keys.flatMap((k) => [`${a} ${k}`, `${k} ${a}`, k + a])]) {
+        const once = redact(input).text;
+        expect(redact(once).text, input).toBe(once);
+      }
+    }
+  });
+
+  it("has no literal in this file that matches a key rule", () => {
+    // `:`, `=` and `@` are blanked so the SECRET and EMAIL rules cannot swallow
+    // a key before its own rule sees it.
+    const scan = (s: string) =>
+      redact(s.replace(/[:=@]/g, " ")).log.filter((e) => KEY_TYPES.includes(e.type));
+    expect(scan(`token: "${ghToken}"`)).toEqual([{ type: "GITHUB_TOKEN", count: 1 }]);
+    expect(scan(readFileSync(fileURLToPath(import.meta.url), "utf8"))).toEqual([]);
+  });
+
+  it("leaves no digit run or @domain that the legacy rules remove (generated)", () => {
+    // Fixed-seed Lehmer generator, so the 5 000 inputs are the same every run.
+    let seed = 20261004;
+    const rnd = (n: number) => (seed = (seed * 48271) % 2147483647) % n;
+    const pick = (list: string[]) => list[rnd(list.length)]!;
+    const pieces = [
+      ...keys,
+      ...keys.flatMap((k) => [k + "@site7.example", `jo9@${k}.example`]),
+      ...sensitive,
+      ...benign,
+      "ann@corp.example",
+      "jo3",
+      "host",
+      "site7.example",
+      kv("token", "=", "x1"),
+    ];
+    const joins = [
+      ".",
+      "_",
+      "+",
+      "-",
+      " ",
+      ":",
+      "/",
+      "=",
+      '"',
+      "'",
+      "(",
+      ")",
+      "[",
+      "]",
+      "\n",
+      "@",
+      "",
+    ];
+    const survivors = (s: string) =>
+      s.replace(/\[REDACTED_[A-Z0-9_]+\]/g, "|").match(/\d+|@[\w.-]+/g) ?? [];
+    for (let i = 0; i < 5_000; i++) {
+      let input = "";
+      for (let k = 2 + rnd(5); k > 0; k--) input += pick(pieces) + pick(joins);
+      const out = redact(input).text;
+      const legacy = survivors(redactLegacy(input).text);
+      for (const run of survivors(out)) {
+        expect(
+          legacy.some((kept) => kept.includes(run)),
+          `${input} -> ${out}`,
+        ).toBe(true);
+      }
+      expect(redact(out).text, input).toBe(out);
+    }
+  });
+
+  it("stays linear on adversarial key-shaped input", () => {
+    const seeds = ["AKIA", "AKIA7", "AKIA-", "ghp_", "ghp_a-", awsKey, ghToken, ghToken + " "];
+    for (const [size, limit] of [
+      [5_000, 250],
+      [100_000, 2_000],
+    ] as const) {
+      const start = performance.now();
+      for (const seed of seeds) redact(seed.repeat(Math.ceil(size / seed.length)));
+      expect(performance.now() - start, `size ${size}`).toBeLessThan(limit);
+    }
+  });
+});
+
+// Review failure report (part 1, review 3): a `-` in front of a key is not
+// part of a word, so the key is still redacted.
+describe("redact: key boundaries", () => {
+  it("redacts a key directly after a dash", () => {
+    const rows: Array<[string, string]> = [
+      ["-" + awsKey, "-[REDACTED_AWS_KEY]"],
+      ["access-key-" + awsKey, "access-key-[REDACTED_AWS_KEY]"],
+      ["prod-" + awsKey + ".csv", "prod-[REDACTED_AWS_KEY].csv"],
+      ["--pat-" + ghToken, "--pat-[REDACTED_GITHUB_TOKEN]"],
+      ["my-token-" + ghToken, "my-token-[REDACTED_GITHUB_TOKEN]"],
+    ];
+    for (const [input, expected] of rows) {
+      expect(redact(input).text, input).toBe(expected);
+      expect(redact(expected).text, input).toBe(expected);
+    }
+    expect(redact(`-${awsKey}\n-${ghToken}\n`)).toEqual({
+      text: "-[REDACTED_AWS_KEY]\n-[REDACTED_GITHUB_TOKEN]\n",
+      log: [
+        { type: "AWS_KEY", count: 1 },
+        { type: "GITHUB_TOKEN", count: 1 },
+      ],
+    });
+  });
+
+  it("leaves a GitHub token with a letter in front or 37 characters unchanged", () => {
+    for (const input of ["x" + ghToken, ghToken + "a"]) {
+      expect(redact(input), input).toEqual({ text: input, log: [] });
+    }
+  });
+
+  it("keeps the key rules out of the legacy rule set", () => {
+    for (const key of [awsKey, ghToken]) {
+      expect(redactLegacy("key " + key)).toEqual({ text: "key " + key, log: [] });
+    }
+  });
+
+  it("redacts a card and an SSN glued in front of +<key>@domain", () => {
+    for (const key of [awsKey, ghToken]) {
+      const spaced = `4111 1111 1111 1111 123-45-6789+${key}@site7.example`;
+      const glued = `4111111111111111-123-45-6789+${key}@site7.example`;
+      for (const fn of [redact, redactLegacy]) {
+        expect(fn(spaced)).toEqual({
+          text: "[REDACTED_CARD] [REDACTED_EMAIL]",
+          log: [
+            { type: "EMAIL", count: 1 },
+            { type: "CARD", count: 1 },
+          ],
+        });
+        expect(fn(glued)).toEqual({
+          text: "[REDACTED_EMAIL]",
+          log: [{ type: "EMAIL", count: 1 }],
+        });
+      }
+    }
   });
 });
