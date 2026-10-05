@@ -5,15 +5,22 @@ const redact = { path: "packages/shared/src/redact.ts", statements: 90, mutation
 const request = { path: "apps/web/src/lib/intake/request.ts", statements: 90, mutation: 80 };
 const list = [redact, request];
 
-/** A Stryker JSON report with one file whose mutants have the given statuses. */
+const mutant = {
+  id: "1",
+  mutatorName: "ConditionalExpression",
+  location: { start: { line: 1, column: 1 }, end: { line: 1, column: 2 } },
+  status: "Killed",
+};
+
+/** A schema-valid Stryker JSON report with one file whose mutants have the given statuses. */
 function report(path: string, counts: Record<string, number>) {
   const mutants = Object.entries(counts).flatMap(([status, n]) =>
-    Array.from({ length: n }, (_, i) => ({ id: `${status}${String(i)}`, status })),
+    Array.from({ length: n }, (_, i) => ({ ...mutant, id: `${status}${String(i)}`, status })),
   );
   return {
     schemaVersion: "1.0",
     thresholds: { high: 80, low: 60 },
-    files: { [path]: { mutants } },
+    files: { [path]: { language: "typescript", source: "", mutants } },
   };
 }
 
@@ -76,5 +83,55 @@ describe("checkMutationReport", () => {
     ["a mutant with an unknown status", report(request.path, { Exploded: 1 })],
   ])("throws a MutationReportError for %s", (_case, input) => {
     expect(() => checkMutationReport(input, list)).toThrow(MutationReportError);
+  });
+
+  // Hand-made reports must never make the gate pass (review 2 of P3-T15d).
+  const head = { schemaVersion: "2", thresholds: { high: 80, low: 60 } };
+  const file = { language: "typescript", source: "", mutants: [mutant] };
+  const withMutant = (fields: object) => ({
+    ...head,
+    files: { [request.path]: { ...file, mutants: [{ ...mutant, ...fields }] } },
+  });
+
+  it("scores a minimal report that follows the official schema", () => {
+    const input = { ...head, files: { [request.path]: file } };
+    expect(checkMutationReport(input, list)).toMatchObject([{ score: 100, passed: true }]);
+  });
+
+  it.each([
+    [
+      "the hand-made report from review 2",
+      { schemaVersion: "banana", files: { [request.path]: { mutants: [{ status: "Killed" }] } } },
+    ],
+    [
+      "an invalid schemaVersion",
+      { ...head, schemaVersion: "banana", files: { [request.path]: file } },
+    ],
+    ["no thresholds", { schemaVersion: "2", files: { [request.path]: file } }],
+    [
+      "a file without language and source",
+      { ...head, files: { [request.path]: { mutants: [mutant] } } },
+    ],
+    ["a mutant without id", withMutant({ id: undefined })],
+    ["a mutant without mutatorName", withMutant({ mutatorName: undefined })],
+    ["a mutant without location", withMutant({ location: undefined })],
+  ])("throws a MutationReportError for a report off the official schema: %s", (_case, input) => {
+    expect(() => checkMutationReport(input, list)).toThrow(MutationReportError);
+  });
+
+  it("throws a MutationReportError for a repeated mutant id (7 killed listed twice)", () => {
+    const input = report(request.path, { Killed: 7, Survived: 3 });
+    const again = report(request.path, { Killed: 7 }).files[request.path]?.mutants ?? [];
+    input.files[request.path]?.mutants.push(...again);
+    expect(() => checkMutationReport(input, list)).toThrow(MutationReportError);
+    expect(() => checkMutationReport(input, list)).toThrow("repeated mutant id Killed0");
+  });
+
+  it("throws a MutationReportError for two report keys that name the same module", () => {
+    const slashes = report(request.path, { Killed: 10 });
+    const backslashes = report(request.path.replaceAll("/", "\\"), { Survived: 90 });
+    const input = { ...slashes, files: { ...slashes.files, ...backslashes.files } };
+    expect(() => checkMutationReport(input, list)).toThrow(MutationReportError);
+    expect(() => checkMutationReport(input, list)).toThrow(`two report keys name ${request.path}`);
   });
 });
