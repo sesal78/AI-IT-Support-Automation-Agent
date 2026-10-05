@@ -27,17 +27,29 @@
 // the older rules alone to their fixed point, exactly as before the key rules
 // existed, and every later step only replaces more text with placeholders.
 // The full rule set then runs to its fixed point, so redact() stays
-// idempotent. A key never starts right after a word character, except right
-// after a whole key, and a `-` in front is fine (`prod-<key>`). In a glued run
-// a whole key in front counts as a start boundary and a whole key behind as an
-// end boundary; both checks look at most 40 characters away, so matching stays
-// linear and one pipeline pass takes the whole run (an email-placeholder start
-// takes one more). A key is one unbroken run of word characters
-// (letters, digits and the `_` of `ghp_`), and every older rule rejects a word
-// character in front of its start, so no older match starts inside a key.
+// idempotent. A run of keys never starts right after a word character, but a
+// `-` in front is fine (`prod-<key>`). Keys glued with no separator are split
+// left to right from the run's start, so a key-shaped window inside a token
+// body is never taken; a run that starts after a word character is left whole
+// (`x<key><key>`). The split is deterministic (`AKIA` and `ghp_` differ in
+// their first letter), so matching stays linear. A key is one unbroken run of
+// word characters (letters, digits and the `_` of `ghp_`), and every older
+// rule rejects a word character in front of its start, so no older match
+// starts inside a key.
 
-export type RedactionType =
-  "SECRET" | "EMAIL" | "AWS_KEY" | "GITHUB_TOKEN" | "CARD" | "SSN" | "IPV4" | "PHONE" | "AU_TFN";
+// Also the order of the log.
+const TYPES = [
+  "SECRET",
+  "EMAIL",
+  "AWS_KEY",
+  "GITHUB_TOKEN",
+  "CARD",
+  "SSN",
+  "IPV4",
+  "PHONE",
+  "AU_TFN",
+] as const;
+export type RedactionType = (typeof TYPES)[number];
 
 export interface RedactionResult {
   text: string;
@@ -51,6 +63,8 @@ interface Rule {
   accept?: (match: string) => boolean;
   /** Returns the accepted prefix of a candidate match ("" rejects it). */
   fit?: (match: string) => string;
+  /** Splits a match into parts replaced one by one ([] rejects it). */
+  split?: (match: string, next: string) => Array<[RedactionType, number]>;
 }
 
 const digitsOf = (s: string): string => s.replace(/\D/g, "");
@@ -78,12 +92,25 @@ function tfnValid(s: string): boolean {
   return sum % 11 === 0;
 }
 
-const AWS_KEY = "AKIA[A-Z0-9]{16}";
-const ANY_KEY = `(?:${AWS_KEY}|ghp_[A-Za-z0-9]{36})`;
-// Not inside a word, or right after a whole key.
-const KEY_START = `(?:(?<!\\w)|(?<=${ANY_KEY}))`;
-// No further key character, unless a whole key starts there.
-const keyEnd = (chars: string) => `(?!(?!${ANY_KEY})${chars})`;
+// Fixed length: AKIA plus 16 upper-case letters or digits, or ghp_ plus 36
+// letters or digits.
+const KEY = "(?:AKIA[A-Z0-9]{16}|ghp_[A-Za-z0-9]{36})";
+
+/**
+ * Splits a glued run into its keys, left to right from its start. Every key
+ * but the last has a whole key behind it; the last one also needs the end or
+ * a character outside its body alphabet behind it, else it is left as is.
+ */
+function splitKeys(run: string, next: string): Array<[RedactionType, number]> {
+  const keys: Array<[RedactionType, number]> = [];
+  for (let i = 0; i < run.length; i += keys[keys.length - 1]![1]) {
+    keys.push(run[i] === "A" ? ["AWS_KEY", 20] : ["GITHUB_TOKEN", run[i] === "_" ? 37 : 40]);
+  }
+  if ((keys[keys.length - 1]![0] === "AWS_KEY" ? /[A-Z0-9]/ : /[A-Za-z0-9]/).test(next)) {
+    keys.pop();
+  }
+  return keys;
+}
 
 const OCTET = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
 
@@ -101,19 +128,13 @@ const RULES: Rule[] = [
       /(?<![\w.%+-])[\w.%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?![A-Za-z0-9-])/g,
   },
   {
-    // Fixed length: exactly 16 upper-case letters or digits after the prefix.
+    // AWS keys and GitHub tokens (splitKeys names each key's type): a run of
+    // whole keys glued together. An email whose last label is `ghp` takes the
+    // prefix first (`jo@x.ghp` + `_<body>`), so a run may also start with a
+    // token body right after an email placeholder.
     type: "AWS_KEY",
-    pattern: new RegExp(KEY_START + AWS_KEY + keyEnd("[A-Z0-9]"), "g"),
-  },
-  {
-    // Fixed length: exactly 36 letters or digits after the prefix. An email
-    // whose last label is `ghp` takes the prefix first (`jo@x.ghp` + `_<body>`),
-    // so a body right after an email placeholder is redacted too.
-    type: "GITHUB_TOKEN",
-    pattern: new RegExp(
-      `(?:${KEY_START}ghp|(?<=\\[REDACTED_EMAIL\\]))_[A-Za-z0-9]{36}${keyEnd("[A-Za-z0-9]")}`,
-      "g",
-    ),
+    pattern: new RegExp(`(?<=\\[REDACTED_EMAIL\\])_[A-Za-z0-9]{36}${KEY}*|(?<!\\w)${KEY}+`, "g"),
+    split: splitKeys,
   },
   {
     // 13–19 contiguous digits, 4-4-4-(1..4) groups, or 4-6-(4..5) Amex/Diners
@@ -164,27 +185,38 @@ const RULES: Rule[] = [
   },
 ];
 
-/** Applies one rule; returns the new text and the number of replacements. */
-function applyRule(text: string, rule: Rule): { text: string; count: number } {
+/** The accepted parts of a candidate match as [type, length] ([] rejects it). */
+function partsOf(rule: Rule, match: string, next: string): Array<[RedactionType, number]> {
+  if (rule.split) return rule.split(match, next);
+  const hit = rule.fit ? rule.fit(match) : !rule.accept || rule.accept(match) ? match : "";
+  return hit === "" ? [] : [[rule.type, hit.length]];
+}
+
+/** Applies one rule; returns the new text and the type of each replacement. */
+function applyRule(text: string, rule: Rule): { text: string; hits: RedactionType[] } {
   const { pattern } = rule;
   pattern.lastIndex = 0;
   let out = "";
   let last = 0;
-  let count = 0;
+  const hits: RedactionType[] = [];
   let m: RegExpExecArray | null;
   while ((m = pattern.exec(text)) !== null) {
-    const hit = rule.fit ? rule.fit(m[0]) : !rule.accept || rule.accept(m[0]) ? m[0] : "";
-    if (hit === "") {
+    const parts = partsOf(rule, m[0], text.charAt(m.index + m[0].length));
+    if (parts.length === 0) {
       // Rejected candidates consume nothing; retry from the next character.
       pattern.lastIndex = m.index + 1;
       continue;
     }
-    out += text.slice(last, m.index) + `[REDACTED_${rule.type}]`;
-    last = m.index + hit.length;
+    out += text.slice(last, m.index);
+    last = m.index;
+    for (const [type, length] of parts) {
+      out += `[REDACTED_${type}]`;
+      last += length;
+      hits.push(type);
+    }
     pattern.lastIndex = last;
-    count++;
   }
-  return { text: out + text.slice(last), count };
+  return { text: out + text.slice(last), hits };
 }
 
 const KEY_TYPES = new Set<string>(["AWS_KEY", "GITHUB_TOKEN"]);
@@ -200,10 +232,10 @@ function toFixedPoint(text: string, rules: Rule[], counts: Counts): string {
     changed = false;
     for (const rule of rules) {
       const res = applyRule(out, rule);
-      if (res.count > 0) {
+      if (res.hits.length > 0) {
         out = res.text;
         changed = true;
-        counts.set(rule.type, (counts.get(rule.type) ?? 0) + res.count);
+        for (const type of res.hits) counts.set(type, (counts.get(type) ?? 0) + 1);
       }
     }
   }
@@ -217,9 +249,9 @@ function run(text: string, stages: Rule[][]): RedactionResult {
   const counts: Counts = new Map();
   let out = text;
   for (const rules of stages) out = toFixedPoint(out, rules, counts);
-  const log = RULES.filter((r) => counts.has(r.type)).map((r) => ({
-    type: r.type as string,
-    count: counts.get(r.type)!,
+  const log = TYPES.filter((type) => counts.has(type)).map((type) => ({
+    type: type as string,
+    count: counts.get(type)!,
   }));
   return { text: out, log };
 }
