@@ -464,3 +464,163 @@ describe("redact: key boundaries", () => {
     }
   });
 });
+
+// Found by the differential fuzz (part 1, retry 3): an email whose last label
+// is `ghp` takes the token prefix (`jo@x.ghp` then `_<body>`) before the
+// GitHub rule runs. The body left behind is still redacted.
+describe("redact: a GitHub token whose prefix an email took", () => {
+  it("redacts the token body left after the email placeholder", () => {
+    for (const input of [`ann@corp.example.${ghToken}`, `jo@x.com${ghToken} end`]) {
+      const out = redact(input);
+      expect(out.text, input).toMatch(/^\[REDACTED_EMAIL\]\[REDACTED_GITHUB_TOKEN\]( end)?$/);
+      expect(out.log, input).toEqual([
+        { type: "EMAIL", count: 1 },
+        { type: "GITHUB_TOKEN", count: 1 },
+      ]);
+      expect(redact(out.text).text, input).toBe(out.text);
+    }
+    expect(redact("ann@corp.example_ab12").text).toBe("[REDACTED_EMAIL]_ab12");
+  });
+
+  it("stays linear on repeated email and token-body fragments", () => {
+    for (const size of [5_000, 100_000]) {
+      const start = performance.now();
+      for (const unit of ["jo@x.ghp_" + "a1".repeat(18), "[REDACTED_EMAIL]_", "jo@x.ghp_a"]) {
+        redact(unit.repeat(Math.ceil(size / unit.length)));
+      }
+      expect(performance.now() - start, `size ${size}`).toBeLessThan(2_000);
+    }
+  });
+});
+
+// Review finding (part 1, both reviews): keys glued with no separator survived
+// whole. Each key in such a run is redacted; a run of key characters that is
+// not a whole key stays a near-miss.
+describe("redact: glued keys", () => {
+  const A = "[REDACTED_AWS_KEY]";
+  const G = "[REDACTED_GITHUB_TOKEN]";
+  const log = (aws: number, gh: number) => [
+    ...(aws ? [{ type: "AWS_KEY", count: aws }] : []),
+    ...(gh ? [{ type: "GITHUB_TOKEN", count: gh }] : []),
+  ];
+
+  it("redacts every key in a glued run", () => {
+    const rows: Array<[string, string, number, number]> = [
+      [awsKey + awsKey, A + A, 2, 0],
+      [ghToken + ghToken, G + G, 0, 2],
+      [awsKey + ghToken, A + G, 1, 1],
+      [ghToken + awsKey, G + A, 1, 1],
+      [`key ${awsKey}${ghToken}${awsKey}.`, `key ${A}${G}${A}.`, 2, 1],
+      [`(${ghToken}${awsKey}${ghToken})`, `(${G}${A}${G})`, 1, 2],
+      [keys.join(""), A + G + A + G, 2, 2],
+      ["-" + awsKey.repeat(3), "-" + A + A + A, 3, 0],
+      [`ann@corp.example.${ghToken}${ghToken}`, `[REDACTED_EMAIL]${G}${G}`, 0, 2],
+    ];
+    for (const [input, text, aws, gh] of rows) {
+      const out = redact(input);
+      expect(out.text, input).toBe(text);
+      expect(
+        out.log.filter((e) => KEY_TYPES.includes(e.type)),
+        input,
+      ).toEqual(log(aws, gh));
+      expect(redact(text).text, input).toBe(text);
+    }
+  });
+
+  it("keeps a too-long tail a near-miss unless a whole key starts there", () => {
+    const rows: Array<[string, string]> = [
+      [awsKey + "Z", awsKey + "Z"],
+      [awsKey + awsKey + "Z", A + awsKey + "Z"],
+      [ghToken + ghToken + "a", G + ghToken + "a"],
+      [awsKey + awsKey.slice(0, 19), awsKey + awsKey.slice(0, 19)],
+      [ghToken + "AK" + "IA" + "X7Q2", ghToken + "AK" + "IA" + "X7Q2"],
+      // Rule: a glued run that starts after a word character is a near-miss
+      // as a whole (same as dev). Changed in P3-T3a1b review 1.
+      ["Z" + awsKey + awsKey, "Z" + awsKey + awsKey],
+    ];
+    for (const [input, text] of rows) {
+      expect(redact(input).text, input).toBe(text);
+      expect(redact(text).text, input).toBe(text);
+    }
+  });
+
+  it("stays linear on glued key runs", () => {
+    const units = [awsKey + ghToken, ghToken + awsKey, awsKey + awsKey, ghToken + ghToken];
+    for (const size of [5_000, 100_000]) {
+      for (const unit of [...units, ...units.map((u) => u + "Z"), "a" + ghToken]) {
+        const input = unit.repeat(Math.ceil(size / unit.length));
+        const start = performance.now();
+        redact(input);
+        expect(performance.now() - start, `${size} ${unit.length}`).toBeLessThan(2_000);
+      }
+    }
+  });
+});
+
+// Review failure report (P3-T3a1b, review 1): a key-shaped window inside a
+// token body counted as "a whole key in front", so a glued run was split in
+// the wrong place and parts of two keys leaked.
+describe("redact: glued runs split from their start", () => {
+  const P = "AK" + "IA";
+  const H = "gh" + "p_";
+  const ghSeeded = H + P.repeat(9); // AKIA at every body offset 0, 4, ..., 32
+  const ghMixed = H + P + "Q7".repeat(8) + P + "9".repeat(12); // AKIA at 0 and 20
+  const ghDigits = H + "1234567890".repeat(3) + "123456";
+  const awsSeeded = P + P.repeat(4);
+  const awsDigits = P + "1234567890123456";
+  const A = "[REDACTED_AWS_KEY]";
+  const G = "[REDACTED_GITHUB_TOKEN]";
+  const n = (s: string, p: string) => s.split(p).length - 1;
+
+  it("redacts every whole key in a glued run, whatever its body", () => {
+    const rows: Array<[string, string]> = [
+      [H + P.repeat(19), G + A + A],
+      [`ann@corp.example.${ghMixed}${awsSeeded}${awsSeeded}`, `[REDACTED_EMAIL]${G}${A}${A}`],
+      [`ann@corp.example.${ghSeeded}${awsDigits}`, `[REDACTED_EMAIL]${G}${A}`],
+      [awsSeeded + ghSeeded + awsSeeded, A + G + A],
+      [awsSeeded + ghMixed + ghSeeded, A + G + G],
+      [`(${ghMixed}${awsDigits}${ghDigits})`, `(${G}${A}${G})`],
+      [awsDigits + ghSeeded + "_x", A + G + "_x"],
+      ["id-" + ghSeeded + awsSeeded, "id-" + G + A],
+      // Review 2: AKIA at token body offsets 0 and 20, then K3 and K4.
+      [
+        ` ${H}${P}${"Q7".repeat(8)}${P}${"9".repeat(12)}${P}${P}${"8".repeat(12)}${P}${"X".repeat(16)} `,
+        ` ${G}${A}${A} `,
+      ],
+      [`ann@corp.example.${ghMixed}${P}${P}${"8".repeat(12)}`, `[REDACTED_EMAIL]${G}${A}`],
+      [awsDigits + ghMixed + P + P + "8".repeat(12), A + G + A],
+      ["[REDACTED_CARD]" + ghMixed + awsDigits + ".", "[REDACTED_CARD]" + G + A + "."],
+    ];
+    for (const [input, text] of rows) {
+      const out = redact(input);
+      expect(out.text, input).toBe(text);
+      const keyLog = out.log.filter((e) => KEY_TYPES.includes(e.type));
+      expect(keyLog, input).toEqual([
+        { type: "AWS_KEY", count: n(text, A) },
+        { type: "GITHUB_TOKEN", count: n(text, G) },
+      ]);
+      expect(redact(text).text, input).toBe(text);
+    }
+  });
+
+  it("leaves seeded near-misses unchanged", () => {
+    for (const input of [
+      ghSeeded + "A",
+      ghSeeded + P + "1".repeat(15),
+      awsSeeded + P.repeat(4),
+      "Z" + ghSeeded + awsSeeded,
+      H + P.repeat(8) + "AKI",
+    ]) {
+      expect(redact(input), input).toEqual({ text: input, log: [] });
+    }
+  });
+
+  it("stays linear on seeded glued runs", () => {
+    const units = [ghSeeded + awsSeeded, awsSeeded + ghMixed, H + P.repeat(19) + "Z", P, H + P];
+    for (const size of [5_000, 100_000]) {
+      const start = performance.now();
+      for (const unit of units) redact(unit.repeat(Math.ceil(size / unit.length)));
+      expect(performance.now() - start, `size ${size}`).toBeLessThan(2_000);
+    }
+  });
+});
