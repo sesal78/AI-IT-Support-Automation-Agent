@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,6 +45,9 @@ const ignoredEntries = new Set([
   "node_modules",
   ".turbo",
   "coverage",
+  // Stryker (pnpm test:mutation)
+  "reports",
+  ".stryker-tmp",
 ]);
 
 describe("repo layout", () => {
@@ -56,6 +60,16 @@ describe("repo layout", () => {
       .map((entry) => entry.name);
 
     expect(unexpected).toEqual([]);
+  });
+
+  it("git-ignores Stryker's report and temp folders and never allow-lists them as tracked", () => {
+    for (const dir of ["reports", ".stryker-tmp"]) {
+      expect(allowedDirs.has(dir), dir).toBe(false);
+      const check = spawnSync("git", ["check-ignore", "--quiet", `${dir}/mutation.json`], {
+        cwd: repoRoot,
+      });
+      expect(check.status, dir).toBe(0);
+    }
   });
 
   it("keeps the old n8n build under legacy/", () => {

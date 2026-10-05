@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { checkMutationReport, guardFilesTouched, MutationReportError } from "./mutation-gate.js";
+import {
+  checkMutationReport,
+  guardFilesTouched,
+  MutationReportError,
+  parseMutationReport,
+} from "./mutation-gate.js";
 
 const redact = { path: "packages/shared/src/redact.ts", statements: 90, mutation: null };
 const request = { path: "apps/web/src/lib/intake/request.ts", statements: 90, mutation: 80 };
@@ -33,6 +38,9 @@ describe("guardFilesTouched", () => {
     [["guard-modules.json"], true],
     [["apps\\web\\src\\lib\\intake\\request.ts"], true],
     [["README.md", "packages/shared/scripts/mutation-gate.mjs"], true],
+    // A change to a floored module's own test file can weaken its score.
+    [["apps/web/src/lib/intake/request.test.ts"], true],
+    [["packages/shared/src/redact.test.ts"], false],
   ])("%j is %s", (changed, expected) => {
     expect(guardFilesTouched(changed, list)).toBe(expected);
   });
@@ -166,5 +174,48 @@ describe("checkMutationReport", () => {
   it("throws a MutationReportError for a lone key that is not repo-relative", () => {
     const input = report(`./${request.path}`, { Killed: 10 });
     expect(() => checkMutationReport(input, list)).toThrow(MutationReportError);
+  });
+
+  // zod's z.record drops a `__proto__` key without checking it (owner decision, note 9).
+  it("throws a MutationReportError for a __proto__ file key from JSON.parse", () => {
+    const exact = JSON.stringify(report(request.path, { Killed: 10 }));
+    const input: unknown = JSON.parse(exact.replace('"files":{', '"files":{"__proto__":{},'));
+    expect(() => checkMutationReport(input, list)).toThrow(MutationReportError);
+    expect(() => checkMutationReport(input, list)).toThrow('report key "__proto__"');
+  });
+});
+
+describe("parseMutationReport", () => {
+  const exact = JSON.stringify(report(request.path, { Killed: 10 }));
+  const files = '"files":{';
+
+  it("returns what JSON.parse returns for a report without repeated keys", () => {
+    expect(parseMutationReport(exact)).toEqual(JSON.parse(exact));
+  });
+
+  // JSON.parse keeps only the last of two equal keys, so a forged entry would go unseen (note 6).
+  it.each([
+    ["a file key listed twice", exact.replace(files, `${files}"${request.path}":{},`)],
+    [
+      "a file key spelled with an escape",
+      exact.replace(files, `${files}"apps\/web/src/lib/intake/request.ts":{},`),
+    ],
+    [
+      "a repeated field in a mutant",
+      exact.replace('"status":"Killed"', '"status":"Survived","status":"Killed"'),
+    ],
+    ["a repeated top-level field", `{"schemaVersion":"9",${exact.slice(1)}`],
+  ])("throws a MutationReportError for %s", (_case, text) => {
+    expect(() => parseMutationReport(text)).toThrow(MutationReportError);
+    expect(() => parseMutationReport(text)).toThrow("repeated key");
+  });
+
+  it("allows the same key in different objects and brackets inside strings", () => {
+    const text = '{"a":{"id":"{[,"},"b":{"id":"]}"},"c":[{"id":1},{"id":2}]}';
+    expect(parseMutationReport(text)).toEqual(JSON.parse(text));
+  });
+
+  it("throws a MutationReportError for text that is not JSON", () => {
+    expect(() => parseMutationReport("{")).toThrow(MutationReportError);
   });
 });

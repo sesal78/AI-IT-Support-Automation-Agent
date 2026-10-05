@@ -40,6 +40,7 @@ const gateCommands: Record<string, string> = {
   e2e: "pnpm test:e2e",
   docker: "pnpm test:e2e:docker",
   semgrep: "pnpm scan:semgrep",
+  mutation: "pnpm test:mutation",
 };
 
 // `owner/repo[/path]@<full 40-hex commit SHA>`. Tags, branches, short SHAs,
@@ -164,6 +165,16 @@ describe(".github/workflows/ci.yml", () => {
     for (const [event, trigger] of Object.entries(on)) {
       expect(Object.keys(trigger ?? {}), event).not.toContain("paths");
       expect(Object.keys(trigger ?? {}), event).not.toContain("paths-ignore");
+    }
+  });
+
+  it("runs the mutation job on the full history and keeps it blocking: no `if:`, no `continue-on-error`", () => {
+    const job = load().jobs?.mutation;
+    const checkout = (job?.steps ?? []).find((step) => step.uses?.startsWith("actions/checkout@"));
+    expect(checkout?.with?.["fetch-depth"]).toBe(0);
+    for (const part of [job, ...(job?.steps ?? [])]) {
+      expect(Object.keys(part ?? {})).not.toContain("if");
+      expect(Object.keys(part ?? {})).not.toContain("continue-on-error");
     }
   });
 
