@@ -7,7 +7,10 @@
 // always terminates: every match contains a digit, a lower-case letter, `@`,
 // `:`, `=` or the upper-case prefix `AKIA`, and placeholders contain none of
 // them (their brackets also stop an `AKIA` forming across an edge), so each
-// changing pass strictly shrinks the count of those.
+// changing pass strictly shrinks the count of those. The one exception, a
+// GitHub token body after an email placeholder, removes one `EMAIL]_` pair and
+// creates none (its placeholder starts with `[`); only an EMAIL match, which
+// shrinks the count above, can create such a pair.
 //
 // Boundaries: a space separates tokens, while `-` and `.` join digits into one
 // number. A rule therefore never starts or ends inside a word or a dash/dot
@@ -24,8 +27,12 @@
 // the older rules alone to their fixed point, exactly as before the key rules
 // existed, and every later step only replaces more text with placeholders.
 // The full rule set then runs to its fixed point, so redact() stays
-// idempotent. A key never starts right after a word character, but a `-` in
-// front is fine (`prod-<key>`). A key is one unbroken run of word characters
+// idempotent. A key never starts right after a word character, except right
+// after a whole key, and a `-` in front is fine (`prod-<key>`). In a glued run
+// a whole key in front counts as a start boundary and a whole key behind as an
+// end boundary; both checks look at most 40 characters away, so matching stays
+// linear and one pipeline pass takes the whole run (an email-placeholder start
+// takes one more). A key is one unbroken run of word characters
 // (letters, digits and the `_` of `ghp_`), and every older rule rejects a word
 // character in front of its start, so no older match starts inside a key.
 
@@ -71,6 +78,13 @@ function tfnValid(s: string): boolean {
   return sum % 11 === 0;
 }
 
+const AWS_KEY = "AKIA[A-Z0-9]{16}";
+const ANY_KEY = `(?:${AWS_KEY}|ghp_[A-Za-z0-9]{36})`;
+// Not inside a word, or right after a whole key.
+const KEY_START = `(?:(?<!\\w)|(?<=${ANY_KEY}))`;
+// No further key character, unless a whole key starts there.
+const keyEnd = (chars: string) => `(?!(?!${ANY_KEY})${chars})`;
+
 const OCTET = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
 
 const RULES: Rule[] = [
@@ -89,12 +103,17 @@ const RULES: Rule[] = [
   {
     // Fixed length: exactly 16 upper-case letters or digits after the prefix.
     type: "AWS_KEY",
-    pattern: /(?<!\w)AKIA[A-Z0-9]{16}(?![A-Z0-9])/g,
+    pattern: new RegExp(KEY_START + AWS_KEY + keyEnd("[A-Z0-9]"), "g"),
   },
   {
-    // Fixed length: exactly 36 letters or digits after the prefix.
+    // Fixed length: exactly 36 letters or digits after the prefix. An email
+    // whose last label is `ghp` takes the prefix first (`jo@x.ghp` + `_<body>`),
+    // so a body right after an email placeholder is redacted too.
     type: "GITHUB_TOKEN",
-    pattern: /(?<!\w)ghp_[A-Za-z0-9]{36}(?![A-Za-z0-9])/g,
+    pattern: new RegExp(
+      `(?:${KEY_START}ghp|(?<=\\[REDACTED_EMAIL\\]))_[A-Za-z0-9]{36}${keyEnd("[A-Za-z0-9]")}`,
+      "g",
+    ),
   },
   {
     // 13–19 contiguous digits, 4-4-4-(1..4) groups, or 4-6-(4..5) Amex/Diners
