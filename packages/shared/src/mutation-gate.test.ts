@@ -198,7 +198,7 @@ describe("parseMutationReport", () => {
     ["a file key listed twice", exact.replace(files, `${files}"${request.path}":{},`)],
     [
       "a file key spelled with an escape",
-      exact.replace(files, `${files}"apps\/web/src/lib/intake/request.ts":{},`),
+      exact.replace(files, `${files}"apps\\/web/src/lib/intake/request.ts":{},`),
     ],
     [
       "a repeated field in a mutant",
