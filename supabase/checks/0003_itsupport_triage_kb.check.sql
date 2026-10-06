@@ -9,11 +9,14 @@
 -- is exactly the expected one (Postgres 17). A function is ok when its
 -- language, arguments, result, volatility, security, strictness, settings,
 -- body (MD5 with carriage returns removed, so CRLF and LF checkouts agree) and
--- the grants held by roles other than its owner are exactly the expected ones.
+-- the grants held by roles other than its owner are exactly the expected ones,
+-- and it is the only function of that name in itsupport (no overloads).
 -- A numeric column carries its precision and scale (numeric(5,2) is not
 -- numeric). `checks`, `columns` and `grants` rows list every check constraint,
 -- column, or table and column privilege held by a role other than the owner,
--- so anything extra or missing fails. `rls` means RLS on with no policies.
+-- so anything extra or missing fails; a grant with grant option ends in `*`.
+-- `rls` means RLS on with no policies. `owner` means the same owner as
+-- itsupport.tickets (whichever role applied the migrations).
 
 select e.object,
   case e.kind
@@ -35,10 +38,13 @@ select e.object,
       select 1 from pg_catalog.pg_proc p
       join pg_catalog.pg_language l on l.oid = p.prolang
       where p.oid = to_regprocedure('itsupport.' || e.name) and l.lanname = e.udt
+        and 1 = (select count(*) from pg_catalog.pg_proc q
+          where q.pronamespace = p.pronamespace and q.proname = p.proname)
         and concat_ws(' ', pg_get_function_arguments(p.oid), '->', pg_get_function_result(p.oid),
           p.provolatile, p.prosecdef, p.proisstrict, p.proconfig, (
             select string_agg(case x.grantee when 0 then 'public' else pg_get_userbyid(x.grantee) end
-              || '=' || x.privilege_type, ',' order by x.grantee)
+              || '=' || x.privilege_type || case when x.is_grantable then '*' else '' end,
+              ',' order by x.grantee)
             from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
             where x.grantee <> p.proowner
           ), md5(replace(p.prosrc, chr(13), ''))) = e.def
@@ -63,16 +69,22 @@ select e.object,
     when 'grants' then e.def = (
       select coalesce(string_agg(w.who || ' ' || g.priv, ', ' order by w.who, g.priv), '')
       from (
-        select x.grantee, x.privilege_type
+        select x.grantee, x.privilege_type || case when x.is_grantable then '*' else '' end
         from pg_catalog.pg_class r, aclexplode(coalesce(r.relacl, acldefault('r', r.relowner))) x
         where r.oid = to_regclass('itsupport.' || e.tbl) and x.grantee <> r.relowner
         union all
-        select x.grantee, a.attname || '.' || x.privilege_type
+        select x.grantee, a.attname || '.' || x.privilege_type || case when x.is_grantable then '*' else '' end
         from pg_catalog.pg_attribute a, aclexplode(a.attacl) x
         where a.attrelid = to_regclass('itsupport.' || e.tbl)
       ) as g (grantee, priv),
       lateral (select case g.grantee when 0 then 'public' else pg_get_userbyid(g.grantee) end) as w (who)
     )
+    when 'owner' then coalesce((
+      select r.relowner from pg_catalog.pg_class r where r.oid = to_regclass('itsupport.tickets')
+    ) = case e.udt
+      when 'table' then (select r.relowner from pg_catalog.pg_class r where r.oid = to_regclass('itsupport.' || e.name))
+      else (select p.proowner from pg_catalog.pg_proc p where p.oid = to_regprocedure('itsupport.' || e.name))
+    end, false)
     else exists (
       select 1 from pg_catalog.pg_constraint k
       join pg_catalog.pg_class r on r.oid = k.conrelid
@@ -152,6 +164,8 @@ from (
     ('grants itsupport.kb_articles', 'grants', 'kb_articles', null, null, null,
       'service_role INSERT, service_role SELECT, service_role UPDATE'),
     ('rls itsupport.kb_articles', 'rls', 'kb_articles', null, null, null, null),
+    ('owner itsupport.kb_articles', 'owner', null, 'kb_articles', 'table', null, null),
+    ('owner itsupport.kb_search', 'owner', null, 'kb_search(text, integer)', 'function', null, null),
     ('collation itsupport.kb_articles.slug', 'collation', 'kb_articles', 'slug', null, null, 'default')
 ) as e (object, kind, tbl, name, udt, nullable, def)
 order by e.object;
