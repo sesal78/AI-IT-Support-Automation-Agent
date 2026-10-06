@@ -176,6 +176,9 @@ describe(".github/workflows/ci.yml", () => {
       expect(Object.keys(part ?? {})).not.toContain("if");
       expect(Object.keys(part ?? {})).not.toContain("continue-on-error");
     }
+    // Exact, so `pnpm test:mutation || true` cannot pass.
+    const runs = (job?.steps ?? []).flatMap((step) => (step.run ? [step.run] : []));
+    expect(runs).toEqual(["pnpm install --frozen-lockfile", "pnpm test:mutation"]);
   });
 
   it("references no secrets", () => {

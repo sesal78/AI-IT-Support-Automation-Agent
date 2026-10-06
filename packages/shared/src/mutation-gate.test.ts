@@ -7,8 +7,14 @@ import {
 } from "./mutation-gate.js";
 
 const redact = { path: "packages/shared/src/redact.ts", statements: 90, mutation: null };
-const request = { path: "apps/web/src/lib/intake/request.ts", statements: 90, mutation: 80 };
-const list = [redact, request];
+const route = "apps/web/src/app/api/tickets/route.test.ts";
+const request = {
+  path: "apps/web/src/lib/intake/request.ts",
+  statements: 90,
+  mutation: 80,
+  tests: [route],
+};
+const list = [{ ...redact, tests: ["packages/shared/src/other.test.ts"] }, request];
 
 const mutant = {
   id: "1",
@@ -38,9 +44,22 @@ describe("guardFilesTouched", () => {
     [["guard-modules.json"], true],
     [["apps\\web\\src\\lib\\intake\\request.ts"], true],
     [["README.md", "packages/shared/scripts/mutation-gate.mjs"], true],
+    [["packages/shared/scripts/mutation-gate.mjs"], true],
+    [["packages/shared/src/mutation-gate.ts"], true],
     // A change to a floored module's own test file can weaken its score.
     [["apps/web/src/lib/intake/request.test.ts"], true],
     [["packages/shared/src/redact.test.ts"], false],
+    // A listed test file that kills the module's mutants, and what the run depends on.
+    [[route], true],
+    [["apps\\web\\src\\app\\api\\tickets\\route.test.ts"], true],
+    [["packages/shared/src/other.test.ts"], false],
+    [["packages/shared/src/guard-modules.ts"], true],
+    [["vitest.config.ts"], true],
+    [["apps/web/vitest.config.ts"], true],
+    [["package.json"], true],
+    [["pnpm-lock.yaml"], true],
+    [["apps/web/src/app/api/tickets/route.ts"], false],
+    [["docs/package.json"], false],
   ])("%j is %s", (changed, expected) => {
     expect(guardFilesTouched(changed, list)).toBe(expected);
   });

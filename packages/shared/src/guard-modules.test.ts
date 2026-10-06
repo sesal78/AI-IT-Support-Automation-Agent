@@ -9,6 +9,11 @@ describe("parseGuardModules", () => {
     expect(parseGuardModules([redact, request])).toEqual([redact, request]);
   });
 
+  it("keeps an optional list of test files that kill a module's mutants", () => {
+    const withTests = { ...request, tests: ["apps/web/src/app/api/tickets/route.test.ts"] };
+    expect(parseGuardModules([redact, withTests])).toEqual([redact, withTests]);
+  });
+
   it("accepts an empty list", () => {
     expect(parseGuardModules([])).toEqual([]);
   });
@@ -16,6 +21,17 @@ describe("parseGuardModules", () => {
   it.each([
     ["statements below 90", { ...redact, statements: 89.9 }, "statements"],
     ["mutation below 80", { ...redact, mutation: 79.9 }, "mutation"],
+    // Whole numbers, so only the minimum can reject them.
+    ["whole statements below 90", { ...redact, statements: 89 }, "statements"],
+    ["whole mutation below 80", { ...redact, mutation: 79 }, "mutation"],
+    ["a fractional statements floor", { ...redact, statements: 90.5 }, "statements"],
+    ["a fractional mutation floor", { ...redact, mutation: 80.5 }, "mutation"],
+    ["tests that are not a list", { ...redact, tests: "a/b.test.ts" }, "tests"],
+    ["an empty tests list", { ...redact, tests: [] }, "tests"],
+    ["a test that is not a test file", { ...redact, tests: ["a/b.ts"] }, "tests: 0"],
+    ["a test with a back-slash", { ...redact, tests: ["a\\b.test.ts"] }, "tests: 0"],
+    ["a test glob", { ...redact, tests: ["a/*.test.ts"] }, "tests: 0"],
+    ["a repeated test", { ...redact, tests: ["a/b.test.ts", "a/b.test.ts"] }, "duplicate test"],
     ["a missing mutation floor", { path: redact.path, statements: 90 }, "mutation"],
     ["an unknown key", { ...redact, lines: 90 }, '"lines"'],
     ["a duplicate path", { ...redact, statements: 95 }, "duplicate path"],

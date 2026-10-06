@@ -14,5 +14,5 @@ next-env.d.ts
 test-results/
 playwright-report/
 # Stryker (pnpm test:mutation)
-reports/
-.stryker-tmp/
+/reports/
+/.stryker-tmp/

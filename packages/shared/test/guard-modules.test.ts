@@ -42,6 +42,18 @@ describe("guard-modules.json", () => {
     expect(missingGuardModules([...guardModules, ...list], repoRoot)).toEqual(madeUp);
   });
 
+  it("would report a made-up test file listed for a module", () => {
+    const tests = ["packages/shared/src/no-such.test.ts"];
+    const list = [{ path: "packages/shared/src/redact.ts", statements: 90, mutation: null, tests }];
+    expect(missingGuardModules(list, repoRoot)).toEqual(tests);
+  });
+
+  // `vitest related` runs these too, so a change to them can weaken the score.
+  it("lists the tickets route test for the intake request module", () => {
+    const request = guardModules.find(({ path }) => path === "apps/web/src/lib/intake/request.ts");
+    expect(request?.tests).toEqual(["apps/web/src/app/api/tickets/route.test.ts"]);
+  });
+
   // Vitest skips a per-file floor whose file is not in the coverage report.
   it("lists only files that the coverage run measures", () => {
     for (const { path } of guardModules) {
