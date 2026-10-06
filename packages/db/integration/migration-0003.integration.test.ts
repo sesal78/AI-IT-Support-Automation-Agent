@@ -468,6 +468,7 @@ describe("migration 0003_itsupport_triage_kb, check-query hardening", () => {
   it("one wrong change per variant flips only its own row to ok = false", async () => {
     const fnSql = /create or replace function itsupport\.kb_search[\s\S]*?\$\$;/.exec(upSql)?.[0];
     expect(fnSql).toContain("least(coalesce(p_limit, 5), 20)");
+    const ownerSql = (role: string) => `grant create on schema itsupport to ${role};`;
     const variants = [
       [`grant select on ${KB} to anon`, `grants ${KB}`],
       [`grant delete on ${KB} to service_role`, `grants ${KB}`],
@@ -496,8 +497,9 @@ describe("migration 0003_itsupport_triage_kb, check-query hardening", () => {
         `grant execute on function ${FN} to service_role with grant option`,
         "function itsupport.kb_search",
       ],
-      [`alter table ${KB} owner to authenticated`, `owner ${KB}`],
-      [`alter function ${FN} owner to anon`, "owner itsupport.kb_search"],
+      // A new owner needs create on the schema (granted only inside this rolled-back transaction).
+      [`${ownerSql("authenticated")} alter table ${KB} owner to authenticated`, `owner ${KB}`],
+      [`${ownerSql("anon")} alter function ${FN} owner to anon`, "owner itsupport.kb_search"],
       [
         "create function itsupport.kb_search(p_query text) returns integer language sql as 'select 1'",
         "function itsupport.kb_search",
