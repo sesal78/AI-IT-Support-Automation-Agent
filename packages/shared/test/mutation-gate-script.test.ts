@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { guardFilesTouched } from "../src/mutation-gate.js";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const scriptPath = resolve(repoRoot, "packages/shared/scripts/mutation-gate.mjs");
@@ -46,7 +47,8 @@ describe("packages/shared/scripts/mutation-gate.mjs", () => {
     expect(run.status).toBe(2);
   });
 
-  // A preload swaps in the list text, so the real guard-modules.json is never touched.
+  // A preload swaps in the list text, so the real guard-modules.json is never
+  // touched. `--changed README.md`: if the stub stopped applying, it skips, never runs Stryker.
   it.each([
     ["an invalid list", '[{ "path": "a/b.ts", "statements": 90, "mutation": 80, "tests": "x" }]'],
     ["text that is not JSON", "[{"],
@@ -57,9 +59,10 @@ describe("packages/shared/scripts/mutation-gate.mjs", () => {
       fs.readFileSync = (file, ...rest) =>
         file === "guard-modules.json" ? ${JSON.stringify(text)} : read(file, ...rest);
       syncBuiltinESMExports();`;
+    const stub = `data:text/javascript,${encodeURIComponent(preload)}`;
     const run = spawnSync(
       process.execPath,
-      ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, scriptPath, "--all"],
+      ["--import", stub, scriptPath, "--changed", "README.md"],
       { cwd: repoRoot, encoding: "utf8" },
     );
     expect(run.stderr).toContain("test:mutation: guard-modules.json: ");
@@ -67,13 +70,31 @@ describe("packages/shared/scripts/mutation-gate.mjs", () => {
     expect(run.status).toBe(2);
   });
 
+  // `vitest related` loads every project config, so a change to any of them re-runs the gate.
+  it("treats every Vitest project config as a gate file", () => {
+    const configs = ["apps", "services", "packages"].flatMap((group) =>
+      readdirSync(resolve(repoRoot, group), { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .flatMap((entry) =>
+          readdirSync(resolve(repoRoot, group, entry.name))
+            .filter((name) => name.startsWith("vitest.config."))
+            .map((name) => `${group}/${entry.name}/${name}`),
+        ),
+    );
+    expect(configs).toContain("packages/shared/vitest.config.ts");
+    for (const config of configs) expect(guardFilesTouched([config], []), config).toBe(true);
+  });
+
   // @stryker-mutator/vitest-runner 10.0.0 marks every test "skipped" on Vitest 5, so its score is false.
   it("uses Stryker's built-in command runner, pinned exactly, and never the Vitest runner", () => {
     const script = readFileSync(scriptPath, "utf8");
     const pkg = readFileSync(resolve(repoRoot, "package.json"), "utf8");
     expect(script).toContain('testRunner: "command"');
-    // In place, a killed run must not leave `// @ts-nocheck` in any file.
-    expect(script).toContain("disableTypeChecks: false,");
+    // In place, a killed run must not leave `// @ts-nocheck` in any file. Exactly
+    // one uncommented option line, so a comment or a second `true` line cannot pass.
+    expect(script.match(/^.*\bdisableTypeChecks\b.*$/gm)).toEqual([
+      expect.stringMatching(/^\s+disableTypeChecks: false,\r?$/),
+    ]);
     expect(`${script}${pkg}`).not.toContain("vitest-runner");
     expect(JSON.parse(pkg).devDependencies["@stryker-mutator/core"]).toBe("10.0.0");
   });
