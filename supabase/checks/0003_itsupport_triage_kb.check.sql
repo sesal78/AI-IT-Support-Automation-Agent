@@ -4,7 +4,8 @@
 -- integration test. Returns one row per object 0003 creates: (object, ok).
 -- After the up file every row is ok = true; after the down file every row is
 -- ok = false. A column is ok when it exists with the expected type,
--- nullability and default (or `generated <expression>`); a constraint (check,
+-- nullability and default (or `generated <expression>`, or `identity ALWAYS`
+-- / `identity BY DEFAULT`); a constraint (check,
 -- primary key, unique or foreign key) or an index is ok when it exists and its definition
 -- is exactly the expected one (Postgres 17). A function is ok when its
 -- language, arguments, result, volatility, security, strictness, settings,
@@ -17,6 +18,8 @@
 -- so anything extra or missing fails; a grant with grant option ends in `*`.
 -- `rls` means RLS on with no policies. `owner` means the same owner as
 -- itsupport.tickets (whichever role applied the migrations).
+-- 0003 runs on the SHARED Supabase stack; applying it there is human step H13.
+-- The up file is idempotent; the down file is destructive.
 
 select e.object,
   case e.kind
@@ -26,7 +29,8 @@ select e.object,
         and c.column_name = e.name and c.is_nullable = e.nullable
         and c.udt_name || case when c.data_type = 'numeric'
           then coalesce('(' || c.numeric_precision || ',' || c.numeric_scale || ')', '') else '' end = e.udt
-        and coalesce('generated ' || c.generation_expression, c.column_default)
+        and coalesce('generated ' || c.generation_expression, 'identity ' || c.identity_generation,
+          c.column_default)
           is not distinct from e.def
     )
     when 'index' then exists (
@@ -66,7 +70,7 @@ select e.object,
       select coalesce(string_agg(k.conname, ', ' order by k.conname), '') from pg_catalog.pg_constraint k
       where k.conrelid = to_regclass('itsupport.' || e.tbl) and k.contype = 'c'
     )
-    when 'grants' then e.def = (
+    when 'grants' then to_regclass('itsupport.' || e.tbl) is not null and e.def = (
       select coalesce(string_agg(w.who || ' ' || g.priv, ', ' order by w.who, g.priv), '')
       from (
         select x.grantee, x.privilege_type || case when x.is_grantable then '*' else '' end
@@ -203,8 +207,36 @@ from (
       'ai_budget_reserve(text, numeric, integer, integer, text, text, uuid)', 'plpgsql', null,
       'p_provider text, p_est_cost numeric, p_est_calls integer, p_cap_calls integer, p_environment text, '
       || 'p_kind text, p_ticket_id uuid DEFAULT NULL::uuid -> TABLE(allowed boolean, used_calls integer, call_id uuid) '
-      || 'v f f {"search_path=\"\""} service_role=EXECUTE d2fe3aa3f9ce6bff3a321265776fa1c8'),
+      || 'v f f {"search_path=\"\""} service_role=EXECUTE 7df830c3c8928aa6ea463fa80e6c70e5'),
     ('owner itsupport.ai_budget_reserve', 'owner', null,
-      'ai_budget_reserve(text, numeric, integer, integer, text, text, uuid)', 'function', null, null)
+      'ai_budget_reserve(text, numeric, integer, integer, text, text, uuid)', 'function', null, null),
+    -- Part 4: security_events and security_event_record (no foreign key).
+    ('column itsupport.security_events.id', 'column', 'security_events', 'id', 'int8', 'NO', 'identity ALWAYS'),
+    ('column itsupport.security_events.source', 'column', 'security_events', 'source', 'text', 'NO', null),
+    ('column itsupport.security_events.kind', 'column', 'security_events', 'kind', 'text', 'NO', null),
+    ('column itsupport.security_events.window_start', 'column', 'security_events', 'window_start', 'timestamptz', 'NO', null),
+    ('column itsupport.security_events.count', 'column', 'security_events', 'count', 'int4', 'NO', '1'),
+    ('column itsupport.security_events.sample', 'column', 'security_events', 'sample', 'jsonb', 'NO', '''{}''::jsonb'),
+    ('constraint itsupport.security_events.security_events_pkey', 'constraint', 'security_events', 'security_events_pkey', null, null,
+      'PRIMARY KEY (id)'),
+    ('constraint itsupport.security_events.security_events_source_kind_window_start_key', 'constraint', 'security_events',
+      'security_events_source_kind_window_start_key', null, null, 'UNIQUE (source, kind, window_start)'),
+    ('constraint itsupport.security_events.security_events_count_check', 'constraint', 'security_events',
+      'security_events_count_check', null, null, 'CHECK ((count > 0))'),
+    ('index itsupport.security_events.security_events_window_start_idx', 'index', 'security_events',
+      'security_events_window_start_idx', null, null,
+      'CREATE INDEX security_events_window_start_idx ON itsupport.security_events USING btree (window_start)'),
+    ('checks itsupport.security_events', 'checks', 'security_events', null, null, null, 'security_events_count_check'),
+    ('columns itsupport.security_events', 'columns', 'security_events', null, null, null,
+      'id, source, kind, window_start, count, sample'),
+    ('grants itsupport.security_events', 'grants', 'security_events', null, null, null,
+      'service_role INSERT, service_role SELECT, service_role UPDATE'),
+    ('grants itsupport.security_events_id_seq', 'grants', 'security_events_id_seq', null, null, null, ''),
+    ('rls itsupport.security_events', 'rls', 'security_events', null, null, null, null),
+    ('owner itsupport.security_events', 'owner', null, 'security_events', 'table', null, null),
+    ('function itsupport.security_event_record', 'function', null, 'security_event_record(text, text, jsonb)', 'plpgsql', null,
+      'p_source text, p_kind text, p_sample jsonb DEFAULT ''{}''::jsonb -> integer '
+      || 'v f f {"search_path=\"\""} service_role=EXECUTE 2d303a9533afa467766736747ad7ff5d'),
+    ('owner itsupport.security_event_record', 'owner', null, 'security_event_record(text, text, jsonb)', 'function', null, null)
 ) as e (object, kind, tbl, name, udt, nullable, def)
 order by e.object;

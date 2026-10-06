@@ -7,6 +7,10 @@
 -- supabase/checks/0003_itsupport_triage_kb.check.sql.
 -- Applying this to the shared Dokploy database is human step H13.
 -- Apply as ONE transaction: Supabase Studio runs a script as one transaction; with psql use --single-transaction.
+-- The down file is DESTRUCTIVE (it deletes every row 0003 added); it needs
+-- human approval.
+-- Parts: 1 tickets and triage_results, 2 kb_articles, 2b kb_search,
+-- 3 ai_calls and ai_usage_month, 3b ai_budget_reserve, 4 security_events.
 --
 -- Part 1: tickets and triage_results. Additive only: one column with a
 -- default, nullable columns and check constraints. Existing phase-2 rows stay
@@ -157,7 +161,8 @@ grant execute on function itsupport.ai_usage_month(date) to service_role;
 -- holders only because a volatile function takes a new snapshot per statement
 -- under READ COMMITTED (the default). Under REPEATABLE READ or SERIALIZABLE
 -- the snapshot predates the lock and the cap can be overspent. The caller
--- (P3-T6b, RPC through PostgREST) must keep the default isolation level.
+-- (P3-T6b, RPC through PostgREST) must keep the default isolation level; any
+-- other level raises 25001 before the lock and any write.
 create or replace function itsupport.ai_budget_reserve(
   p_provider text, p_est_cost numeric, p_est_calls integer, p_cap_calls integer,
   p_environment text, p_kind text, p_ticket_id uuid default null
@@ -176,6 +181,9 @@ begin
   end if;
   if p_est_calls is null or p_est_calls <= 0 or p_cap_calls is null or p_cap_calls < 0 then
     raise exception 'ai_budget_reserve: est_calls must be > 0 and cap_calls >= 0' using errcode = '22023';
+  end if;
+  if current_setting('transaction_isolation') <> 'read committed' then
+    raise exception 'ai_budget_reserve: needs READ COMMITTED isolation' using errcode = '25001';
   end if;
   perform pg_advisory_xact_lock(hashtext('itsupport.ai_budget_reserve'), hashtext(p_provider));
   select coalesce(sum(calls), 0) into v_used
@@ -198,3 +206,59 @@ revoke all on function itsupport.ai_budget_reserve(text, numeric, integer, integ
   from public, anon, authenticated;
 grant execute on function itsupport.ai_budget_reserve(text, numeric, integer, integer, text, text, uuid)
   to service_role;
+
+-- Part 4: security events (plan §6.1). One row per source, kind and UTC
+-- minute; repeats in the same minute add 1 to count and keep the first
+-- sample. Internal; no foreign key, so a row never blocks a ticket change.
+create table if not exists itsupport.security_events (
+  id bigint generated always as identity primary key,
+  source text not null,
+  kind text not null,
+  window_start timestamptz not null,
+  count integer not null default 1 constraint security_events_count_check check (count > 0),
+  sample jsonb not null default '{}',
+  unique (source, kind, window_start)
+);
+create index if not exists security_events_window_start_idx
+  on itsupport.security_events (window_start);
+
+-- Row level security on, no policies. Only service_role may read, add or
+-- change rows; nobody but the owner may delete them.
+alter table itsupport.security_events enable row level security;
+revoke all on itsupport.security_events from public, anon, authenticated, service_role;
+grant select, insert, update on itsupport.security_events to service_role;
+-- Identity inserts need no sequence right; Supabase default privileges would grant it.
+revoke all on sequence itsupport.security_events_id_seq from public, anon, authenticated, service_role;
+
+-- Records one event and returns the count of its minute. The window is the
+-- current minute in UTC, so the session time zone does not matter. A blank
+-- or null source or kind raises 22023 and writes nothing. ON CONFLICT makes
+-- parallel callers in the same minute share one row (READ COMMITTED).
+-- Under SERIALIZABLE, concurrent callers may get 40001 and must retry; use READ COMMITTED (the default).
+create or replace function itsupport.security_event_record(
+  p_source text, p_kind text, p_sample jsonb default '{}'
+)
+returns integer
+language plpgsql
+volatile
+set search_path = ''
+as $$
+declare
+  v_count integer;
+begin
+  -- '\S' is any non-space character, so a blank or whitespace-only value fails.
+  if p_source is null or p_kind is null or p_source !~ '\S' or p_kind !~ '\S' then
+    raise exception 'security_event_record: source and kind must not be blank' using errcode = '22023';
+  end if;
+  insert into itsupport.security_events (source, kind, window_start, sample)
+  values (p_source, p_kind, date_trunc('minute', now() at time zone 'UTC') at time zone 'UTC',
+    coalesce(p_sample, '{}'))
+  on conflict (source, kind, window_start) do update set count = itsupport.security_events.count + 1
+  returning count into v_count;
+  return v_count;
+end
+$$;
+
+-- A new function is executable by public; only service_role may call this one.
+revoke all on function itsupport.security_event_record(text, text, jsonb) from public, anon, authenticated;
+grant execute on function itsupport.security_event_record(text, text, jsonb) to service_role;
