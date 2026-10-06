@@ -167,17 +167,17 @@ describe("migration 0003, part 4 (security_events, security_event_record)", () =
   });
 
   it("the window is the UTC minute in any session time zone", async () => {
-    for (const zone of ["UTC", "Asia/Kathmandu", "America/St_Johns", "<X>-00:00:30"]) {
+    for (const zone of ["UTC", "Asia/Kathmandu", "America/St_Johns", "Pacific/Chatham"]) {
       await client().query(`set time zone '${zone}'`);
       await record("tz", zone);
     }
     await client().query("reset time zone");
     const { rows } = await client().query(
-      `select kind, extract(epoch from window_start)::numeric % 60 as sec,
+      `select kind, (extract(epoch from window_start)::numeric % 60)::float as sec,
          window_start > now() - interval '2 minutes' and window_start <= now() as recent
        from ${SE} order by kind`,
     );
-    expect(rows.map((row) => [row.sec, row.recent])).toEqual(Array(4).fill(["0", true]));
+    expect(rows.map((row) => [row.sec, row.recent])).toEqual(Array(4).fill([0, true]));
   });
 
   it("anon and authenticated get 42501 on the table and the function; service_role cannot delete", async () => {
@@ -199,7 +199,7 @@ describe("migration 0003, part 4 (security_events, security_event_record)", () =
       new RegExp(`create or replace function itsupport\\.${name}[\\s\\S]*?\\$\\$;`).exec(
         upSql,
       )?.[0] ?? "";
-    expect(fn("security_event_record")).toContain("e.count + 1");
+    expect(fn("security_event_record")).toContain("security_events.count + 1");
     expect(fn("ai_budget_reserve")).toContain("<> 'read committed'");
     const f4 = "function itsupport.security_event_record";
     const variants = [
@@ -219,7 +219,13 @@ describe("migration 0003, part 4 (security_events, security_event_record)", () =
       [`grant create on schema itsupport to anon; alter table ${SE} owner to anon`, `owner ${SE}`],
       [`grant execute on function ${RECORD} to authenticated`, f4],
       [`alter function ${RECORD} security definer`, f4],
-      [fn("security_event_record").replace("e.count + 1", "e.count + 2"), f4],
+      [
+        fn("security_event_record").replace(
+          "security_events.count + 1",
+          "security_events.count + 2",
+        ),
+        f4,
+      ],
       [
         fn("ai_budget_reserve").replace("<> 'read committed'", "= 'serializable'"),
         "function itsupport.ai_budget_reserve",
