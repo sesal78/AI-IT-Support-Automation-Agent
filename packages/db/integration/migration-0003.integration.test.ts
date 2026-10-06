@@ -44,6 +44,17 @@ const PART1_OBJECTS = [
   ...NEW_COLUMNS.map(([column]) => `column itsupport.triage_results.${column}`),
   ...CHECKS,
 ].sort();
+// Part 2: kb_articles.
+const PART2_OBJECTS = [
+  ...["id", "slug", "title", "content", "category", "assignment_group", "search"].map(
+    (column) => `column itsupport.kb_articles.${column}`,
+  ),
+  ...["category_check", "pkey", "slug_key"].map(
+    (name) => `constraint itsupport.kb_articles.kb_articles_${name}`,
+  ),
+  "index itsupport.kb_articles.kb_articles_search_idx",
+];
+const OBJECTS = [...PART1_OBJECTS, ...PART2_OBJECTS].sort();
 
 let phase2: Record<string, unknown[]> = {};
 
@@ -171,7 +182,7 @@ describe("migration 0003_itsupport_triage_kb, part 1 (tickets, triage_results)",
   });
 
   it("the read-only check query returns ok = true for every part-1 object after up", async () => {
-    expect(await check()).toEqual(PART1_OBJECTS.map((object) => ({ object, ok: true })));
+    expect(await check()).toEqual(OBJECTS.map((object) => ({ object, ok: true })));
   });
 
   it("the check query gives ok = false for a wrong constraint definition or column default", async () => {
@@ -193,12 +204,12 @@ describe("migration 0003_itsupport_triage_kb, part 1 (tickets, triage_results)",
         read("checks/0003_itsupport_triage_kb.check.sql"),
       );
       expect(rows.sort((a, b) => (a.object < b.object ? -1 : 1))).toEqual(
-        PART1_OBJECTS.map((object) => ({ object, ok: !wrong.includes(object) })),
+        OBJECTS.map((object) => ({ object, ok: !wrong.includes(object) })),
       );
     } finally {
       await client().query("rollback");
     }
-    expect(await check()).toEqual(PART1_OBJECTS.map((object) => ({ object, ok: true })));
+    expect(await check()).toEqual(OBJECTS.map((object) => ({ object, ok: true })));
   });
 
   it("down removes what part 1 added, keeps the phase-2 rows, and the check query turns false", async () => {
@@ -214,13 +225,133 @@ describe("migration 0003_itsupport_triage_kb, part 1 (tickets, triage_results)",
          and contype = 'c' and conname <> 'tickets_source_check'`,
     );
     expect(leftovers.rows).toEqual([]);
-    expect(await check()).toEqual(PART1_OBJECTS.map((object) => ({ object, ok: false })));
+    expect(await check()).toEqual(OBJECTS.map((object) => ({ object, ok: false })));
   });
 
   it("down is idempotent and up works again after down", async () => {
     applied(downSql);
     applied(upSql);
     expect(await snapshot()).toEqual(phase2);
-    expect(await check()).toEqual(PART1_OBJECTS.map((object) => ({ object, ok: true })));
+    expect(await check()).toEqual(OBJECTS.map((object) => ({ object, ok: true })));
+  });
+});
+
+const KB = "itsupport.kb_articles";
+const insertKb = (values: string) =>
+  `insert into ${KB} (slug, title, content, category, assignment_group) values ${values}`;
+const DENIED = { ok: false, code: "42501" };
+const count = async () =>
+  (await client().query(`select count(*)::int as n from ${KB}`)).rows[0]?.n as number;
+
+describe("migration 0003_itsupport_triage_kb, part 2 (kb_articles)", () => {
+  beforeAll(async () => {
+    await client().query(
+      insertKb(`('vpn-connect', 'VPN will not connect', 'Restart the VPN client.', 'network', 'Network'),
+        ('printer-jam', 'Clear a printer jam', 'Open tray 2.', 'hardware', 'Hardware')`),
+    );
+  });
+
+  it("adds the listed columns and a generated search column (index: check query)", async () => {
+    const { rows } = await client().query(
+      `select concat_ws(' ', column_name, udt_name, is_nullable, column_default, is_generated) as col
+       from information_schema.columns
+       where table_schema = 'itsupport' and table_name = 'kb_articles' order by ordinal_position`,
+    );
+    expect(rows.map((row) => row.col)).toEqual([
+      "id uuid NO gen_random_uuid() NEVER",
+      ...["slug", "title", "content", "category", "assignment_group"].map(
+        (c) => `${c} text NO NEVER`,
+      ),
+      "search tsvector YES ALWAYS",
+    ]);
+    const search = await client().query(
+      `select search::text from ${KB} where slug = 'vpn-connect'`,
+    );
+    expect(search.rows[0]?.search).toContain("'vpn':");
+  });
+
+  it("rejects a duplicate slug with 23505 and a bad category with 23514", async () => {
+    const add = (slug: string, category: string) =>
+      inRollback(insertKb(`('${slug}', 't', 'c', '${category}', 'g')`));
+    expect(await add("vpn-connect", "network")).toEqual({ ok: false, code: "23505" });
+    for (const bad of ["printer", "", "Network"]) {
+      expect(await add("new", bad), bad).toEqual({ ok: false, code: "23514" });
+    }
+    for (const good of "database inquiry software hardware password_reset network".split(" ")) {
+      expect(await add("new", good), good).toEqual({ ok: true });
+    }
+  });
+
+  it("public, anon and authenticated hold no privilege; RLS is on with no policies", async () => {
+    const { rows } = await client().query(
+      `select r, has_table_privilege(r, '${KB}', 'select,insert,update,delete,truncate,references,trigger') as tbl,
+         has_any_column_privilege(r, '${KB}', 'select,insert,update,references') as col
+       from unnest(array['public', 'anon', 'authenticated']) r`,
+    );
+    expect(rows.filter((row) => row.tbl || row.col)).toEqual([]);
+    for (const role of ["anon", "authenticated"]) {
+      expect(await inRollback(`select * from ${KB}`, role), role).toEqual(DENIED);
+    }
+    const rls = await client().query(
+      `select relrowsecurity as rls, (select count(*)::int from pg_policy where polrelid = c.oid) as policies
+       from pg_class c where oid = '${KB}'::regclass`,
+    );
+    expect(rls.rows).toEqual([{ rls: true, policies: 0 }]);
+  });
+
+  it("service_role may insert, select and update, but not delete", async () => {
+    for (const sql of [
+      insertKb("('s', 't', 'c', 'inquiry', 'g')"),
+      `select * from ${KB}`,
+      `update ${KB} set title = 'VPN fails' where slug = 'vpn-connect'`,
+    ]) {
+      expect(await inRollback(sql, "service_role"), sql).toEqual({ ok: true });
+    }
+    expect(await inRollback(`delete from ${KB}`, "service_role")).toEqual(DENIED);
+  });
+
+  it("the check query gives ok = false for a wrong category list, generated column, default or index", async () => {
+    const variants = [
+      [
+        `alter table ${KB} drop constraint kb_articles_category_check, add constraint kb_articles_category_check check (category <> 'x')`,
+        `constraint ${KB}.kb_articles_category_check`,
+      ],
+      [`alter table ${KB} alter search drop expression`, `column ${KB}.search`],
+      [`alter table ${KB} alter id drop default`, `column ${KB}.id`],
+      ["drop index itsupport.kb_articles_search_idx", `index ${KB}.kb_articles_search_idx`],
+    ];
+    for (const [sql, wrong] of variants) {
+      await client().query("begin");
+      try {
+        await client().query(sql ?? "");
+        const { rows } = await client().query(read("checks/0003_itsupport_triage_kb.check.sql"));
+        const wrongRows = rows.filter((row) => !row.ok).map((row) => row.object);
+        expect(wrongRows, sql).toEqual([wrong]);
+      } finally {
+        await client().query("rollback");
+      }
+    }
+  });
+
+  it("up again keeps the rows; the part-2 down section comes first and leaves part 1", async () => {
+    applied(upSql);
+    expect(await count()).toBe(2);
+    const part1 = downSql.indexOf("-- Part 1:");
+    expect(downSql.indexOf("-- Part 2:")).toBeGreaterThan(-1);
+    expect(downSql.indexOf("-- Part 2:")).toBeLessThan(part1);
+    applied(downSql.slice(0, part1));
+    const left = await client().query(
+      `select to_regclass('${KB}') as tbl, to_regclass('itsupport.kb_articles_search_idx') as idx`,
+    );
+    expect(left.rows).toEqual([{ tbl: null, idx: null }]);
+    expect(await check()).toEqual(
+      OBJECTS.map((object) => ({ object, ok: PART1_OBJECTS.includes(object) })),
+    );
+    applied(downSql);
+    expect(await check()).toEqual(OBJECTS.map((object) => ({ object, ok: false })));
+    applied(upSql);
+    expect(await snapshot()).toEqual(phase2);
+    expect(await check()).toEqual(OBJECTS.map((object) => ({ object, ok: true })));
+    expect(await count()).toBe(0);
   });
 });
