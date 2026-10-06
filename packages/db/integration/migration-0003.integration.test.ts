@@ -1,9 +1,11 @@
 import { TICKET_STATUSES } from "@ai-it-support/shared";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import type pg from "pg";
 import {
   applied,
   check,
   client,
+  connect,
   inRollback,
   read,
   snapshot,
@@ -81,6 +83,8 @@ const PART3_OBJECTS = [
   ...["checks", "columns", "grants", "owner", "rls"].map((kind) => `${kind} itsupport.ai_calls`),
   "function itsupport.ai_usage_month",
   "owner itsupport.ai_usage_month",
+  "function itsupport.ai_budget_reserve",
+  "owner itsupport.ai_budget_reserve",
 ];
 const OBJECTS = [...PART1_OBJECTS, ...PART2_OBJECTS, ...PART3_OBJECTS].sort();
 
@@ -658,5 +662,220 @@ describe("migration 0003_itsupport_triage_kb, part 3 (ai_calls, ai_usage_month)"
     applied(upSql);
     expect(await check()).toEqual(OBJECTS.map((object) => ({ object, ok: true })));
     expect(await snapshot()).toEqual(phase2);
+  });
+});
+
+const RESERVE = "itsupport.ai_budget_reserve(text, numeric, integer, integer, text, text, uuid)";
+const callReserve =
+  "select allowed, used_calls, call_id from itsupport.ai_budget_reserve($1, $2, $3, $4, $5, $6, $7)";
+type Reserved = { allowed: boolean; used_calls: number; call_id: string | null };
+async function reserve(
+  provider: string | null,
+  calls: number | null,
+  cap: number | null,
+  on = client(),
+) {
+  const args = [provider, 0.25, calls, cap, "e2e", "triage_judgments", null];
+  return (await on.query<Reserved>(callReserve, args)).rows[0];
+}
+const seed = (provider: string, calls: number, at = new Date()) =>
+  client().query(
+    `insert into ${AI} (provider, kind, calls, environment, at) values ($1, 'seed', $2, 'staging', $3)`,
+    [provider, calls, at],
+  );
+const total = async (provider = "typesafe") =>
+  (
+    await client().query(
+      `select coalesce(sum(calls), 0)::int as n from ${AI} where provider = $1`,
+      [provider],
+    )
+  ).rows[0]?.n as number;
+const REFUSED = { allowed: false, call_id: null };
+
+describe("migration 0003_itsupport_triage_kb, part 3b (ai_budget_reserve)", () => {
+  beforeEach(() => client().query(`delete from ${AI}`));
+
+  it("T3.I.09: 20 parallel reservations on 20 connections at 90 of 100 allow exactly 10", async () => {
+    const conns: pg.Client[] = [];
+    try {
+      for (let i = 0; i <= 20; i += 1) conns.push(await connect());
+      const [blocker, ...racers] = conns as [pg.Client, ...pg.Client[]];
+      for (let run = 0; run < 5; run += 1) {
+        await client().query(`delete from ${AI}`);
+        await seed("typesafe", 90);
+        // The blocker holds the typesafe lock (cap 0 refuses and writes nothing) until all 20 wait.
+        await blocker.query("begin");
+        expect(await reserve("typesafe", 1, 0, blocker)).toMatchObject(REFUSED);
+        const results = racers.map(async (racer) => {
+          await racer.query("begin; set local role service_role");
+          const row = await reserve("typesafe", 1, 100, racer);
+          await racer.query("commit");
+          return row;
+        });
+        const waiting =
+          "select count(*)::int as n from pg_locks where locktype = 'advisory' and not granted";
+        while ((await client().query(waiting)).rows[0]?.n !== 20)
+          await new Promise((r) => setTimeout(r, 20));
+        await blocker.query("commit");
+        const rows = await Promise.all(results);
+        const allowed = rows.filter((row) => row?.allowed);
+        expect(allowed.map((row) => row?.used_calls).sort((a, b) => (a ?? 0) - (b ?? 0))).toEqual([
+          91, 92, 93, 94, 95, 96, 97, 98, 99, 100,
+        ]);
+        expect(rows.filter((row) => !row?.allowed)).toEqual(
+          Array(10).fill({ ...REFUSED, used_calls: 100 }),
+        );
+        expect(await total()).toBe(100);
+      }
+    } finally {
+      await Promise.all(conns.map((c) => c.end().catch(() => undefined)));
+    }
+  });
+
+  it("refuses over the cap and writes nothing; allows up to exactly the cap", async () => {
+    await seed("typesafe", 95);
+    expect(await reserve("typesafe", 7, 100)).toEqual({ ...REFUSED, used_calls: 95 });
+    expect(await total()).toBe(95);
+    const ok = await reserve("typesafe", 5, 100);
+    expect(ok).toMatchObject({ allowed: true, used_calls: 100 });
+    expect(ok?.call_id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await reserve("typesafe", 2 ** 31 - 1, 2 ** 31 - 1)).toEqual({
+      ...REFUSED,
+      used_calls: 100,
+    });
+  });
+
+  it("cap 0 refuses every reservation and writes nothing", async () => {
+    for (const provider of ["typesafe", "llm"]) {
+      expect(await reserve(provider, 1, 0)).toEqual({ ...REFUSED, used_calls: 0 });
+    }
+    expect((await client().query(`select * from ${AI}`)).rows).toEqual([]);
+  });
+
+  it("counts from the UTC month start in any session time zone; providers are independent", async () => {
+    const now = new Date();
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    await seed("typesafe", 50, new Date(start.getTime() - 1));
+    await seed("typesafe", 10, start);
+    await seed("llm", 100);
+    for (const zone of ["UTC", "Pacific/Kiritimati", "America/Los_Angeles"]) {
+      await client().query("begin");
+      try {
+        await client().query(`set local time zone '${zone}'`);
+        expect(await reserve("typesafe", 1, 100), zone).toMatchObject({
+          allowed: true,
+          used_calls: 11,
+        });
+      } finally {
+        await client().query("rollback");
+      }
+    }
+    expect(await reserve("llm", 1, 100)).toEqual({ ...REFUSED, used_calls: 100 });
+  });
+
+  it("raises 22023 for a bad provider, call count or cap and writes nothing", async () => {
+    for (const args of [
+      "'openai', 0, 1, 100",
+      "null, 0, 1, 100",
+      "'llm', 0, 0, 100",
+      "'llm', 0, -1, 100",
+      "'llm', 0, null, 100",
+      "'llm', 0, 1, -1",
+      "'llm', 0, 1, null",
+    ]) {
+      const sql = `select * from itsupport.ai_budget_reserve(${args}, 'e2e', 'k')`;
+      expect(await inRollback(sql, "service_role"), args).toEqual({ ok: false, code: "22023" });
+    }
+    expect(await total("llm")).toBe(0);
+  });
+
+  it("writes one row with the given kind, environment, ticket, calls and cost; tokens null", async () => {
+    const ticket = (await client().query("select id from itsupport.tickets limit 1")).rows[0]
+      ?.id as string;
+    const args = ["llm", 0.125, 3, 10, "staging", "fix_steps", ticket];
+    const id = (await client().query<Reserved>(callReserve, args)).rows[0]?.call_id;
+    const { rows } = await client().query(
+      `select ticket_id, provider, kind, calls, tokens_in, tokens_out, cost_usd, environment from ${AI} where id = $1`,
+      [id],
+    );
+    expect(rows).toEqual([
+      {
+        ticket_id: ticket,
+        provider: "llm",
+        kind: "fix_steps",
+        calls: 3,
+        tokens_in: null,
+        tokens_out: null,
+        cost_usd: "0.125",
+        environment: "staging",
+      },
+    ]);
+  });
+
+  it("locks per provider: llm runs while typesafe is held, a 2nd typesafe waits, bad args do not", async () => {
+    const [a, b] = [await connect(), await connect()];
+    try {
+      await a.query("begin");
+      await reserve("typesafe", 1, 0, a);
+      await b.query("set lock_timeout = '500ms'");
+      expect(await reserve("llm", 1, 0, b)).toMatchObject(REFUSED);
+      await expect(reserve("typesafe", 1, 0, b)).rejects.toMatchObject({ code: "55P03" });
+      await expect(reserve("typesafe", 0, 0, b)).rejects.toMatchObject({ code: "22023" });
+      await a.query("commit");
+      const held = "select count(*)::int as n from pg_locks where locktype = 'advisory'";
+      expect((await client().query(held)).rows).toEqual([{ n: 0 }]);
+    } finally {
+      await Promise.all([a.end(), b.end()]);
+    }
+  });
+
+  it("only service_role may execute it", async () => {
+    const { rows } = await client().query(
+      `select r, has_function_privilege(r, '${RESERVE}', 'execute') as ok
+       from unnest(array['public', 'anon', 'authenticated', 'service_role']) r`,
+    );
+    expect(rows.filter((row) => row.ok).map((row) => row.r)).toEqual(["service_role"]);
+    const sql = "select * from itsupport.ai_budget_reserve('llm', 0, 1, 100, 'e2e', 'k')";
+    for (const role of ["anon", "authenticated"]) {
+      expect(await inRollback(sql, role), role).toEqual(DENIED);
+    }
+  });
+
+  it("the check query flips only its own row for each wrong variant", async () => {
+    const fnSql = /create or replace function itsupport\.ai_budget_reserve[\s\S]*?\$\$;/.exec(
+      upSql,
+    )?.[0];
+    expect(fnSql).toContain("> p_cap_calls then");
+    const fn = "function itsupport.ai_budget_reserve";
+    const toAnon = `grant create on schema itsupport to anon; alter function ${RESERVE} owner to anon`;
+    const variants = [
+      [`alter function ${RESERVE} stable`, fn],
+      [`alter function ${RESERVE} security definer`, fn],
+      [`alter function ${RESERVE} set search_path = public`, fn],
+      [fnSql?.replace("> p_cap_calls then", ">= p_cap_calls then") ?? "", fn],
+      [`grant execute on function ${RESERVE} to anon`, fn],
+      [toAnon, "owner itsupport.ai_budget_reserve"],
+      [
+        "create function itsupport.ai_budget_reserve(p text) returns integer language sql as 'select 1'",
+        fn,
+      ],
+    ];
+    for (const [sql, wrong] of variants) {
+      await client().query("begin");
+      try {
+        await client().query(sql ?? "");
+        const { rows } = await client().query(read("checks/0003_itsupport_triage_kb.check.sql"));
+        expect(
+          rows.filter((row) => !row.ok).map((row) => row.object),
+          sql,
+        ).toEqual([wrong]);
+      } finally {
+        await client().query("rollback");
+      }
+    }
+  });
+
+  it("the down file drops ai_budget_reserve first", () => {
+    expect(downSql.search(/^drop /m)).toBe(downSql.indexOf(`drop function if exists ${RESERVE};`));
   });
 });
