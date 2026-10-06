@@ -744,21 +744,43 @@ describe("redact: sk- keys and Slack tokens", () => {
       [slackKey("p") + "-" + ghToken, SL],
       [awsKey + skKey, A + AK],
       [awsKey + "-" + slackKey("a"), A + "-" + SL],
-      [`${awsKey}.${skKey}-${slackKey("a")}`, `${A}.${AK}${SL}`],
+      [`${awsKey}.${slackKey("a")}-${skKey}`, `${A}.${SL}`],
       [ghToken + "-" + skKey, G + "-" + AK],
       // Glued after a word character: a near-miss, as on dev.
       [ghToken + skKey, ghToken + skKey],
       [ghToken + slackKey("b"), ghToken + slackKey("b")],
+      // A typed placeholder is not body text: the key stops in front of it.
+      [skKey + "[REDACTED_CARD]" + "b".repeat(16), AK + "[REDACTED_CARD]" + "b".repeat(16)],
     ];
     for (const [input, text] of rows) {
       expect(redact(input).text, input).toBe(text);
       expect(redact(text).text, input).toBe(text);
     }
-    for (const input of [`${skKey}-${slackKey("b")}`, `${slackKey("b")}-${skKey}`]) {
-      expect(redact(input).log, input).toEqual([
-        { type: "API_KEY", count: 1 },
-        { type: "SLACK_TOKEN", count: 1 },
-      ]);
+    // An sk- key covers a Slack token glued after it (its body alphabet is
+    // wider); a Slack token glued in front of an sk- key logs both.
+    expect(redact(`${skKey}-${slackKey("b")}`).log).toEqual([{ type: "API_KEY", count: 1 }]);
+    expect(redact(`${slackKey("b")}-${skKey}`).log).toEqual([
+      { type: "API_KEY", count: 1 },
+      { type: "SLACK_TOKEN", count: 1 },
+    ]);
+  });
+
+  // Reviews 1 and 2 (retry 2): an sk- key that stopped before a glued Slack
+  // token left the rest of its run (`_…`) visible.
+  it("leaves nothing of an sk- key's run after a glued Slack token", () => {
+    const head = SKP + "a".repeat(16) + "-" + XB + "b".repeat(10);
+    const proj = `${SKP}proj-${"A1b2".repeat(4)}-${XB}${"Zz9Y".repeat(3)}_${"T4il".repeat(2)}`;
+    const slackHead = `${skKey}-${XB}${"12ab".repeat(5)}`;
+    const tails = ["_" + skKey, "_" + ghToken, "-x_secretTail"];
+    for (const input of [
+      head + "_TAIL",
+      head + "_TAIL-more",
+      proj,
+      ...tails.map((t) => slackHead + t),
+    ]) {
+      const out = redact(input);
+      expect(out.text, input).toBe(AK);
+      expect(out.log, input).toEqual([{ type: "API_KEY", count: 1 }]);
     }
   });
 
