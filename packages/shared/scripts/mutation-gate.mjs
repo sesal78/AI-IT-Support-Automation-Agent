@@ -1,7 +1,9 @@
 // Mutation gate (root script `pnpm test:mutation`, plan §9, T3.S.06). When a
-// guard module with a mutation floor, its own test file, guard-modules.json or
-// this gate changed, it runs Stryker on every module with a floor and fails
-// (exit 1) when one is below it. Otherwise it prints a skip line and exits 0.
+// guard module with a mutation floor, its own or a listed test file, or a gate
+// file changed (GATE_FILES in ../src/mutation-gate.ts: guard-modules.json, the
+// gate, the Vitest configs, the root package.json and lockfile), it runs Stryker
+// on every module with a floor and fails (exit 1) when one is below it.
+// Otherwise it prints a skip line and exits 0.
 // `-- --all` forces a run; `-- --changed <file>` (repeatable) replaces the git
 // diff. Exit 2 means the gate could not run. Node runs the imported .ts files
 // by type stripping.
@@ -45,7 +47,12 @@ function changedFiles() {
   }
 }
 
-const list = parseGuardModules(JSON.parse(readFileSync("guard-modules.json", "utf8")));
+let list;
+try {
+  list = parseGuardModules(JSON.parse(readFileSync("guard-modules.json", "utf8")));
+} catch (error) {
+  fail(`guard-modules.json: ${error.message}`);
+}
 if (!all && !gate.guardFilesTouched(fakeChanged ?? changedFiles(), list)) {
   console.log("mutation: skipped (no guard module changed)");
   process.exit(0);
