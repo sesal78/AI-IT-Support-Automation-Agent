@@ -56,7 +56,8 @@ const PART2_OBJECTS = [
   ),
   "index itsupport.kb_articles.kb_articles_search_idx",
   "function itsupport.kb_search",
-  ...["checks", "columns", "grants", "rls"].map((kind) => `${kind} itsupport.kb_articles`),
+  ...["checks", "columns", "grants", "owner", "rls"].map((kind) => `${kind} itsupport.kb_articles`),
+  "owner itsupport.kb_search",
   "collation itsupport.kb_articles.slug",
 ];
 const OBJECTS = [...PART1_OBJECTS, ...PART2_OBJECTS].sort();
@@ -490,6 +491,17 @@ describe("migration 0003_itsupport_triage_kb, check-query hardening", () => {
         "column itsupport.triage_results.grounding_score",
       ],
       [`alter function ${FN} strict`, "function itsupport.kb_search"],
+      [`grant select on ${KB} to service_role with grant option`, `grants ${KB}`],
+      [
+        `grant execute on function ${FN} to service_role with grant option`,
+        "function itsupport.kb_search",
+      ],
+      [`alter table ${KB} owner to authenticated`, `owner ${KB}`],
+      [`alter function ${FN} owner to anon`, "owner itsupport.kb_search"],
+      [
+        "create function itsupport.kb_search(p_query text) returns integer language sql as 'select 1'",
+        "function itsupport.kb_search",
+      ],
       [
         fnSql?.replace("p_limit, 5), 20)", "p_limit, 5), 50)") ?? "",
         "function itsupport.kb_search",
