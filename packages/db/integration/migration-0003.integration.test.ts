@@ -53,6 +53,7 @@ const PART2_OBJECTS = [
     (name) => `constraint itsupport.kb_articles.kb_articles_${name}`,
   ),
   "index itsupport.kb_articles.kb_articles_search_idx",
+  "function itsupport.kb_search",
 ];
 const OBJECTS = [...PART1_OBJECTS, ...PART2_OBJECTS].sort();
 
@@ -353,5 +354,97 @@ describe("migration 0003_itsupport_triage_kb, part 2 (kb_articles)", () => {
     expect(await snapshot()).toEqual(phase2);
     expect(await check()).toEqual(OBJECTS.map((object) => ({ object, ok: true })));
     expect(await count()).toBe(0);
+  });
+});
+
+const FN = "itsupport.kb_search(text, integer)";
+async function search(query: string | null, limit: number | null = 5) {
+  const sql = "select slug, rank from itsupport.kb_search($1, $2)";
+  return (await client().query<{ slug: string; rank: number }>(sql, [query, limit])).rows;
+}
+
+describe("migration 0003_itsupport_triage_kb, part 2b (kb_search)", () => {
+  beforeAll(async () => {
+    await client().query(
+      insertKb(`('vpn-connect', 'VPN will not connect', 'Restart the VPN client and connect again.', 'network', 'Network'),
+        ('password-reset', 'Reset your password', 'Connect to the portal and reset it.', 'password_reset', 'Service Desk'),
+        ('printer-jam', 'Clear a printer jam', 'Open tray 2 and remove the paper.', 'hardware', 'Hardware')`),
+    );
+  });
+
+  it("ranks the VPN row first, in descending rank order", async () => {
+    const rows = await search("vpn or connect");
+    expect(rows.map((row) => row.slug)).toEqual(["vpn-connect", "password-reset"]);
+    expect(rows[0]?.rank).toBeGreaterThan(rows[1]?.rank ?? 1);
+  });
+
+  it("returns no rows for blank, whitespace, stop-word or null queries; hostile ones change nothing", async () => {
+    for (const query of ["", "   ", "the and of", null]) {
+      expect(await search(query), String(query)).toEqual([]);
+    }
+    const hostile = [`'; drop table ${KB}; --`, 'vpn "connect', "-", "<-> & | ! :* ( ) or"];
+    for (const query of [...hostile, "x".repeat(5000), "vpn ".repeat(1250)]) {
+      expect((await search(query)).length, query.slice(0, 30)).toBeLessThanOrEqual(3);
+    }
+    expect(await count()).toBe(3);
+  });
+
+  it("clamps the limit to 1-20, with null meaning 5", async () => {
+    await client().query("begin");
+    try {
+      await client().query(`insert into ${KB} (slug, title, content, category, assignment_group)
+        select 'reboot-' || n, 'Reboot', 'Reboot it.', 'hardware', 'H' from generate_series(1, 25) n`);
+      const cases = [
+        [5, 5],
+        [0, 1],
+        [-3, 1],
+        [null, 5],
+        [100, 20],
+        [2 ** 31 - 1, 20],
+      ];
+      for (const [limit, rows] of cases) {
+        expect(await search("reboot", limit ?? null), String(limit)).toHaveLength(rows ?? -1);
+      }
+    } finally {
+      await client().query("rollback");
+    }
+  });
+
+  it("only service_role may execute it", async () => {
+    const { rows } = await client().query(
+      `select r, has_function_privilege(r, '${FN}', 'execute') as ok
+       from unnest(array['public', 'anon', 'authenticated', 'service_role']) r`,
+    );
+    expect(rows.filter((row) => row.ok).map((row) => row.r)).toEqual(["service_role"]);
+    const call = "select * from itsupport.kb_search('vpn')";
+    for (const role of ["anon", "authenticated"]) {
+      expect(await inRollback(call, role), role).toEqual(DENIED);
+    }
+    expect(await inRollback(call, "service_role")).toEqual({ ok: true });
+  });
+
+  it("the check row turns false for a wrong volatility, search_path, definer or grant", async () => {
+    for (const sql of [
+      `alter function ${FN} volatile`,
+      `alter function ${FN} set search_path = public`,
+      `alter function ${FN} security definer`,
+      `grant execute on function ${FN} to anon`,
+    ]) {
+      await client().query("begin");
+      try {
+        await client().query(sql);
+        const { rows } = await client().query(read("checks/0003_itsupport_triage_kb.check.sql"));
+        const wrongRows = rows.filter((row) => !row.ok).map((row) => row.object);
+        expect(wrongRows, sql).toEqual(["function itsupport.kb_search"]);
+      } finally {
+        await client().query("rollback");
+      }
+    }
+  });
+
+  it("the down file drops kb_search before kb_articles", () => {
+    const dropFn = downSql.indexOf("drop function if exists itsupport.kb_search(text, integer);");
+    expect(dropFn).toBeGreaterThan(-1);
+    expect(dropFn).toBeLessThan(downSql.indexOf("drop table if exists itsupport.kb_articles;"));
   });
 });
