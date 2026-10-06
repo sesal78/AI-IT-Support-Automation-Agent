@@ -719,6 +719,12 @@ describe("redact: sk- keys and Slack tokens", () => {
       [SKP + "[REDACTED_EMAIL]", SKP + "[REDACTED_EMAIL]", ""],
       ["desk-" + SKP + "123-45-6789", "desk-" + SKP + "[REDACTED_SSN]", "SSN"],
       ["xo" + "xp-[REDACTED_EMAIL]a7a", "xo" + "xp-[REDACTED_EMAIL]a7a", ""],
+      // P3-T3a2 review: a placeholder whose original run ends early ends the key.
+      [
+        `${SKP}4111 1111 1111 1111-${"a".repeat(16)}`,
+        `${SKP}[REDACTED_CARD]-${"a".repeat(16)}`,
+        "CARD",
+      ],
     ];
     for (const [input, text, type] of rows) {
       expect(redact(input), input).toEqual({ text, log: type ? [{ type, count: 1 }] : [] });
@@ -857,5 +863,184 @@ describe("redact: sk- keys and Slack tokens", () => {
         expect(performance.now() - start, `${size} ${input.slice(0, 8)}`).toBeLessThan(limit);
       }
     }
+  });
+});
+
+// JWT fixtures, built from pieces so no JWT-shaped literal is in this file.
+const EYJ = "ey" + "J";
+const jwtOf = (h: string, p: string, s: string) => `${EYJ}${h}.${EYJ}${p}.${s}`;
+const jwt = jwtOf("hbGciOiJIUzI1NiJ9", "zdWIiOiIxMjM0In0", "Sfl-KxwRJ_SMeKKF2QT4fw");
+const JT = "[REDACTED_JWT]";
+const asLegacy = (input: string) => expect(redact(input), input).toEqual(redactLegacy(input));
+
+describe("redact: JWTs", () => {
+  it("redacts a three-part JWT and a Bearer header with a per-type log", () => {
+    expect(redact("token " + jwt)).toEqual({
+      text: "token " + JT,
+      log: [{ type: "JWT", count: 1 }],
+    });
+    expect(redact("Authorization: Bearer " + jwt).text).toBe("Authorization: Bearer " + JT);
+    expect(redact(jwtOf("a-b_c-d_ef", "g_h-ij_kl-", "-_".repeat(5))).text).toBe(JT);
+    expect(redact(jwt + "==").text).toBe(JT);
+    expect(redact(jwtOf("abcdefghi==", "abcdefg=", "abcdefghij")).text).toBe(JT);
+  });
+
+  it("leaves near-misses as dev does", () => {
+    const [h, p] = jwt.split(".");
+    for (const input of [
+      `${h}.${p}`,
+      EYJ,
+      `${EYJ}.${EYJ}.${EYJ}`,
+      jwtOf("abcdef", "abcdefg", "abcdefghij"),
+      jwtOf("abcdefg", "abcdef", "abcdefghij"),
+      `${h}.${p}.abcdefghi`,
+      `${h}.${p}.[REDACTED_EMAIL]`,
+      `${h}.[REDACTED_CARD].abcdefghij`,
+      `${EYJ}abcdefgh.1.2.3.4.${"z".repeat(10)}`,
+      `${h}==a.${p}.abcdefghij`,
+      `${h}===.${p}.abcdefghij`,
+      "x" + jwt,
+      "_" + jwt,
+      jwt.toUpperCase(),
+      `${h}.${p}.[REDACTED_CARD]`,
+      "1.2.3 a.b.c 192.0.2.10 jo.x@a.b.example.com https://a.b.c/d.e.f",
+    ]) {
+      asLegacy(input);
+    }
+  });
+
+  it("redacts a JWT after a dash, punctuation, the start or any placeholder", () => {
+    const fronts = [
+      "",
+      "-",
+      "prod-",
+      "(",
+      ".",
+      "/",
+      " ",
+      "\n",
+      '"',
+      "=",
+      "[REDACTED_EMAIL]",
+      "[REDACTED_CARD]",
+    ];
+    for (const front of fronts) {
+      for (const back of ["", ".", " end", ")", ". Next"]) {
+        expect(redact(front + jwt + back).text, front + jwt + back).toBe(front + JT + back);
+      }
+    }
+  });
+
+  it("covers items inside a JWT, judged on the original text, with one placeholder", () => {
+    const [h, p] = jwt.split(".");
+    for (const input of [
+      `${h}.${EYJ}abc-123-45-6789.abcdefghij`,
+      `${h}.ab-${card16}.abcdefghij`,
+      `${h}.${p}.abc-${awsKey}`,
+      `${h}.${p}.abc-${skKey}`,
+      `${h}.${p}.abc-${slackKey("b")}`,
+      `${h}.${p}.abcdefghij-1.2.3.4`,
+    ]) {
+      expect(redact(input).text, input).toBe(JT);
+    }
+  });
+
+  it("redacts JWTs glued to each other, to keys and to placeholders", () => {
+    const A = "[REDACTED_AWS_KEY]";
+    const rows: Array<[string, string]> = [
+      [jwt + jwt, JT],
+      [`${jwt}.${jwt}`, JT],
+      [`${jwt}-${jwt}`, JT],
+      [jwt + awsKey, JT],
+      [jwt + ghToken, JT],
+      [`${awsKey}-${jwt}`, `${A}-${JT}`],
+      [`${awsKey}${jwt}`, `${A}${JT}`],
+      [`${skKey}.${jwt}`, `${AK}.${JT}`],
+      [`${slackKey("b")}.${jwt}`, `${SL}.${JT}`],
+      [`${jwt}.${skKey}`, JT],
+      [`${jwt}[REDACTED_CARD]`, JT + "[REDACTED_CARD]"],
+      // The AWS key frees the card's boundary before the JWT is read.
+      [`${jwt}.${awsKey}-4111 1111 1111 1111`, JT],
+      // An email took the first part (or a false start and the first part).
+      [`jo@x.com.${EYJ}abcdefgh.b_${"b".repeat(9)}.${"c".repeat(10)}`, "[REDACTED_EMAIL]" + JT],
+      [`jo@${EYJ}ab.${EYJ}abcdefgh.b_${"b".repeat(9)}.${"c".repeat(10)}`, "[REDACTED_EMAIL]" + JT],
+      [`jo@x.${EYJ}abcdefgh.bb_${"b1".repeat(18)}.${"c".repeat(10)}`, "[REDACTED_EMAIL]" + JT],
+    ];
+    for (const [input, text] of rows) {
+      expect(redact(input).text, input).toBe(text);
+      expect(redact(text).text, input).toBe(text);
+    }
+  });
+
+  it("logs types and counts only, never a matched value", () => {
+    const out = redact(`${jwt} ${jwt}`);
+    expect(out).toEqual({ text: `${JT} ${JT}`, log: [{ type: "JWT", count: 2 }] });
+    for (const part of jwt.split(".")) expect(JSON.stringify(out)).not.toContain(part);
+  });
+
+  it("keeps the JWT rule out of the legacy rule set", () => {
+    expect(redactLegacy("key " + jwt)).toEqual({ text: "key " + jwt, log: [] });
+  });
+
+  it("is idempotent over old and new fixtures, alone and in pairs", () => {
+    for (const a of [...fixtures, ...keys, ...openKeys, jwt]) {
+      for (const input of [a, `${a} ${jwt}`, jwt + a, a + jwt, `${a}-${jwt}`, `${a}.${jwt}`]) {
+        const once = redact(input).text;
+        expect(redact(once).text, input).toBe(once);
+      }
+    }
+  });
+
+  it("has no literal in this file that matches the JWT spec pattern", () => {
+    const spec = /(?<!\w)eyJ[\w-]{7,}\.[\w-]{10,}\.[\w-]{10,}/;
+    expect(jwt).toMatch(spec);
+    expect(readFileSync(fileURLToPath(import.meta.url), "utf8")).not.toMatch(spec);
+  });
+
+  it("stays linear on long and repeated JWT-shaped input", () => {
+    const units = [
+      EYJ + ".",
+      EYJ + "-",
+      "-" + EYJ + "a".repeat(8),
+      `${EYJ}${"a".repeat(9)}.${"b".repeat(10)}.`,
+      `${EYJ}${"a".repeat(9)}.${"b".repeat(10)} `,
+      `-${EYJ}${"a".repeat(9)}.-${EYJ}${"b".repeat(9)}.`,
+      jwt,
+      jwt + ".",
+      jwt + " ",
+    ];
+    for (const [size, limit] of [
+      [5_000, 500],
+      [50_000, 2_000],
+      [200_000, 4_000],
+    ] as const) {
+      for (const u of units) {
+        const input = u.repeat(Math.ceil(size / u.length));
+        const start = performance.now();
+        redact(input);
+        expect(performance.now() - start, `${size} ${u}`).toBeLessThan(limit);
+      }
+    }
+  });
+
+  it("stays linear on an email whose domain holds many JWT-like labels", () => {
+    const input = "jo@" + (EYJ + "a".repeat(7) + ".").repeat(20_000) + "com x";
+    const start = performance.now();
+    redact(input);
+    expect(performance.now() - start).toBeLessThan(500);
+  });
+
+  it("finds a JWT after a failed read, before an sk- prefix and in log order", () => {
+    const failed = `${EYJ}abcdefghij.short `;
+    expect(redact(failed + jwt).text).toBe(failed + JT);
+    const keyed = redact(SKP + jwt).text;
+    for (const part of jwt.split(".")) expect(keyed).not.toContain(part);
+    expect(redact(jwt + " 4111111111111111")).toEqual({
+      text: JT + " [REDACTED_CARD]",
+      log: [
+        { type: "JWT", count: 1 },
+        { type: "CARD", count: 1 },
+      ],
+    });
   });
 });
