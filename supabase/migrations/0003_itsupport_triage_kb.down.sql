@@ -7,7 +7,8 @@
 -- DESTRUCTIVE: deletes all triage output, the is_test flags, the KB articles and the AI call records. Human approval required.
 -- Parts are removed in reverse order: part 3, part 2b, part 2, then part 1.
 
--- Part 3: ai_usage_month, then ai_calls.
+-- Part 3: ai_budget_reserve, then ai_usage_month, then ai_calls.
+drop function if exists itsupport.ai_budget_reserve(text, numeric, integer, integer, text, text, uuid);
 drop function if exists itsupport.ai_usage_month(date);
 drop table if exists itsupport.ai_calls;
 

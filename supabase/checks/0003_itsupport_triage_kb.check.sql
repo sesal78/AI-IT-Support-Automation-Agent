@@ -197,6 +197,14 @@ from (
     ('function itsupport.ai_usage_month', 'function', null, 'ai_usage_month(date)', 'sql', null,
       'p_month_start date -> TABLE(provider text, calls bigint, tokens_in bigint, tokens_out bigint, cost_usd numeric) '
       || 's f f {"search_path=\"\""} service_role=EXECUTE 87786c1376c21c019f7f80e4fd269274'),
-    ('owner itsupport.ai_usage_month', 'owner', null, 'ai_usage_month(date)', 'function', null, null)
+    ('owner itsupport.ai_usage_month', 'owner', null, 'ai_usage_month(date)', 'function', null, null),
+    -- Part 3b: ai_budget_reserve (volatile plpgsql, invoker rights, empty search_path, service_role only).
+    ('function itsupport.ai_budget_reserve', 'function', null,
+      'ai_budget_reserve(text, numeric, integer, integer, text, text, uuid)', 'plpgsql', null,
+      'p_provider text, p_est_cost numeric, p_est_calls integer, p_cap_calls integer, p_environment text, '
+      || 'p_kind text, p_ticket_id uuid DEFAULT NULL::uuid -> TABLE(allowed boolean, used_calls integer, call_id uuid) '
+      || 'v f f {"search_path=\"\""} service_role=EXECUTE d2fe3aa3f9ce6bff3a321265776fa1c8'),
+    ('owner itsupport.ai_budget_reserve', 'owner', null,
+      'ai_budget_reserve(text, numeric, integer, integer, text, text, uuid)', 'function', null, null)
 ) as e (object, kind, tbl, name, udt, nullable, def)
 order by e.object;

@@ -1089,6 +1089,7 @@ Target repo: D:/Homebase/Sandbox/ai-it-support-agent
 ## Assumptions
 
 - An alert in phase 3 is a `security_events` row plus a log line (resolved point 7). The orchestrator reads alerts through `GET /api/internal/security-events`.
+- `ai_budget_reserve` keeps the cap only under READ COMMITTED, the default isolation level. Its sum runs after the advisory lock and needs a fresh snapshot to see earlier reservations. `reserveAiCall` must call the RPC with the default isolation, never REPEATABLE READ or SERIALIZABLE (P3-T2d2).
 
 ---
 

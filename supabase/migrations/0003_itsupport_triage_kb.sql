@@ -108,7 +108,7 @@ grant execute on function itsupport.kb_search(text, integer) to service_role;
 
 -- Part 3: AI call metering (plan §6.1, resolved points 2-4). One row per
 -- reservation; a TypeSafe call is one question, an LLM call one request.
--- The reservation function comes in P3-T2d2.
+-- The reservation function is part 3b, below.
 create table if not exists itsupport.ai_calls (
   id uuid primary key default gen_random_uuid(),
   ticket_id uuid references itsupport.tickets (id) on delete restrict,
@@ -148,3 +148,53 @@ $$;
 -- A new function is executable by public; only service_role may call this one.
 revoke all on function itsupport.ai_usage_month(date) from public, anon, authenticated;
 grant execute on function itsupport.ai_usage_month(date) to service_role;
+
+-- Part 3b: budget reservation (P3-T2d2). A transaction advisory lock keyed
+-- on the provider serialises reservations, so parallel callers cannot
+-- overspend the cap. Bad arguments raise 22023 before the lock and any write.
+-- The month is the current UTC month, summed over all environments.
+-- READ COMMITTED ONLY: the sum after the lock sees the rows of earlier lock
+-- holders only because a volatile function takes a new snapshot per statement
+-- under READ COMMITTED (the default). Under REPEATABLE READ or SERIALIZABLE
+-- the snapshot predates the lock and the cap can be overspent. The caller
+-- (P3-T6b, RPC through PostgREST) must keep the default isolation level.
+create or replace function itsupport.ai_budget_reserve(
+  p_provider text, p_est_cost numeric, p_est_calls integer, p_cap_calls integer,
+  p_environment text, p_kind text, p_ticket_id uuid default null
+)
+returns table (allowed boolean, used_calls integer, call_id uuid)
+language plpgsql
+volatile
+set search_path = ''
+as $$
+declare
+  v_used bigint;
+  v_id uuid;
+begin
+  if p_provider is null or p_provider not in ('typesafe', 'llm') then
+    raise exception 'ai_budget_reserve: provider must be typesafe or llm' using errcode = '22023';
+  end if;
+  if p_est_calls is null or p_est_calls <= 0 or p_cap_calls is null or p_cap_calls < 0 then
+    raise exception 'ai_budget_reserve: est_calls must be > 0 and cap_calls >= 0' using errcode = '22023';
+  end if;
+  perform pg_advisory_xact_lock(hashtext('itsupport.ai_budget_reserve'), hashtext(p_provider));
+  select coalesce(sum(calls), 0) into v_used
+  from itsupport.ai_calls
+  where provider = p_provider
+    and at >= date_trunc('month', now() at time zone 'UTC') at time zone 'UTC';
+  if v_used + p_est_calls > p_cap_calls then
+    return query select false, v_used::integer, null::uuid;
+    return;
+  end if;
+  insert into itsupport.ai_calls (ticket_id, provider, kind, calls, cost_usd, environment)
+  values (p_ticket_id, p_provider, p_kind, p_est_calls, p_est_cost, p_environment)
+  returning id into v_id;
+  return query select true, (v_used + p_est_calls)::integer, v_id;
+end
+$$;
+
+-- A new function is executable by public; only service_role may call this one.
+revoke all on function itsupport.ai_budget_reserve(text, numeric, integer, integer, text, text, uuid)
+  from public, anon, authenticated;
+grant execute on function itsupport.ai_budget_reserve(text, numeric, integer, integer, text, text, uuid)
+  to service_role;
