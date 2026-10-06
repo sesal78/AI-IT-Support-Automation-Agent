@@ -100,6 +100,7 @@ const PART4_OBJECTS = [
   ),
   "function itsupport.security_event_record",
   "owner itsupport.security_event_record",
+  "grants itsupport.security_events_id_seq",
 ];
 const OBJECTS = [...PART1_OBJECTS, ...PART2_OBJECTS, ...PART3_OBJECTS, ...PART4_OBJECTS].sort();
 

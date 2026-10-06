@@ -22,6 +22,7 @@ const RECORD = "itsupport.security_event_record(text, text, jsonb)";
 const RESERVE = "itsupport.ai_budget_reserve(text, numeric, integer, integer, text, text, uuid)";
 const FUNCTIONS = ["itsupport.kb_search(text, integer)", "itsupport.ai_usage_month(date)"];
 const TABLES = ["tickets", "triage_results", "kb_articles", "ai_calls", "security_events"];
+const SEQ = "itsupport.security_events_id_seq";
 const DENIED = { ok: false, code: "42501" };
 const PART4 = [
   ...["id", "source", "kind", "window_start", "count", "sample"].map((c) => `column ${SE}.${c}`),
@@ -32,6 +33,7 @@ const PART4 = [
   ...["checks", "columns", "grants", "owner", "rls"].map((kind) => `${kind} ${SE}`),
   "function itsupport.security_event_record",
   "owner itsupport.security_event_record",
+  `grants ${SEQ}`,
 ];
 // The current minute, computed in UTC.
 const MINUTE = "date_trunc('minute', now() at time zone 'UTC') at time zone 'UTC'";
@@ -58,6 +60,22 @@ async function awayFromMinuteEdge(): Promise<void> {
   while (((await client().query(second)).rows[0]?.s as number) >= 45)
     await new Promise((r) => setTimeout(r, 1000));
 }
+
+/** Every right anon or authenticated holds on a 0003 table, the sequence or a function. */
+const anonRights = async () =>
+  (
+    await client().query(
+      `select r, t from unnest(array['anon', 'authenticated']) r, unnest($1::text[]) t
+       where has_table_privilege(r, t, 'select, insert, update, delete, truncate, references, trigger')
+       union all
+       select r, $3 from unnest(array['anon', 'authenticated']) r
+       where has_sequence_privilege(r, $3, 'usage, select, update')
+       union all
+       select r, f from unnest(array['anon', 'authenticated']) r, unnest($2::text[]) f
+       where has_function_privilege(r, f, 'execute')`,
+      [TABLES.map((t) => `itsupport.${t}`), [...FUNCTIONS, RESERVE, RECORD], SEQ],
+    )
+  ).rows;
 
 let phase2: Record<string, unknown[]> = {};
 
@@ -93,17 +111,28 @@ describe("migration 0003, T3.I.11 (whole up, down, up with phase-2 rows)", () =>
     expect(rows).toEqual(
       [...TABLES].sort().map((relname) => ({ relname, rls: true, policies: 0 })),
     );
-    const privs = await client().query(
-      `select r, t from unnest(array['anon', 'authenticated']) r, unnest($1::text[]) t
-       where has_table_privilege(r, t, 'select, insert, update, delete, truncate, references, trigger')
-       union all
-       select r, f from unnest(array['anon', 'authenticated']) r, unnest($2::text[]) f
-       where has_function_privilege(r, f, 'execute')`,
-      [TABLES.map((t) => `itsupport.${t}`), [...FUNCTIONS, RESERVE, RECORD]],
-    );
-    expect(privs.rows).toEqual([]);
+    expect(await anonRights()).toEqual([]);
     const fks = `select conname from pg_constraint where conrelid = '${SE}'::regclass and contype = 'f'`;
     expect((await client().query(fks)).rows).toEqual([]);
+  });
+
+  it("with Supabase-like default privileges, down then up leaves anon and authenticated no right", async () => {
+    const defaults = (verb: string) =>
+      ["tables", "sequences", "functions"]
+        .map((o) => `alter default privileges in schema itsupport ${verb} all on ${o} `)
+        .map((sql) => `${sql}${verb === "grant" ? "to" : "from"} anon, authenticated;`)
+        .join(" ");
+    applied(downSql);
+    await client().query(defaults("grant"));
+    try {
+      applied(upSql);
+      const rows = await check();
+      expect(rows).toHaveLength(82);
+      expect(rows.filter((row) => !row.ok)).toEqual([]);
+      expect(await anonRights()).toEqual([]);
+    } finally {
+      await client().query(defaults("revoke"));
+    }
   });
 });
 
@@ -215,6 +244,7 @@ describe("migration 0003, part 4 (security_events, security_event_record)", () =
       [`alter table ${SE} add constraint extra check (true)`, `checks ${SE}`],
       [`alter table ${SE} add column extra text`, `columns ${SE}`],
       [`grant select on ${SE} to anon`, `grants ${SE}`],
+      [`grant usage, select, update on sequence ${SEQ} to anon`, `grants ${SEQ}`],
       [`create policy p_open on ${SE} using (true)`, `rls ${SE}`],
       [`grant create on schema itsupport to anon; alter table ${SE} owner to anon`, `owner ${SE}`],
       [`grant execute on function ${RECORD} to authenticated`, f4],
