@@ -4,7 +4,12 @@
 -- ticket_redactions, triage_results, their phase-2 columns and the schema
 -- stay in place.
 -- Apply as ONE transaction: Supabase Studio runs a script as one transaction; with psql use --single-transaction.
--- DESTRUCTIVE: deletes all triage output and the is_test flags. Human approval required.
+-- DESTRUCTIVE: deletes all triage output, the is_test flags and the KB articles. Human approval required.
+-- Parts are removed in reverse order: part 2 first, then part 1.
+
+-- Part 2: kb_articles and its index.
+drop index if exists itsupport.kb_articles_search_idx;
+drop table if exists itsupport.kb_articles;
 
 -- Part 1: triage_results columns and checks.
 alter table itsupport.triage_results

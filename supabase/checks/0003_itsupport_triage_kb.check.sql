@@ -4,8 +4,9 @@
 -- integration test. Returns one row per object 0003 creates: (object, ok).
 -- After the up file every row is ok = true; after the down file every row is
 -- ok = false. A column is ok when it exists with the expected type,
--- nullability and default; a constraint is ok when the check constraint exists
--- and pg_get_constraintdef returns exactly the expected definition (Postgres 17).
+-- nullability and default (or `generated <expression>`); a constraint (check,
+-- primary key or unique) or an index is ok when it exists and its definition
+-- is exactly the expected one (Postgres 17).
 
 select e.object,
   case e.kind
@@ -13,14 +14,20 @@ select e.object,
       select 1 from information_schema.columns c
       where c.table_schema = 'itsupport' and c.table_name = e.tbl
         and c.column_name = e.name and c.udt_name = e.udt and c.is_nullable = e.nullable
-        and c.column_default is not distinct from e.def
+        and coalesce('generated ' || c.generation_expression, c.column_default)
+          is not distinct from e.def
+    )
+    when 'index' then exists (
+      select 1 from pg_catalog.pg_indexes i
+      where i.schemaname = 'itsupport' and i.tablename = e.tbl
+        and i.indexname = e.name and i.indexdef = e.def
     )
     else exists (
       select 1 from pg_catalog.pg_constraint k
       join pg_catalog.pg_class r on r.oid = k.conrelid
       join pg_catalog.pg_namespace n on n.oid = r.relnamespace
       where n.nspname = 'itsupport' and r.relname = e.tbl
-        and k.conname = e.name and k.contype = 'c'
+        and k.conname = e.name and k.contype in ('c', 'p', 'u')
         and pg_get_constraintdef(k.oid) = e.def
     )
   end as ok
@@ -57,6 +64,25 @@ from (
     ('constraint itsupport.triage_results.triage_results_route_check', 'constraint', 'triage_results', 'triage_results_route_check', null, null,
       'CHECK ((route = ANY (ARRAY[''auto''::text, ''review''::text])))'),
     ('constraint itsupport.triage_results.triage_results_grounding_score_check', 'constraint', 'triage_results', 'triage_results_grounding_score_check', null, null,
-      'CHECK (((grounding_score >= (0)::numeric) AND (grounding_score <= (1)::numeric)))')
+      'CHECK (((grounding_score >= (0)::numeric) AND (grounding_score <= (1)::numeric)))'),
+    -- Part 2: kb_articles.
+    ('column itsupport.kb_articles.id', 'column', 'kb_articles', 'id', 'uuid', 'NO', 'gen_random_uuid()'),
+    ('column itsupport.kb_articles.slug', 'column', 'kb_articles', 'slug', 'text', 'NO', null),
+    ('column itsupport.kb_articles.title', 'column', 'kb_articles', 'title', 'text', 'NO', null),
+    ('column itsupport.kb_articles.content', 'column', 'kb_articles', 'content', 'text', 'NO', null),
+    ('column itsupport.kb_articles.category', 'column', 'kb_articles', 'category', 'text', 'NO', null),
+    ('column itsupport.kb_articles.assignment_group', 'column', 'kb_articles', 'assignment_group', 'text', 'NO', null),
+    ('column itsupport.kb_articles.search', 'column', 'kb_articles', 'search', 'tsvector', 'YES',
+      'generated to_tsvector(''english''::regconfig, ((title || '' ''::text) || content))'),
+    ('constraint itsupport.kb_articles.kb_articles_pkey', 'constraint', 'kb_articles', 'kb_articles_pkey', null, null,
+      'PRIMARY KEY (id)'),
+    ('constraint itsupport.kb_articles.kb_articles_slug_key', 'constraint', 'kb_articles', 'kb_articles_slug_key', null, null,
+      'UNIQUE (slug)'),
+    ('constraint itsupport.kb_articles.kb_articles_category_check', 'constraint', 'kb_articles', 'kb_articles_category_check', null, null,
+      'CHECK ((category = ANY (ARRAY['
+      || '''database''::text, ''inquiry''::text, ''software''::text, '
+      || '''hardware''::text, ''password_reset''::text, ''network''::text])))'),
+    ('index itsupport.kb_articles.kb_articles_search_idx', 'index', 'kb_articles', 'kb_articles_search_idx', null, null,
+      'CREATE INDEX kb_articles_search_idx ON itsupport.kb_articles USING gin (search)')
 ) as e (object, kind, tbl, name, udt, nullable, def)
 order by e.object;
