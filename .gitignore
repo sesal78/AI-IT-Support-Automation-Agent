@@ -13,3 +13,6 @@ next-env.d.ts
 !.env.example
 test-results/
 playwright-report/
+# Stryker (pnpm test:mutation)
+reports/
+.stryker-tmp/

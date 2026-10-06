@@ -1,4 +1,4 @@
 [
   { "path": "packages/shared/src/redact.ts", "statements": 90, "mutation": null },
-  { "path": "apps/web/src/lib/intake/request.ts", "statements": 90, "mutation": null }
+  { "path": "apps/web/src/lib/intake/request.ts", "statements": 90, "mutation": 80 }
 ]

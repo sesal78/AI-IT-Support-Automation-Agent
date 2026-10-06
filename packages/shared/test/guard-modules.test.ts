@@ -26,6 +26,12 @@ describe("guard-modules.json", () => {
     );
   });
 
+  // T3.S.06: `pnpm test:mutation` proves this floor.
+  it("switches on the 80 % mutation floor for the intake request module", () => {
+    const request = guardModules.find(({ path }) => path === "apps/web/src/lib/intake/request.ts");
+    expect(request?.mutation).toBe(80);
+  });
+
   it("lists only files that exist in the repo", () => {
     expect(missingGuardModules(guardModules, repoRoot)).toEqual([]);
   });

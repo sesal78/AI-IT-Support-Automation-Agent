@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { type GuardModule, REPO_PATH } from "./guard-modules.js";
+// `.ts`, so the gate script can run this file in Node by type stripping.
+import { type GuardModule, REPO_PATH } from "./guard-modules.ts";
 
 // The mutation gate behind the root script `pnpm test:mutation` (plan §9,
 // T3.S.06). This file holds the decisions; packages/shared/scripts/
@@ -13,14 +14,19 @@ const GATE_FILES = [
   "packages/shared/src/mutation-gate.ts",
 ];
 
-/** True when a changed file is a guard module with a mutation floor, or a gate file. Back-slashes are read as `/`. */
+/**
+ * True when a changed file is a guard module with a mutation floor, its own test
+ * file (`x.ts` → `x.test.ts`), or a gate file. Back-slashes are read as `/`.
+ */
 export function guardFilesTouched(
   changed: ReadonlyArray<string>,
   list: ReadonlyArray<GuardModule>,
 ): boolean {
   const watched = new Set([
     ...GATE_FILES,
-    ...list.filter((m) => m.mutation !== null).map((m) => m.path),
+    ...list
+      .filter((m) => m.mutation !== null)
+      .flatMap((m) => [m.path, m.path.replace(/\.tsx?$/, ".test$&")]),
   ]);
   return changed.some((file) => watched.has(file.replaceAll("\\", "/")));
 }
@@ -62,6 +68,46 @@ export class MutationReportError extends Error {
   }
 }
 
+/**
+ * JSON.parse for a report file that also refuses a repeated key in any object:
+ * JSON.parse keeps only the last one, so a forged second entry would go unseen.
+ */
+export function parseMutationReport(text: string): unknown {
+  let report: unknown;
+  try {
+    report = JSON.parse(text);
+  } catch (error) {
+    throw new MutationReportError(`not JSON: ${String(error)}`);
+  }
+  // The text is valid JSON, so a string is a key exactly when it follows `{` or
+  // a `,` inside an object. Brackets inside a string are matched as the string.
+  const objects: (Set<string> | null)[] = [];
+  let keyNext = false;
+  for (const [token] of text.matchAll(/"(?:[^"\\]|\\.)*"|[{}[\],]/g)) {
+    if (token === "{" || token === "[") objects.push(token === "{" ? new Set() : null);
+    else if (token === "}" || token === "]") objects.pop();
+    else if (token !== "," && keyNext) {
+      const key = JSON.parse(token) as string;
+      if (objects.at(-1)?.has(key)) {
+        throw new MutationReportError(`repeated key ${JSON.stringify(key)} in the report`);
+      }
+      objects.at(-1)?.add(key);
+    }
+    keyNext = (token === "{" || token === ",") && objects.at(-1) instanceof Set;
+  }
+  return report;
+}
+
+/** The key as a path with `/`, or a MutationReportError when it is not a plain repo-relative path. */
+function repoKey(key: string): string {
+  const path = key.replaceAll("\\", "/");
+  // Windows drops a trailing `.` from a name, so `a./b.ts.` opens `a/b.ts`.
+  if (!REPO_PATH.test(path) || path.split("/").some((name) => name.endsWith("."))) {
+    throw new MutationReportError(`report key ${JSON.stringify(key)} is not repo-relative`);
+  }
+  return path;
+}
+
 export interface MutationCheck {
   path: string;
   floor: number;
@@ -76,6 +122,9 @@ export function checkMutationReport(
   report: unknown,
   list: ReadonlyArray<GuardModule>,
 ): MutationCheck[] {
+  // zod's z.record drops a `__proto__` key unchecked, so the raw keys are checked first.
+  const files = (report as { files?: unknown } | null)?.files;
+  if (typeof files === "object" && files !== null) Object.keys(files).forEach(repoKey);
   const parsed = reportSchema.safeParse(report);
   if (!parsed.success) {
     throw new MutationReportError(`not a Stryker JSON report: ${z.prettifyError(parsed.error)}`);
@@ -86,11 +135,7 @@ export function checkMutationReport(
   const lowerPaths = new Set<string>();
   const ids = new Set<string>();
   for (const [key, { mutants }] of Object.entries(parsed.data.files)) {
-    const path = key.replaceAll("\\", "/");
-    // Windows drops a trailing `.` from a name, so `a./b.ts.` opens `a/b.ts`.
-    if (!REPO_PATH.test(path) || path.split("/").some((name) => name.endsWith("."))) {
-      throw new MutationReportError(`report key ${JSON.stringify(key)} is not repo-relative`);
-    }
+    const path = repoKey(key);
     if (lowerPaths.has(path.toLowerCase())) {
       throw new MutationReportError(`two report keys name ${path}`);
     }
