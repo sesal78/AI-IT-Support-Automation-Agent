@@ -44,6 +44,8 @@ describe("guardFilesTouched", () => {
     [["guard-modules.json"], true],
     [["apps\\web\\src\\lib\\intake\\request.ts"], true],
     [["README.md", "packages/shared/scripts/mutation-gate.mjs"], true],
+    [["packages/shared/scripts/mutation-gate.mjs"], true],
+    [["packages/shared/src/mutation-gate.ts"], true],
     // A change to a floored module's own test file can weaken its score.
     [["apps/web/src/lib/intake/request.test.ts"], true],
     [["packages/shared/src/redact.test.ts"], false],

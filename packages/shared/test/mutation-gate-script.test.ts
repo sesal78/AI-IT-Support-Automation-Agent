@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { guardFilesTouched } from "../src/mutation-gate.js";
 
@@ -90,12 +90,21 @@ describe("packages/shared/scripts/mutation-gate.mjs", () => {
     const script = readFileSync(scriptPath, "utf8");
     const pkg = readFileSync(resolve(repoRoot, "package.json"), "utf8");
     expect(script).toContain('testRunner: "command"');
-    // In place, a killed run must not leave `// @ts-nocheck` in any file. Exactly
-    // one uncommented option line, so a comment or a second `true` line cannot pass.
-    expect(script.match(/^.*\bdisableTypeChecks\b.*$/gm)).toEqual([
-      expect.stringMatching(/^\s+disableTypeChecks: false,\r?$/),
-    ]);
     expect(`${script}${pkg}`).not.toContain("vitest-runner");
     expect(JSON.parse(pkg).devDependencies["@stryker-mutator/core"]).toBe("10.0.0");
+  });
+
+  // In place, a killed run must not leave `// @ts-nocheck` in any file. A preload
+  // swaps in a Stryker stub that prints the options it is run with, so the value
+  // Stryker gets is checked, not the source text.
+  it("runs Stryker with disableTypeChecks set to false", () => {
+    const hook = resolve(repoRoot, "packages/shared/test/fixtures/stryker-stub.mjs");
+    const run = spawnSync(
+      process.execPath,
+      ["--import", pathToFileURL(hook).href, scriptPath, "--changed", "package.json"],
+      { cwd: repoRoot, encoding: "utf8" },
+    );
+    expect(run.status).toBe(0);
+    expect(JSON.parse(run.stdout)).toMatchObject({ disableTypeChecks: false });
   });
 });
