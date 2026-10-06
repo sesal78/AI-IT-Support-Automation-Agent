@@ -744,7 +744,7 @@ describe("redact: sk- keys and Slack tokens", () => {
       [slackKey("p") + "-" + ghToken, SL],
       [awsKey + skKey, A + AK],
       [awsKey + "-" + slackKey("a"), A + "-" + SL],
-      [`${awsKey}.${slackKey("a")}-${skKey}`, `${A}.${SL}${AK}`],
+      [`${awsKey}.${skKey}-${slackKey("a")}`, `${A}.${AK}${SL}`],
       [ghToken + "-" + skKey, G + "-" + AK],
       // Glued after a word character: a near-miss, as on dev.
       [ghToken + skKey, ghToken + skKey],

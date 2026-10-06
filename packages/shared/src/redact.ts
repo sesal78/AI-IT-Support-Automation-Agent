@@ -38,12 +38,14 @@
 // rule rejects a word character in front of its start, so no older match
 // starts inside a key.
 //
-// `sk-` keys and Slack tokens are open-ended: each runs to the end of its
-// word-and-dash run, so it never ends inside a word, and it takes the
-// placeholders that older rules left in that run (a card inside a key still
-// gives one placeholder). They run before the AWS/GitHub rule, so a fixed key
-// inside one goes with it. A GitHub token glued in front of one ends there
-// (`ghp_<36>sk-<key>`) and both are redacted.
+// `sk-` keys and Slack tokens are open-ended. Their rules match the prefix
+// only; the body is then read and judged on the original text. Every rule
+// application records what each placeholder replaced, so a placeholder counts
+// as the body characters its original held. A key ends where that original
+// run of body characters ends (a placeholder that runs past the end goes with
+// the key, so a card inside a key gives one placeholder) or, once it is long
+// enough, before a valid key prefix that follows a `-`. A body that is read
+// is never read again, so each key is found in one pass.
 
 // Also the order of the log.
 const TYPES = [
@@ -75,6 +77,65 @@ interface Rule {
   fit?: (match: string) => string;
   /** Splits a match into parts replaced one by one ([] rejects it). */
   split?: (match: string, next: string) => Array<[RedactionType, number]>;
+  /** The match is a prefix; the key's body follows it. */
+  open?: Open;
+}
+
+interface Open {
+  prefix: RegExp;
+  char: RegExp;
+  /** The leading run of body characters in a placeholder's original. */
+  run: RegExp;
+  min: number;
+}
+
+const SK: Open = { prefix: /sk-/y, char: /[\w-]/, run: /^[\w-]*/, min: 16 };
+const XOX: Open = { prefix: /xox[abp]-/y, char: /[A-Za-z0-9-]/, run: /^[A-Za-z0-9-]*/, min: 10 };
+const PLACEHOLDER = /\[REDACTED_[A-Z0-9_]+\]/g;
+const PLACEHOLDER_AT = /\[REDACTED_[A-Z0-9_]+\]/y;
+const countPlaceholders = (s: string): number => s.match(PLACEHOLDER)?.length ?? 0;
+
+/** The original text of the k-th placeholder from a position. */
+type Origin = (k: number) => string;
+
+/**
+ * Reads an open key's body from `p`. Returns its end, or -1 when its original
+ * run of body characters is shorter than the minimum. `quick` only checks the
+ * minimum.
+ */
+function bodyEnd(text: string, p: number, key: Open, orig: Origin, quick = false): number {
+  let raw = 0;
+  for (let k = 0; p < text.length && !(quick && raw >= key.min);) {
+    PLACEHOLDER_AT.lastIndex = p;
+    if (PLACEHOLDER_AT.test(text)) {
+      const original = orig(k++);
+      const run = key.run.exec(original)![0].length;
+      raw += run;
+      p = PLACEHOLDER_AT.lastIndex;
+      if (run < original.length) break;
+    } else if (key.char.test(text[p]!)) {
+      const at = k;
+      if (
+        !quick &&
+        raw >= key.min &&
+        text[p - 1] === "-" &&
+        opensKey(text, p, (j) => orig(at + j))
+      ) {
+        break;
+      }
+      raw++;
+      p++;
+    } else break;
+  }
+  return raw >= key.min ? p : -1;
+}
+
+/** Whether a valid `sk-` key or Slack token starts at `p`. */
+function opensKey(text: string, p: number, orig: Origin): boolean {
+  return [SK, XOX].some((key) => {
+    key.prefix.lastIndex = p;
+    return key.prefix.test(text) && bodyEnd(text, key.prefix.lastIndex, key, orig, true) >= 0;
+  });
 }
 
 const digitsOf = (s: string): string => s.replace(/\D/g, "");
@@ -106,35 +167,17 @@ function tfnValid(s: string): boolean {
 // letters or digits.
 const KEY = "(?:AKIA[A-Z0-9]{16}|ghp_[A-Za-z0-9]{36})";
 
-const PLACEHOLDER = "\\[REDACTED_[A-Z0-9_]+\\]";
-
-// An open-ended key's prefix: then `min` characters of `cls`, or fewer of
-// them and a placeholder. Both alternatives scan the same class, so a failed
-// check reads fewer than `min` characters (linear).
-const opener = (prefix: string, cls: string, min: number): string =>
-  `${prefix}(?=${cls}{${min}}|${cls}*${PLACEHOLDER})`;
-const SK = opener("sk-", "[\\w-]", 16);
-const XOX = opener("xox[abp]-", "[A-Za-z0-9-]", 10);
-const OPENS_KEY = new RegExp(`^(?:${SK}|${XOX})`);
-
-// The rest of the word-and-dash run, placeholders included. A number that the
-// older rules skip because it follows `digit-` (`…7-0412 345 678`) goes too.
-const OPEN_BODY = `(?:[\\w-]|${PLACEHOLDER})+(?:(?<=-\\d+)(?:[ .]\\d+)+)?`;
-
 /**
  * Splits a glued run into its keys, left to right from its start. Every key
  * but the last has a whole key behind it; the last one also needs the end or
- * a character outside its body alphabet behind it (or, for a GitHub token,
- * an `sk-` key or Slack token), else it is left as is. `next` is the rest of
- * the text.
+ * a character outside its body alphabet behind it, else it is left as is.
  */
 function splitKeys(run: string, next: string): Array<[RedactionType, number]> {
   const keys: Array<[RedactionType, number]> = [];
   for (let i = 0; i < run.length; i += keys[keys.length - 1]![1]) {
     keys.push(run[i] === "A" ? ["AWS_KEY", 20] : ["GITHUB_TOKEN", run[i] === "_" ? 37 : 40]);
   }
-  const aws = keys[keys.length - 1]![0] === "AWS_KEY";
-  if (aws ? /^[A-Z0-9]/.test(next) : /^[A-Za-z0-9]/.test(next) && !OPENS_KEY.test(next)) {
+  if ((keys[keys.length - 1]![0] === "AWS_KEY" ? /[A-Z0-9]/ : /[A-Za-z0-9]/).test(next)) {
     keys.pop();
   }
   return keys;
@@ -154,14 +197,6 @@ const RULES: Rule[] = [
     type: "EMAIL",
     pattern:
       /(?<![\w.%+-])[\w.%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?![A-Za-z0-9-])/g,
-  },
-  {
-    type: "API_KEY",
-    pattern: new RegExp(`(?<!\\w)${SK}${OPEN_BODY}`, "g"),
-  },
-  {
-    type: "SLACK_TOKEN",
-    pattern: new RegExp(`(?<!\\w)${XOX}${OPEN_BODY}`, "g"),
   },
   {
     // AWS keys and GitHub tokens (splitKeys names each key's type): a run of
@@ -219,40 +254,69 @@ const RULES: Rule[] = [
     pattern: /(?<!\w|\d-)\d{3}([ -]?)\d{3}\1\d{3}(?!\w|-\d)/g,
     accept: tfnValid,
   },
+  // Last in a pass, so the other rules first use any boundary a key made.
+  { type: "API_KEY", pattern: /(?<!\w)sk-/g, open: SK },
+  { type: "SLACK_TOKEN", pattern: /(?<!\w)xox[abp]-/g, open: XOX },
 ];
 
 /** The accepted parts of a candidate match as [type, length] ([] rejects it). */
-function partsOf(rule: Rule, match: string, next: string): Array<[RedactionType, number]> {
-  if (rule.split) return rule.split(match, next);
-  const hit = rule.fit ? rule.fit(match) : !rule.accept || rule.accept(match) ? match : "";
+function partsOf(
+  rule: Rule,
+  text: string,
+  m: RegExpExecArray,
+  orig: Origin,
+): Array<[RedactionType, number]> {
+  const end = m.index + m[0].length;
+  if (rule.open) {
+    const stop = bodyEnd(text, end, rule.open, orig);
+    return stop < 0 ? [] : [[rule.type, stop - m.index]];
+  }
+  if (rule.split) return rule.split(m[0], text.charAt(end));
+  const hit = rule.fit ? rule.fit(m[0]) : !rule.accept || rule.accept(m[0]) ? m[0] : "";
   return hit === "" ? [] : [[rule.type, hit.length]];
 }
 
-/** Applies one rule; returns the new text and the type of each replacement. */
-function applyRule(text: string, rule: Rule): { text: string; hits: RedactionType[] } {
+interface State {
+  text: string;
+  /** The original text of each placeholder in `text`, in order. */
+  origins: string[];
+}
+
+/** Applies one rule; returns the new state and the type of each replacement. */
+function applyRule({ text, origins }: State, rule: Rule): State & { hits: RedactionType[] } {
   const { pattern } = rule;
   pattern.lastIndex = 0;
   let out = "";
   let last = 0;
+  let seen = 0; // origins[0..i) belong to the placeholders before `seen`
+  let i = 0;
+  let copied = 0;
+  const next: string[] = [];
   const hits: RedactionType[] = [];
   let m: RegExpExecArray | null;
   while ((m = pattern.exec(text)) !== null) {
-    const parts = partsOf(rule, m[0], text.slice(m.index + m[0].length));
+    i += countPlaceholders(text.slice(seen, m.index));
+    seen = m.index;
+    const base = i;
+    const parts = partsOf(rule, text, m, (k) => origins[base + k]!);
     if (parts.length === 0) {
       // Rejected candidates consume nothing; retry from the next character.
       pattern.lastIndex = m.index + 1;
       continue;
     }
     out += text.slice(last, m.index);
-    last = m.index;
+    while (copied < i) next.push(origins[copied++]!);
     for (const [type, length] of parts) {
+      next.push(text.slice(seen, seen + length).replace(PLACEHOLDER, () => origins[i++]!));
       out += `[REDACTED_${type}]`;
-      last += length;
+      seen += length;
       hits.push(type);
     }
-    pattern.lastIndex = last;
+    copied = i;
+    last = pattern.lastIndex = seen;
   }
-  return { text: out + text.slice(last), hits };
+  while (copied < origins.length) next.push(origins[copied++]!);
+  return { text: out + text.slice(last), origins: next, hits };
 }
 
 const KEY_TYPES = new Set<string>(["AWS_KEY", "API_KEY", "GITHUB_TOKEN", "SLACK_TOKEN"]);
@@ -261,21 +325,20 @@ const LEGACY_RULES = RULES.filter((r) => !KEY_TYPES.has(r.type));
 type Counts = Map<RedactionType, number>;
 
 /** Repeats the given rules, in order, until a pass changes nothing. */
-function toFixedPoint(text: string, rules: Rule[], counts: Counts): string {
-  let out = text;
+function toFixedPoint(state: State, rules: Rule[], counts: Counts): State {
   let changed = true;
   while (changed) {
     changed = false;
     for (const rule of rules) {
-      const res = applyRule(out, rule);
+      const res = applyRule(state, rule);
       if (res.hits.length > 0) {
-        out = res.text;
+        state = res;
         changed = true;
         for (const type of res.hits) counts.set(type, (counts.get(type) ?? 0) + 1);
       }
     }
   }
-  return out;
+  return state;
 }
 
 function run(text: string, stages: Rule[][]): RedactionResult {
@@ -283,13 +346,13 @@ function run(text: string, stages: Rule[][]): RedactionResult {
     throw new TypeError(`redact() expects a string, got ${text === null ? "null" : typeof text}`);
   }
   const counts: Counts = new Map();
-  let out = text;
-  for (const rules of stages) out = toFixedPoint(out, rules, counts);
+  let state: State = { text, origins: text.match(PLACEHOLDER) ?? [] };
+  for (const rules of stages) state = toFixedPoint(state, rules, counts);
   const log = TYPES.filter((type) => counts.has(type)).map((type) => ({
     type: type as string,
     count: counts.get(type)!,
   }));
-  return { text: out, log };
+  return { text: state.text, log };
 }
 
 export function redact(text: string): RedactionResult {
