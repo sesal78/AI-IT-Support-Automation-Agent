@@ -43,9 +43,11 @@
 // application records what each placeholder replaced, so a placeholder counts
 // as the body characters its original held. A key ends where that original
 // run of body characters ends (a placeholder that runs past the end goes with
-// the key, so a card inside a key gives one placeholder) or, once it is long
-// enough, before a valid key prefix that follows a `-`. A body that is read
-// is never read again, so each key is found in one pass.
+// the key, so a card inside a key gives one placeholder; one whose original
+// starts outside the body alphabet stays out). The `sk-` rule runs before the
+// Slack rule, so a Slack token holding an `sk-` key logs both, while an `sk-`
+// key covers a Slack token glued after it. A body that is read is never read
+// again, so each key is found in one pass.
 
 // Also the order of the log.
 const TYPES = [
@@ -82,15 +84,14 @@ interface Rule {
 }
 
 interface Open {
-  prefix: RegExp;
   char: RegExp;
   /** The leading run of body characters in a placeholder's original. */
   run: RegExp;
   min: number;
 }
 
-const SK: Open = { prefix: /sk-/y, char: /[\w-]/, run: /^[\w-]*/, min: 16 };
-const XOX: Open = { prefix: /xox[abp]-/y, char: /[A-Za-z0-9-]/, run: /^[A-Za-z0-9-]*/, min: 10 };
+const SK: Open = { char: /[\w-]/, run: /^[\w-]*/, min: 16 };
+const XOX: Open = { char: /[A-Za-z0-9-]/, run: /^[A-Za-z0-9-]*/, min: 10 };
 const PLACEHOLDER = /\[REDACTED_[A-Z0-9_]+\]/g;
 const PLACEHOLDER_AT = /\[REDACTED_[A-Z0-9_]+\]/y;
 const countPlaceholders = (s: string): number => s.match(PLACEHOLDER)?.length ?? 0;
@@ -100,42 +101,25 @@ type Origin = (k: number) => string;
 
 /**
  * Reads an open key's body from `p`. Returns its end, or -1 when its original
- * run of body characters is shorter than the minimum. `quick` only checks the
- * minimum.
+ * run of body characters is shorter than the minimum.
  */
-function bodyEnd(text: string, p: number, key: Open, orig: Origin, quick = false): number {
+function bodyEnd(text: string, p: number, key: Open, orig: Origin): number {
   let raw = 0;
-  for (let k = 0; p < text.length && !(quick && raw >= key.min);) {
+  for (let k = 0; p < text.length;) {
     PLACEHOLDER_AT.lastIndex = p;
     if (PLACEHOLDER_AT.test(text)) {
       const original = orig(k++);
       const run = key.run.exec(original)![0].length;
+      if (run === 0) break; // its original is not body text
       raw += run;
       p = PLACEHOLDER_AT.lastIndex;
       if (run < original.length) break;
     } else if (key.char.test(text[p]!)) {
-      const at = k;
-      if (
-        !quick &&
-        raw >= key.min &&
-        text[p - 1] === "-" &&
-        opensKey(text, p, (j) => orig(at + j))
-      ) {
-        break;
-      }
       raw++;
       p++;
     } else break;
   }
   return raw >= key.min ? p : -1;
-}
-
-/** Whether a valid `sk-` key or Slack token starts at `p`. */
-function opensKey(text: string, p: number, orig: Origin): boolean {
-  return [SK, XOX].some((key) => {
-    key.prefix.lastIndex = p;
-    return key.prefix.test(text) && bodyEnd(text, key.prefix.lastIndex, key, orig, true) >= 0;
-  });
 }
 
 const digitsOf = (s: string): string => s.replace(/\D/g, "");
