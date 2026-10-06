@@ -69,6 +69,11 @@ describe("repo layout", () => {
         cwd: repoRoot,
       });
       expect(check.status, dir).toBe(0);
+      // Anchored to the root: a nested folder of the same name stays tracked.
+      const nested = spawnSync("git", ["check-ignore", "--quiet", `apps/web/src/${dir}/a.ts`], {
+        cwd: repoRoot,
+      });
+      expect(nested.status, `apps/web/src/${dir}`).toBe(1);
     }
   });
 

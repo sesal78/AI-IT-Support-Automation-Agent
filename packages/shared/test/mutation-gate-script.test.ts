@@ -29,7 +29,8 @@ describe("packages/shared/scripts/mutation-gate.mjs", () => {
     expect(run.status).toBe(0);
   });
 
-  it.each([["--bogus"], ["--changed"]])("exits 2 on the bad arguments %j", (...args) => {
+  // `--changed --all` must not read `--all` as a file name and so skip.
+  it.each([["--bogus"], ["--changed"], ["--changed", "--all"], ["--changed", "--changed", "a"]])("exits 2 on the bad arguments %j", (...args) => {
     const run = runGate(args);
     expect(run.status).toBe(2);
     expect(run.stderr).toContain("test:mutation: ");
@@ -47,6 +48,8 @@ describe("packages/shared/scripts/mutation-gate.mjs", () => {
     const script = readFileSync(scriptPath, "utf8");
     const pkg = readFileSync(resolve(repoRoot, "package.json"), "utf8");
     expect(script).toContain('testRunner: "command"');
+    // In place, a killed run must not leave `// @ts-nocheck` in any file.
+    expect(script).toContain("disableTypeChecks: false,");
     expect(`${script}${pkg}`).not.toContain("vitest-runner");
     expect(JSON.parse(pkg).devDependencies["@stryker-mutator/core"]).toBe("10.0.0");
   });
