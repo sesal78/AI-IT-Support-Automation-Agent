@@ -86,7 +86,22 @@ const PART3_OBJECTS = [
   "function itsupport.ai_budget_reserve",
   "owner itsupport.ai_budget_reserve",
 ];
-const OBJECTS = [...PART1_OBJECTS, ...PART2_OBJECTS, ...PART3_OBJECTS].sort();
+// Part 4: security_events and security_event_record.
+const PART4_OBJECTS = [
+  ...["id", "source", "kind", "window_start", "count", "sample"].map(
+    (column) => `column itsupport.security_events.${column}`,
+  ),
+  ...["pkey", "source_kind_window_start_key", "count_check"].map(
+    (name) => `constraint itsupport.security_events.security_events_${name}`,
+  ),
+  "index itsupport.security_events.security_events_window_start_idx",
+  ...["checks", "columns", "grants", "owner", "rls"].map(
+    (kind) => `${kind} itsupport.security_events`,
+  ),
+  "function itsupport.security_event_record",
+  "owner itsupport.security_event_record",
+];
+const OBJECTS = [...PART1_OBJECTS, ...PART2_OBJECTS, ...PART3_OBJECTS, ...PART4_OBJECTS].sort();
 
 let phase2: Record<string, unknown[]> = {};
 
@@ -649,14 +664,17 @@ describe("migration 0003_itsupport_triage_kb, part 3 (ai_calls, ai_usage_month)"
     }
   });
 
-  it("the part-3 down section comes first (function, then table) and leaves parts 1-2b", async () => {
+  it("the part-3 down section follows part 4 (function, then table) and leaves parts 1-2b", async () => {
     const part3 = downSql.slice(0, downSql.indexOf("-- Part 2b:"));
     const dropFn = part3.indexOf("drop function if exists itsupport.ai_usage_month(date);");
     expect(dropFn).toBeGreaterThan(-1);
     expect(dropFn).toBeLessThan(part3.indexOf(`drop table if exists ${AI};`));
     applied(part3);
     expect(await check()).toEqual(
-      OBJECTS.map((object) => ({ object, ok: !PART3_OBJECTS.includes(object) })),
+      OBJECTS.map((object) => ({
+        object,
+        ok: !PART3_OBJECTS.includes(object) && !PART4_OBJECTS.includes(object),
+      })),
     );
     expect(await count()).toBe(3);
     applied(upSql);
@@ -875,7 +893,8 @@ describe("migration 0003_itsupport_triage_kb, part 3b (ai_budget_reserve)", () =
     }
   });
 
-  it("the down file drops ai_budget_reserve first", () => {
-    expect(downSql.search(/^drop /m)).toBe(downSql.indexOf(`drop function if exists ${RESERVE};`));
+  it("the part-3 down section drops ai_budget_reserve first", () => {
+    const part3 = downSql.slice(downSql.indexOf("-- Part 3:"));
+    expect(part3.search(/^drop /m)).toBe(part3.indexOf(`drop function if exists ${RESERVE};`));
   });
 });
