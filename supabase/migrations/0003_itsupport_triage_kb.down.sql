@@ -4,8 +4,12 @@
 -- ticket_redactions, triage_results, their phase-2 columns and the schema
 -- stay in place.
 -- Apply as ONE transaction: Supabase Studio runs a script as one transaction; with psql use --single-transaction.
--- DESTRUCTIVE: deletes all triage output, the is_test flags and the KB articles. Human approval required.
--- Parts are removed in reverse order: part 2b, part 2, then part 1.
+-- DESTRUCTIVE: deletes all triage output, the is_test flags, the KB articles and the AI call records. Human approval required.
+-- Parts are removed in reverse order: part 3, part 2b, part 2, then part 1.
+
+-- Part 3: ai_usage_month, then ai_calls.
+drop function if exists itsupport.ai_usage_month(date);
+drop table if exists itsupport.ai_calls;
 
 -- Part 2b: kb_search, before the table it reads.
 drop function if exists itsupport.kb_search(text, integer);
