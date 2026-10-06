@@ -30,11 +30,14 @@ describe("packages/shared/scripts/mutation-gate.mjs", () => {
   });
 
   // `--changed --all` must not read `--all` as a file name and so skip.
-  it.each([["--bogus"], ["--changed"], ["--changed", "--all"], ["--changed", "--changed", "a"]])("exits 2 on the bad arguments %j", (...args) => {
-    const run = runGate(args);
-    expect(run.status).toBe(2);
-    expect(run.stderr).toContain("test:mutation: ");
-  });
+  it.each([["--bogus"], ["--changed"], ["--changed", "--all"], ["--changed", "--changed", "a"]])(
+    "exits 2 on the bad arguments %j",
+    (...args) => {
+      const run = runGate(args);
+      expect(run.status).toBe(2);
+      expect(run.stderr).toContain("test:mutation: ");
+    },
+  );
 
   it("exits 2 and names the range when git diff fails, never reading it as no change", () => {
     const run = runGate([], { GITHUB_BASE_REF: "no-such-base-branch" });

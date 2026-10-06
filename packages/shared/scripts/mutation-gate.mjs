@@ -25,7 +25,8 @@ let fakeChanged;
 const args = process.argv.slice(2).filter((arg) => arg !== "--");
 for (let i = 0; i < args.length; i += 1) {
   if (args[i] === "--all") all = true;
-  else if (args[i] === "--changed" && args[i + 1]) (fakeChanged ??= []).push(args[(i += 1)]);
+  else if (args[i] === "--changed" && args[i + 1] && !args[i + 1].startsWith("--"))
+    (fakeChanged ??= []).push(args[(i += 1)]);
   else fail(`unknown or incomplete argument "${args[i]}"`);
 }
 
@@ -53,7 +54,9 @@ if (!all && !gate.guardFilesTouched(fakeChanged ?? changedFiles(), list)) {
 // The Stryker options (no config file). The command runner runs Vitest per mutant
 // on the tests that import the module, coverage off (per-file floors would fail a
 // partial run). In place: Stryker restores the module from .stryker-tmp/ at the
-// end. Guard paths need no quoting (REPO_PATH); default thresholds are integers.
+// end; disableTypeChecks: false, so it never writes `// @ts-nocheck` into source
+// files that a killed run would leave behind (Vitest strips types unchecked).
+// Guard paths need no quoting (REPO_PATH); default thresholds are integers.
 const { Stryker } = await import("@stryker-mutator/core");
 let failed = false;
 for (const module of list.filter(({ mutation }) => mutation !== null)) {
@@ -68,6 +71,7 @@ for (const module of list.filter(({ mutation }) => mutation !== null)) {
       },
       mutate: [module.path],
       inPlace: true,
+      disableTypeChecks: false,
       plugins: [],
       reporters: ["clear-text", "json"],
       jsonReporter: { fileName },

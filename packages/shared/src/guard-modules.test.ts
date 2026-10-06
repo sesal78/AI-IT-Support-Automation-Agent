@@ -26,7 +26,7 @@ describe("parseGuardModules", () => {
     ["tests that are not a list", { ...redact, tests: "a/b.test.ts" }, "tests"],
     ["an empty tests list", { ...redact, tests: [] }, "tests"],
     ["a test that is not a test file", { ...redact, tests: ["a/b.ts"] }, "tests: 0"],
-    ["a test with a back-slash", { ...redact, tests: ["a\b.test.ts"] }, "tests: 0"],
+    ["a test with a back-slash", { ...redact, tests: ["a\\b.test.ts"] }, "tests: 0"],
     ["a test glob", { ...redact, tests: ["a/*.test.ts"] }, "tests: 0"],
     ["a repeated test", { ...redact, tests: ["a/b.test.ts", "a/b.test.ts"] }, "duplicate test"],
     ["a missing mutation floor", { path: redact.path, statements: 90 }, "mutation"],

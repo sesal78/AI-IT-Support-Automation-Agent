@@ -12,12 +12,22 @@ import { z } from "zod";
 // a glob on the root-relative path and skips a key that matches no file.
 export const REPO_PATH = /^[\w-][\w.-]*(\/[\w-][\w.-]*)+$/;
 
+const repoPath = z
+  .string()
+  .regex(REPO_PATH, "must be a repo-relative file path with forward slashes");
+
 const guardModuleSchema = z.strictObject({
-  path: z.string().regex(REPO_PATH, "must be a repo-relative file path with forward slashes"),
-  /** Statement coverage floor in percent. */
-  statements: z.number().min(90),
-  /** Mutation score floor in percent; null until it is switched on. */
-  mutation: z.number().min(80).nullable(),
+  path: repoPath,
+  /** Statement coverage floor in whole percent. */
+  statements: z.int().min(90),
+  /** Mutation score floor in whole percent; null until it is switched on. */
+  mutation: z.int().min(80).nullable(),
+  /** Other test files that kill the module's mutants; a change to one re-runs the mutation gate. */
+  tests: z
+    .array(repoPath.regex(/\.test\.tsx?$/, "must be a .test.ts or .test.tsx file"))
+    .min(1)
+    .refine((tests) => new Set(tests).size === tests.length, "duplicate test")
+    .optional(),
 });
 
 const guardModulesSchema = z.array(guardModuleSchema).superRefine((list, ctx) => {
@@ -61,9 +71,9 @@ export function coverageThresholds(
   return Object.fromEntries(list.map(({ path, statements }) => [path, { statements }]));
 }
 
-/** The listed paths that are not a file under `repoRoot`. */
+/** The listed paths, modules and their tests, that are not a file under `repoRoot`. */
 export function missingGuardModules(list: ReadonlyArray<GuardModule>, repoRoot: string): string[] {
   return list
-    .map((module) => module.path)
+    .flatMap(({ path, tests = [] }) => [path, ...tests])
     .filter((path) => !statSync(resolve(repoRoot, path), { throwIfNoEntry: false })?.isFile());
 }

@@ -7,16 +7,27 @@ import { type GuardModule, REPO_PATH } from "./guard-modules.ts";
 // mutation-gate.mjs (P3-T15d2) does the git, Stryker and file work. Like
 // guard-modules.ts, index.ts does not export it.
 
-/** Files whose change re-runs every module with a floor: the list and the gate itself (it holds the Stryker options). */
+/**
+ * Files whose change re-runs every module with a floor: the list and its parser,
+ * the gate itself (it holds the Stryker options), the Vitest configs that the
+ * command runner loads, and the root package.json and lockfile (the Stryker and
+ * Vitest versions and the `test:mutation` script).
+ */
 const GATE_FILES = [
   "guard-modules.json",
+  "packages/shared/src/guard-modules.ts",
   "packages/shared/scripts/mutation-gate.mjs",
   "packages/shared/src/mutation-gate.ts",
+  "vitest.config.ts",
+  "apps/web/vitest.config.ts",
+  "package.json",
+  "pnpm-lock.yaml",
 ];
 
 /**
  * True when a changed file is a guard module with a mutation floor, its own test
- * file (`x.ts` → `x.test.ts`), or a gate file. Back-slashes are read as `/`.
+ * file (`x.ts` → `x.test.ts`), one of its listed `tests`, or a gate file.
+ * Back-slashes are read as `/`.
  */
 export function guardFilesTouched(
   changed: ReadonlyArray<string>,
@@ -26,7 +37,7 @@ export function guardFilesTouched(
     ...GATE_FILES,
     ...list
       .filter((m) => m.mutation !== null)
-      .flatMap((m) => [m.path, m.path.replace(/\.tsx?$/, ".test$&")]),
+      .flatMap((m) => [m.path, m.path.replace(/\.tsx?$/, ".test$&"), ...(m.tests ?? [])]),
   ]);
   return changed.some((file) => watched.has(file.replaceAll("\\", "/")));
 }

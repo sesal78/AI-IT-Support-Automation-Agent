@@ -49,7 +49,7 @@ describe("guardFilesTouched", () => {
     [["packages/shared/src/redact.test.ts"], false],
     // A listed test file that kills the module's mutants, and what the run depends on.
     [[route], true],
-    [["apps\web\src\app\api\tickets\route.test.ts"], true],
+    [["apps\\web\\src\\app\\api\\tickets\\route.test.ts"], true],
     [["packages/shared/src/other.test.ts"], false],
     [["packages/shared/src/guard-modules.ts"], true],
     [["vitest.config.ts"], true],
