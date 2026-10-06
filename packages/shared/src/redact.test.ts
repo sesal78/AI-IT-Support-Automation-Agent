@@ -1022,4 +1022,25 @@ describe("redact: JWTs", () => {
       }
     }
   });
+
+  it("stays linear on an email whose domain holds many JWT-like labels", () => {
+    const input = "jo@" + (EYJ + "a".repeat(7) + ".").repeat(20_000) + "com x";
+    const start = performance.now();
+    redact(input);
+    expect(performance.now() - start).toBeLessThan(500);
+  });
+
+  it("finds a JWT after a failed read, before an sk- prefix and in log order", () => {
+    const failed = `${EYJ}abcdefghij.short `;
+    expect(redact(failed + jwt).text).toBe(failed + JT);
+    const keyed = redact(SKP + jwt).text;
+    for (const part of jwt.split(".")) expect(keyed).not.toContain(part);
+    expect(redact(jwt + " 4111111111111111")).toEqual({
+      text: JT + " [REDACTED_CARD]",
+      log: [
+        { type: "JWT", count: 1 },
+        { type: "CARD", count: 1 },
+      ],
+    });
+  });
 });
