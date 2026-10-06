@@ -6,7 +6,9 @@
 -- ok = false. A column is ok when it exists with the expected type,
 -- nullability and default (or `generated <expression>`); a constraint (check,
 -- primary key or unique) or an index is ok when it exists and its definition
--- is exactly the expected one (Postgres 17).
+-- is exactly the expected one (Postgres 17). A function is ok when its
+-- language, arguments, result, volatility, security, settings and the grants
+-- held by roles other than its owner are exactly the expected ones.
 
 select e.object,
   case e.kind
@@ -21,6 +23,18 @@ select e.object,
       select 1 from pg_catalog.pg_indexes i
       where i.schemaname = 'itsupport' and i.tablename = e.tbl
         and i.indexname = e.name and i.indexdef = e.def
+    )
+    when 'function' then exists (
+      select 1 from pg_catalog.pg_proc p
+      join pg_catalog.pg_language l on l.oid = p.prolang
+      where p.oid = to_regprocedure('itsupport.' || e.name) and l.lanname = e.udt
+        and concat_ws(' ', pg_get_function_arguments(p.oid), '->', pg_get_function_result(p.oid),
+          p.provolatile, p.prosecdef, p.proconfig, (
+            select string_agg(case x.grantee when 0 then 'public' else pg_get_userbyid(x.grantee) end
+              || '=' || x.privilege_type, ',' order by x.grantee)
+            from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
+            where x.grantee <> p.proowner
+          )) = e.def
     )
     else exists (
       select 1 from pg_catalog.pg_constraint k
@@ -83,6 +97,10 @@ from (
       || '''database''::text, ''inquiry''::text, ''software''::text, '
       || '''hardware''::text, ''password_reset''::text, ''network''::text])))'),
     ('index itsupport.kb_articles.kb_articles_search_idx', 'index', 'kb_articles', 'kb_articles_search_idx', null, null,
-      'CREATE INDEX kb_articles_search_idx ON itsupport.kb_articles USING gin (search)')
+      'CREATE INDEX kb_articles_search_idx ON itsupport.kb_articles USING gin (search)'),
+    -- Part 2b: kb_search (stable, invoker rights, empty search_path, execute for service_role only).
+    ('function itsupport.kb_search', 'function', null, 'kb_search(text, integer)', 'sql', null,
+      'p_query text, p_limit integer DEFAULT 5 -> TABLE(id uuid, slug text, title text, content text, '
+      || 'category text, assignment_group text, rank real) s f {"search_path=\"\""} service_role=EXECUTE')
 ) as e (object, kind, tbl, name, udt, nullable, def)
 order by e.object;

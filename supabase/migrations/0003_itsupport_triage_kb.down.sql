@@ -5,7 +5,10 @@
 -- stay in place.
 -- Apply as ONE transaction: Supabase Studio runs a script as one transaction; with psql use --single-transaction.
 -- DESTRUCTIVE: deletes all triage output, the is_test flags and the KB articles. Human approval required.
--- Parts are removed in reverse order: part 2 first, then part 1.
+-- Parts are removed in reverse order: part 2b, part 2, then part 1.
+
+-- Part 2b: kb_search, before the table it reads.
+drop function if exists itsupport.kb_search(text, integer);
 
 -- Part 2: kb_articles and its index.
 drop index if exists itsupport.kb_articles_search_idx;

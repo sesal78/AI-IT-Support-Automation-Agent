@@ -80,3 +80,28 @@ create index if not exists kb_articles_search_idx on itsupport.kb_articles using
 alter table itsupport.kb_articles enable row level security;
 revoke all on itsupport.kb_articles from public, anon, authenticated, service_role;
 grant select, insert, update on itsupport.kb_articles to service_role;
+
+-- Part 2b: ranked KB search. PostgREST cannot order by ts_rank (resolved
+-- point 4), so the pipeline calls this function. It declares its own result
+-- columns, so it does not depend on the kb_articles row type.
+-- websearch_to_tsquery never raises on user input; a blank, stop-word-only or
+-- null query has no lexemes and matches nothing. The limit is clamped to
+-- 1-20; null means the default, 5.
+create or replace function itsupport.kb_search(p_query text, p_limit integer default 5)
+returns table (
+  id uuid, slug text, title text, content text, category text, assignment_group text, rank real
+)
+language sql
+stable
+set search_path = ''
+as $$
+  select id, slug, title, content, category, assignment_group, ts_rank(search, query) as rank
+  from itsupport.kb_articles, websearch_to_tsquery('english', coalesce(p_query, '')) as query
+  where search @@ query
+  order by rank desc, slug
+  limit greatest(1, least(coalesce(p_limit, 5), 20))
+$$;
+
+-- A new function is executable by public; only service_role may call this one.
+revoke all on function itsupport.kb_search(text, integer) from public, anon, authenticated;
+grant execute on function itsupport.kb_search(text, integer) to service_role;
