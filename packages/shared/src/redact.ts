@@ -8,10 +8,14 @@
 // `:`, `=` or the upper-case prefix `AKIA`, and placeholders contain none of
 // them (their brackets also stop an `AKIA` forming across an edge), so each
 // changing pass strictly shrinks the count of those (an `sk-` key or Slack
-// token holds lower-case letters in its prefix). The one exception, a
-// GitHub token body after an email placeholder, removes one `EMAIL]_` pair and
-// creates none (its placeholder starts with `[`); only an EMAIL match, which
-// shrinks the count above, can create such a pair.
+// token holds lower-case letters in its prefix, a JWT in its `eyJ`). The one
+// exception, a GitHub token body after an email placeholder, removes one
+// `EMAIL]_` pair and creates none (its placeholder starts with `[`); only an
+// EMAIL match, which shrinks the count above, can create such a pair. A JWT's
+// rest after an email placeholder may hold none of them either. It then
+// shrinks the count of characters outside placeholders, or, when it holds none,
+// the count of placeholders other than JWT ones; no match raises either count
+// without shrinking the first count above.
 //
 // Boundaries: a space separates tokens, while `-` and `.` join digits into one
 // number. A rule therefore never starts or ends inside a word or a dash/dot
@@ -48,6 +52,17 @@
 // Slack rule, so a Slack token holding an `sk-` key logs both, while an `sk-`
 // key covers a Slack token glued after it. A body that is read is never read
 // again, so each key is found in one pass.
+//
+// A JWT is read the same way, on the original text: `eyJ` starts three or
+// more dot-joined base64url parts (the first three at least 10 long, any later
+// one at least 1), each with up to two `=` of padding. Its rule runs after
+// the number rules, which first use any boundary an AWS or GitHub key made,
+// and before the open keys, so an `sk-` body never takes its `eyJ`.
+// When there is no JWT, no later start inside its first part can give one
+// (the rest of the read is the same), so scanning resumes after that part.
+// An email may take a JWT's first parts as labels (`jo@x.com.eyJ…`); the
+// JWT is then read from inside the email's original, and its rest after the
+// email placeholder is replaced.
 
 // Also the order of the log.
 const TYPES = [
@@ -57,6 +72,7 @@ const TYPES = [
   "API_KEY",
   "GITHUB_TOKEN",
   "SLACK_TOKEN",
+  "JWT",
   "CARD",
   "SSN",
   "IPV4",
@@ -81,6 +97,8 @@ interface Rule {
   split?: (match: string, next: string) => Array<[RedactionType, number]>;
   /** The match is a prefix; the key's body follows it. */
   open?: Open;
+  /** Reads the whole match from its start: its end, or minus where to resume. */
+  read?: (text: string, p: number, orig: Origin) => number;
 }
 
 interface Open {
@@ -120,6 +138,61 @@ function bodyEnd(text: string, p: number, key: Open, orig: Origin): number {
     } else break;
   }
   return raw >= key.min ? p : -1;
+}
+
+/**
+ * Reads a JWT on the original text: `head` from `h`, then `text` from `p`.
+ * Returns [its end in `text` (-1 for none), where its first part ended (a
+ * position in `head` as minus one minus its index)].
+ */
+function jwtRead(text: string, p: number, orig: Origin, head = "", h = 0): [number, number] {
+  let part = 0;
+  let len = 0;
+  let pad = 0;
+  let end = -1;
+  let resume = text.length;
+  const feed = (c: string, at: number, after: number): boolean => {
+    if (/[\w-]/.test(c) && pad === 0) len++;
+    else if (c === "=" && len > 0 && pad < 2) pad++;
+    else if (c === "." && len >= (part < 3 ? 10 : 1)) {
+      if (part++ === 0) resume = at;
+      len = pad = 0;
+    } else {
+      if (part === 0) resume = at;
+      return false;
+    }
+    if (part >= 2 && len >= (part === 2 ? 10 : 1)) end = after;
+    return true;
+  };
+  for (; h < head.length; h++) if (!feed(head[h]!, -1 - h, -1)) return [end, resume];
+  for (let k = 0; p < text.length;) {
+    PLACEHOLDER_AT.lastIndex = p;
+    const at = PLACEHOLDER_AT.test(text);
+    const unit = at ? orig(k++) : text[p]!;
+    const after = at ? PLACEHOLDER_AT.lastIndex : p + 1;
+    for (const c of unit) if (!feed(c, p, after)) return [end, resume];
+    p = after;
+  }
+  return [end, resume];
+}
+
+/** A JWT's end, or minus the position to resume scanning from. */
+function jwtEnd(text: string, p: number, orig: Origin): number {
+  if (text.startsWith("eyJ", p)) {
+    const [end, resume] = jwtRead(text, p, orig);
+    return end >= 0 ? end : -resume;
+  }
+  // After an email that took the JWT's first parts as labels.
+  const email = orig(-1);
+  const start = /(?<!\w)eyJ/g;
+  start.lastIndex = email.indexOf("@");
+  while (start.exec(email)) {
+    const [end, resume] = jwtRead(text, p, orig, email, start.lastIndex - 3);
+    if (end >= 0) return end;
+    if (resume >= 0) break;
+    start.lastIndex = -1 - resume;
+  }
+  return -(p + 1);
 }
 
 const digitsOf = (s: string): string => s.replace(/\D/g, "");
@@ -239,17 +312,26 @@ const RULES: Rule[] = [
     accept: tfnValid,
   },
   // Last in a pass, so the other rules first use any boundary a key made.
+  // A JWT, or its rest after an email that took its first parts.
+  { type: "JWT", pattern: /(?<!\w)eyJ|(?<=\[REDACTED_EMAIL\])(?!\[REDACTED_JWT\])/g, read: jwtEnd },
   { type: "API_KEY", pattern: /(?<!\w)sk-/g, open: SK },
   { type: "SLACK_TOKEN", pattern: /(?<!\w)xox[abp]-/g, open: XOX },
 ];
 
-/** The accepted parts of a candidate match as [type, length] ([] rejects it). */
+/**
+ * The accepted parts of a candidate match as [type, length] ([] rejects it; a
+ * number rejects it and says where to resume).
+ */
 function partsOf(
   rule: Rule,
   text: string,
   m: RegExpExecArray,
   orig: Origin,
-): Array<[RedactionType, number]> {
+): Array<[RedactionType, number]> | number {
+  if (rule.read) {
+    const stop = rule.read(text, m.index, orig);
+    return stop < 0 ? -stop : [[rule.type, stop - m.index]];
+  }
   const end = m.index + m[0].length;
   if (rule.open) {
     const stop = bodyEnd(text, end, rule.open, orig);
@@ -283,9 +365,9 @@ function applyRule({ text, origins }: State, rule: Rule): State & { hits: Redact
     seen = m.index;
     const base = i;
     const parts = partsOf(rule, text, m, (k) => origins[base + k]!);
-    if (parts.length === 0) {
+    if (typeof parts === "number" || parts.length === 0) {
       // Rejected candidates consume nothing; retry from the next character.
-      pattern.lastIndex = m.index + 1;
+      pattern.lastIndex = typeof parts === "number" ? parts : m.index + 1;
       continue;
     }
     out += text.slice(last, m.index);
@@ -303,7 +385,7 @@ function applyRule({ text, origins }: State, rule: Rule): State & { hits: Redact
   return { text: out + text.slice(last), origins: next, hits };
 }
 
-const KEY_TYPES = new Set<string>(["AWS_KEY", "API_KEY", "GITHUB_TOKEN", "SLACK_TOKEN"]);
+const KEY_TYPES = new Set<string>(["AWS_KEY", "API_KEY", "GITHUB_TOKEN", "SLACK_TOKEN", "JWT"]);
 const LEGACY_RULES = RULES.filter((r) => !KEY_TYPES.has(r.type));
 
 type Counts = Map<RedactionType, number>;
