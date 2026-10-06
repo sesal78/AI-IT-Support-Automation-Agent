@@ -105,3 +105,46 @@ $$;
 -- A new function is executable by public; only service_role may call this one.
 revoke all on function itsupport.kb_search(text, integer) from public, anon, authenticated;
 grant execute on function itsupport.kb_search(text, integer) to service_role;
+
+-- Part 3: AI call metering (plan §6.1, resolved points 2-4). One row per
+-- reservation; a TypeSafe call is one question, an LLM call one request.
+-- The reservation function comes in P3-T2d2.
+create table if not exists itsupport.ai_calls (
+  id uuid primary key default gen_random_uuid(),
+  ticket_id uuid references itsupport.tickets (id) on delete restrict,
+  provider text not null constraint ai_calls_provider_check check (provider in ('typesafe', 'llm')),
+  kind text not null,
+  calls integer not null default 1 constraint ai_calls_calls_check check (calls > 0),
+  tokens_in integer,
+  tokens_out integer,
+  cost_usd numeric,
+  environment text not null,
+  at timestamptz not null default now()
+);
+create index if not exists ai_calls_provider_at_idx on itsupport.ai_calls (provider, at);
+
+-- Row level security on, no policies. Only service_role may read, add or
+-- change rows; nobody but the owner may delete them.
+alter table itsupport.ai_calls enable row level security;
+revoke all on itsupport.ai_calls from public, anon, authenticated, service_role;
+grant select, insert, update on itsupport.ai_calls to service_role;
+
+-- Usage per provider for the UTC month that contains p_month_start. The
+-- month bounds are computed in UTC, so the session time zone does not matter.
+create or replace function itsupport.ai_usage_month(p_month_start date)
+returns table (provider text, calls bigint, tokens_in bigint, tokens_out bigint, cost_usd numeric)
+language sql
+stable
+set search_path = ''
+as $$
+  select provider, sum(calls), sum(tokens_in), sum(tokens_out), sum(cost_usd)
+  from itsupport.ai_calls
+  where at >= date_trunc('month', p_month_start::timestamp) at time zone 'UTC'
+    and at < (date_trunc('month', p_month_start::timestamp) + interval '1 month') at time zone 'UTC'
+  group by provider
+  order by provider
+$$;
+
+-- A new function is executable by public; only service_role may call this one.
+revoke all on function itsupport.ai_usage_month(date) from public, anon, authenticated;
+grant execute on function itsupport.ai_usage_month(date) to service_role;

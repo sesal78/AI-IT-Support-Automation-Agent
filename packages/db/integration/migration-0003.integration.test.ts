@@ -60,7 +60,29 @@ const PART2_OBJECTS = [
   "owner itsupport.kb_search",
   "collation itsupport.kb_articles.slug",
 ];
-const OBJECTS = [...PART1_OBJECTS, ...PART2_OBJECTS].sort();
+// Part 3: ai_calls and ai_usage_month.
+const PART3_OBJECTS = [
+  ...[
+    "id",
+    "ticket_id",
+    "provider",
+    "kind",
+    "calls",
+    "tokens_in",
+    "tokens_out",
+    "cost_usd",
+    "environment",
+    "at",
+  ].map((column) => `column itsupport.ai_calls.${column}`),
+  ...["pkey", "ticket_id_fkey", "provider_check", "calls_check"].map(
+    (name) => `constraint itsupport.ai_calls.ai_calls_${name}`,
+  ),
+  "index itsupport.ai_calls.ai_calls_provider_at_idx",
+  ...["checks", "columns", "grants", "owner", "rls"].map((kind) => `${kind} itsupport.ai_calls`),
+  "function itsupport.ai_usage_month",
+  "owner itsupport.ai_usage_month",
+];
+const OBJECTS = [...PART1_OBJECTS, ...PART2_OBJECTS, ...PART3_OBJECTS].sort();
 
 let phase2: Record<string, unknown[]> = {};
 
@@ -521,5 +543,120 @@ describe("migration 0003_itsupport_triage_kb, check-query hardening", () => {
       }
     }
     expect(await check()).toEqual(OBJECTS.map((object) => ({ object, ok: true })));
+  });
+});
+
+const AI = "itsupport.ai_calls";
+const USAGE = "itsupport.ai_usage_month(date)";
+const callUsage = "select * from itsupport.ai_usage_month('2026-10-01')";
+const usage = async (month: string) =>
+  (await client().query("select * from itsupport.ai_usage_month($1)", [month])).rows;
+
+describe("migration 0003_itsupport_triage_kb, part 3 (ai_calls, ai_usage_month)", () => {
+  it("rejects a bad provider or calls with 23514 and an unknown ticket with 23503", async () => {
+    const add = (values: string, ticket = "null") =>
+      inRollback(`insert into ${AI} (ticket_id, provider, calls, kind, environment)
+        values (${ticket}, ${values}, 'k', 'e2e')`);
+    for (const bad of ["'openai', 1", "'', 1", "'llm', 0", "'llm', -1"]) {
+      expect(await add(bad), bad).toEqual({ ok: false, code: "23514" });
+    }
+    expect(await add("'llm', 1", "gen_random_uuid()")).toEqual({ ok: false, code: "23503" });
+    const ticket = "(select id from itsupport.tickets limit 1)";
+    expect(await add("'typesafe', 1", ticket)).toEqual({ ok: true });
+  });
+
+  it("ai_usage_month sums one UTC month per provider, in any session time zone", async () => {
+    await client().query("begin");
+    try {
+      await client()
+        .query(`insert into ${AI} (provider, kind, calls, tokens_in, tokens_out, cost_usd, environment, at) values
+        ('llm', 'fix_steps', 1, 100, 50, null, 'e2e', '2026-10-01 00:00:00+00'),
+        ('llm', 'fix_steps', 2, 10, 5, 0.5, 'staging', '2026-10-31 23:59:59.999+00'),
+        ('typesafe', 'triage_judgments', 7, null, null, null, 'e2e', '2026-10-15 12:00:00+00'),
+        ('typesafe', 'kb_rerank', 5, null, null, null, 'e2e', '2026-09-30 23:59:59.999+00'),
+        ('llm', 'fix_steps', 4, 1, 1, null, 'e2e', '2026-11-01 00:00:00+00')`);
+      for (const zone of ["UTC", "Pacific/Kiritimati", "America/Los_Angeles"]) {
+        await client().query(`set local time zone '${zone}'`);
+        expect(await usage("2026-10-01"), zone).toEqual([
+          { provider: "llm", calls: "3", tokens_in: "110", tokens_out: "55", cost_usd: "0.5" },
+          { provider: "typesafe", calls: "7", tokens_in: null, tokens_out: null, cost_usd: null },
+        ]);
+      }
+      expect(await usage("2026-09-01")).toEqual([
+        { provider: "typesafe", calls: "5", tokens_in: null, tokens_out: null, cost_usd: null },
+      ]);
+      expect(await usage("2000-01-01")).toEqual([]);
+    } finally {
+      await client().query("rollback");
+    }
+  });
+
+  it("only service_role may use the table (no delete) and the function", async () => {
+    const { rows } = await client().query(
+      `select r, has_table_privilege(r, '${AI}', 'select,insert,update,delete,truncate,references,trigger')
+          or has_any_column_privilege(r, '${AI}', 'select,insert,update,references')
+          or has_function_privilege(r, '${USAGE}', 'execute') as any
+       from unnest(array['public', 'anon', 'authenticated']) r`,
+    );
+    expect(rows.filter((row) => row.any)).toEqual([]);
+    for (const role of ["anon", "authenticated"]) {
+      for (const sql of [`select * from ${AI}`, callUsage]) {
+        expect(await inRollback(sql, role), `${role}: ${sql}`).toEqual(DENIED);
+      }
+    }
+    for (const sql of [
+      `insert into ${AI} (provider, kind, environment) values ('llm', 'fix_steps', 'e2e')`,
+      `update ${AI} set tokens_in = 1`,
+      callUsage,
+    ]) {
+      expect(await inRollback(sql, "service_role"), sql).toEqual({ ok: true });
+    }
+    expect(await inRollback(`delete from ${AI}`, "service_role")).toEqual(DENIED);
+  });
+
+  it("the check query flips only the row of each wrong variant", async () => {
+    const fk = `alter table ${AI} drop constraint ai_calls_ticket_id_fkey, add constraint ai_calls_ticket_id_fkey
+      foreign key (ticket_id) references itsupport.tickets (id) on delete cascade`;
+    const variants = [
+      [
+        `alter table ${AI} drop constraint ai_calls_provider_check, add constraint ai_calls_provider_check check (provider <> '')`,
+        `constraint ${AI}.ai_calls_provider_check`,
+      ],
+      [fk, `constraint ${AI}.ai_calls_ticket_id_fkey`],
+      ["drop index itsupport.ai_calls_provider_at_idx", `index ${AI}.ai_calls_provider_at_idx`],
+      [`alter table ${AI} alter calls set default 2`, `column ${AI}.calls`],
+      [`alter table ${AI} add column extra text`, `columns ${AI}`],
+      [`alter table ${AI} add constraint extra check (true)`, `checks ${AI}`],
+      [`grant delete on ${AI} to service_role`, `grants ${AI}`],
+      [`alter table ${AI} disable row level security`, `rls ${AI}`],
+      [`grant create on schema itsupport to anon; alter table ${AI} owner to anon`, `owner ${AI}`],
+      [`alter function ${USAGE} volatile`, "function itsupport.ai_usage_month"],
+    ];
+    for (const [sql, wrong] of variants) {
+      await client().query("begin");
+      try {
+        await client().query(sql ?? "");
+        const { rows } = await client().query(read("checks/0003_itsupport_triage_kb.check.sql"));
+        const wrongRows = rows.filter((row) => !row.ok).map((row) => row.object);
+        expect(wrongRows, sql).toEqual([wrong]);
+      } finally {
+        await client().query("rollback");
+      }
+    }
+  });
+
+  it("the part-3 down section comes first (function, then table) and leaves parts 1-2b", async () => {
+    const part3 = downSql.slice(0, downSql.indexOf("-- Part 2b:"));
+    const dropFn = part3.indexOf("drop function if exists itsupport.ai_usage_month(date);");
+    expect(dropFn).toBeGreaterThan(-1);
+    expect(dropFn).toBeLessThan(part3.indexOf(`drop table if exists ${AI};`));
+    applied(part3);
+    expect(await check()).toEqual(
+      OBJECTS.map((object) => ({ object, ok: !PART3_OBJECTS.includes(object) })),
+    );
+    expect(await count()).toBe(3);
+    applied(upSql);
+    expect(await check()).toEqual(OBJECTS.map((object) => ({ object, ok: true })));
+    expect(await snapshot()).toEqual(phase2);
   });
 });

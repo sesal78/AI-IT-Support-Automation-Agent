@@ -5,7 +5,7 @@
 -- After the up file every row is ok = true; after the down file every row is
 -- ok = false. A column is ok when it exists with the expected type,
 -- nullability and default (or `generated <expression>`); a constraint (check,
--- primary key or unique) or an index is ok when it exists and its definition
+-- primary key, unique or foreign key) or an index is ok when it exists and its definition
 -- is exactly the expected one (Postgres 17). A function is ok when its
 -- language, arguments, result, volatility, security, strictness, settings,
 -- body (MD5 with carriage returns removed, so CRLF and LF checkouts agree) and
@@ -90,7 +90,7 @@ select e.object,
       join pg_catalog.pg_class r on r.oid = k.conrelid
       join pg_catalog.pg_namespace n on n.oid = r.relnamespace
       where n.nspname = 'itsupport' and r.relname = e.tbl
-        and k.conname = e.name and k.contype in ('c', 'p', 'u')
+        and k.conname = e.name and k.contype in ('c', 'p', 'u', 'f')
         and pg_get_constraintdef(k.oid) = e.def
     )
   end as ok
@@ -166,6 +166,37 @@ from (
     ('rls itsupport.kb_articles', 'rls', 'kb_articles', null, null, null, null),
     ('owner itsupport.kb_articles', 'owner', null, 'kb_articles', 'table', null, null),
     ('owner itsupport.kb_search', 'owner', null, 'kb_search(text, integer)', 'function', null, null),
-    ('collation itsupport.kb_articles.slug', 'collation', 'kb_articles', 'slug', null, null, 'default')
+    ('collation itsupport.kb_articles.slug', 'collation', 'kb_articles', 'slug', null, null, 'default'),
+    -- Part 3: ai_calls and ai_usage_month.
+    ('column itsupport.ai_calls.id', 'column', 'ai_calls', 'id', 'uuid', 'NO', 'gen_random_uuid()'),
+    ('column itsupport.ai_calls.ticket_id', 'column', 'ai_calls', 'ticket_id', 'uuid', 'YES', null),
+    ('column itsupport.ai_calls.provider', 'column', 'ai_calls', 'provider', 'text', 'NO', null),
+    ('column itsupport.ai_calls.kind', 'column', 'ai_calls', 'kind', 'text', 'NO', null),
+    ('column itsupport.ai_calls.calls', 'column', 'ai_calls', 'calls', 'int4', 'NO', '1'),
+    ('column itsupport.ai_calls.tokens_in', 'column', 'ai_calls', 'tokens_in', 'int4', 'YES', null),
+    ('column itsupport.ai_calls.tokens_out', 'column', 'ai_calls', 'tokens_out', 'int4', 'YES', null),
+    ('column itsupport.ai_calls.cost_usd', 'column', 'ai_calls', 'cost_usd', 'numeric', 'YES', null),
+    ('column itsupport.ai_calls.environment', 'column', 'ai_calls', 'environment', 'text', 'NO', null),
+    ('column itsupport.ai_calls.at', 'column', 'ai_calls', 'at', 'timestamptz', 'NO', 'now()'),
+    ('constraint itsupport.ai_calls.ai_calls_pkey', 'constraint', 'ai_calls', 'ai_calls_pkey', null, null, 'PRIMARY KEY (id)'),
+    ('constraint itsupport.ai_calls.ai_calls_ticket_id_fkey', 'constraint', 'ai_calls', 'ai_calls_ticket_id_fkey', null, null,
+      'FOREIGN KEY (ticket_id) REFERENCES itsupport.tickets(id) ON DELETE RESTRICT'),
+    ('constraint itsupport.ai_calls.ai_calls_provider_check', 'constraint', 'ai_calls', 'ai_calls_provider_check', null, null,
+      'CHECK ((provider = ANY (ARRAY[''typesafe''::text, ''llm''::text])))'),
+    ('constraint itsupport.ai_calls.ai_calls_calls_check', 'constraint', 'ai_calls', 'ai_calls_calls_check', null, null,
+      'CHECK ((calls > 0))'),
+    ('index itsupport.ai_calls.ai_calls_provider_at_idx', 'index', 'ai_calls', 'ai_calls_provider_at_idx', null, null,
+      'CREATE INDEX ai_calls_provider_at_idx ON itsupport.ai_calls USING btree (provider, at)'),
+    ('checks itsupport.ai_calls', 'checks', 'ai_calls', null, null, null, 'ai_calls_calls_check, ai_calls_provider_check'),
+    ('columns itsupport.ai_calls', 'columns', 'ai_calls', null, null, null,
+      'id, ticket_id, provider, kind, calls, tokens_in, tokens_out, cost_usd, environment, at'),
+    ('grants itsupport.ai_calls', 'grants', 'ai_calls', null, null, null,
+      'service_role INSERT, service_role SELECT, service_role UPDATE'),
+    ('rls itsupport.ai_calls', 'rls', 'ai_calls', null, null, null, null),
+    ('owner itsupport.ai_calls', 'owner', null, 'ai_calls', 'table', null, null),
+    ('function itsupport.ai_usage_month', 'function', null, 'ai_usage_month(date)', 'sql', null,
+      'p_month_start date -> TABLE(provider text, calls bigint, tokens_in bigint, tokens_out bigint, cost_usd numeric) '
+      || 's f f {"search_path=\"\""} service_role=EXECUTE 87786c1376c21c019f7f80e4fd269274'),
+    ('owner itsupport.ai_usage_month', 'owner', null, 'ai_usage_month(date)', 'function', null, null)
 ) as e (object, kind, tbl, name, udt, nullable, def)
 order by e.object;
