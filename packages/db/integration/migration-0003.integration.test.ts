@@ -43,6 +43,8 @@ const PART1_OBJECTS = [
   "constraint itsupport.tickets.tickets_status_check",
   ...NEW_COLUMNS.map(([column]) => `column itsupport.triage_results.${column}`),
   ...CHECKS,
+  "checks itsupport.tickets",
+  "checks itsupport.triage_results",
 ].sort();
 // Part 2: kb_articles.
 const PART2_OBJECTS = [
@@ -54,6 +56,8 @@ const PART2_OBJECTS = [
   ),
   "index itsupport.kb_articles.kb_articles_search_idx",
   "function itsupport.kb_search",
+  ...["checks", "columns", "grants", "rls"].map((kind) => `${kind} itsupport.kb_articles`),
+  "collation itsupport.kb_articles.slug",
 ];
 const OBJECTS = [...PART1_OBJECTS, ...PART2_OBJECTS].sort();
 
@@ -382,9 +386,19 @@ describe("migration 0003_itsupport_triage_kb, part 2b (kb_search)", () => {
     for (const query of ["", "   ", "the and of", null]) {
       expect(await search(query), String(query)).toEqual([]);
     }
-    const hostile = [`'; drop table ${KB}; --`, 'vpn "connect', "-", "<-> & | ! :* ( ) or"];
-    for (const query of [...hostile, "x".repeat(5000), "vpn ".repeat(1250)]) {
-      expect((await search(query)).length, query.slice(0, 30)).toBeLessThanOrEqual(3);
+    const hostile: [string, string[]][] = [
+      [`'; drop table ${KB}; --`, []],
+      ['vpn "connect', ["vpn-connect"]],
+      ["-", []],
+      ["<-> & | ! :* ( ) or", []],
+      ["x".repeat(5000), []],
+      ["vpn ".repeat(1250), ["vpn-connect"]],
+    ];
+    for (const [query, slugs] of hostile) {
+      expect(
+        (await search(query)).map((row) => row.slug),
+        query.slice(0, 30),
+      ).toEqual(slugs);
     }
     expect(await count()).toBe(3);
   });
@@ -446,5 +460,52 @@ describe("migration 0003_itsupport_triage_kb, part 2b (kb_search)", () => {
     const dropFn = downSql.indexOf("drop function if exists itsupport.kb_search(text, integer);");
     expect(dropFn).toBeGreaterThan(-1);
     expect(dropFn).toBeLessThan(downSql.indexOf("drop table if exists itsupport.kb_articles;"));
+  });
+});
+
+describe("migration 0003_itsupport_triage_kb, check-query hardening", () => {
+  it("one wrong change per variant flips only its own row to ok = false", async () => {
+    const fnSql = /create or replace function itsupport\.kb_search[\s\S]*?\$\$;/.exec(upSql)?.[0];
+    expect(fnSql).toContain("least(coalesce(p_limit, 5), 20)");
+    const variants = [
+      [`grant select on ${KB} to anon`, `grants ${KB}`],
+      [`grant delete on ${KB} to service_role`, `grants ${KB}`],
+      [`grant select (title) on ${KB} to authenticated`, `grants ${KB}`],
+      [`grant update (title) on ${KB} to service_role`, `grants ${KB}`],
+      [`create policy p_open on ${KB} for select using (true)`, `rls ${KB}`],
+      [`alter table ${KB} disable row level security`, `rls ${KB}`],
+      [`alter table ${KB} add column extra text`, `columns ${KB}`],
+      [`alter table ${KB} alter slug type text collate "C"`, `collation ${KB}.slug`],
+      [`alter table ${KB} add constraint extra check (true)`, `checks ${KB}`],
+      [
+        "alter table itsupport.tickets add constraint extra check (true)",
+        "checks itsupport.tickets",
+      ],
+      [
+        "alter table itsupport.triage_results add constraint extra check (true)",
+        "checks itsupport.triage_results",
+      ],
+      [
+        "alter table itsupport.triage_results alter grounding_score type numeric(5, 2)",
+        "column itsupport.triage_results.grounding_score",
+      ],
+      [`alter function ${FN} strict`, "function itsupport.kb_search"],
+      [
+        fnSql?.replace("p_limit, 5), 20)", "p_limit, 5), 50)") ?? "",
+        "function itsupport.kb_search",
+      ],
+    ];
+    for (const [sql, wrong] of variants) {
+      await client().query("begin");
+      try {
+        await client().query(sql ?? "");
+        const { rows } = await client().query(read("checks/0003_itsupport_triage_kb.check.sql"));
+        const wrongRows = rows.filter((row) => !row.ok).map((row) => row.object);
+        expect(wrongRows, sql).toEqual([wrong]);
+      } finally {
+        await client().query("rollback");
+      }
+    }
+    expect(await check()).toEqual(OBJECTS.map((object) => ({ object, ok: true })));
   });
 });
