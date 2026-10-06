@@ -959,6 +959,12 @@ describe("redact: JWTs", () => {
       [`${slackKey("b")}.${jwt}`, `${SL}.${JT}`],
       [`${jwt}.${skKey}`, JT],
       [`${jwt}[REDACTED_CARD]`, JT + "[REDACTED_CARD]"],
+      // The AWS key frees the card's boundary before the JWT is read.
+      [`${jwt}.${awsKey}-4111 1111 1111 1111`, JT],
+      // An email took the first part (or a false start and the first part).
+      [`jo@x.com.${EYJ}abcdefgh.b_${"b".repeat(9)}.${"c".repeat(10)}`, "[REDACTED_EMAIL]" + JT],
+      [`jo@${EYJ}ab.${EYJ}abcdefgh.b_${"b".repeat(9)}.${"c".repeat(10)}`, "[REDACTED_EMAIL]" + JT],
+      [`jo@x.${EYJ}abcdefgh.bb_${"b1".repeat(18)}.${"c".repeat(10)}`, "[REDACTED_EMAIL]" + JT],
     ];
     for (const [input, text] of rows) {
       expect(redact(input).text, input).toBe(text);
