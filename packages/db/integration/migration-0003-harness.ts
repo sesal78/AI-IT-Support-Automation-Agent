@@ -33,6 +33,14 @@ export function client(): pg.Client {
   return db;
 }
 
+/** Opens one more connection to the test database (for lock and race tests); the caller ends it. */
+export async function connect(): Promise<pg.Client> {
+  if (!container) throw new Error("container not started");
+  const extra = clientFor(container);
+  await extra.connect();
+  return extra;
+}
+
 /** Runs a SQL file with psql in one transaction and expects it to exit 0. */
 export function applied(sql: string): void {
   if (!container) throw new Error("container not started");
