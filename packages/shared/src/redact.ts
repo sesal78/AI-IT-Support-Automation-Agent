@@ -7,7 +7,8 @@
 // always terminates: every match contains a digit, a lower-case letter, `@`,
 // `:`, `=` or the upper-case prefix `AKIA`, and placeholders contain none of
 // them (their brackets also stop an `AKIA` forming across an edge), so each
-// changing pass strictly shrinks the count of those. The one exception, a
+// changing pass strictly shrinks the count of those (an `sk-` key or Slack
+// token holds lower-case letters in its prefix). The one exception, a
 // GitHub token body after an email placeholder, removes one `EMAIL]_` pair and
 // creates none (its placeholder starts with `[`); only an EMAIL match, which
 // shrinks the count above, can create such a pair.
@@ -36,13 +37,22 @@
 // word characters (letters, digits and the `_` of `ghp_`), and every older
 // rule rejects a word character in front of its start, so no older match
 // starts inside a key.
+//
+// `sk-` keys and Slack tokens are open-ended: each runs to the end of its
+// word-and-dash run, so it never ends inside a word, and it takes the
+// placeholders that older rules left in that run (a card inside a key still
+// gives one placeholder). They run before the AWS/GitHub rule, so a fixed key
+// inside one goes with it. A GitHub token glued in front of one ends there
+// (`ghp_<36>sk-<key>`) and both are redacted.
 
 // Also the order of the log.
 const TYPES = [
   "SECRET",
   "EMAIL",
   "AWS_KEY",
+  "API_KEY",
   "GITHUB_TOKEN",
+  "SLACK_TOKEN",
   "CARD",
   "SSN",
   "IPV4",
@@ -96,17 +106,35 @@ function tfnValid(s: string): boolean {
 // letters or digits.
 const KEY = "(?:AKIA[A-Z0-9]{16}|ghp_[A-Za-z0-9]{36})";
 
+const PLACEHOLDER = "\\[REDACTED_[A-Z0-9_]+\\]";
+
+// An open-ended key's prefix: then `min` characters of `cls`, or fewer of
+// them and a placeholder. Both alternatives scan the same class, so a failed
+// check reads fewer than `min` characters (linear).
+const opener = (prefix: string, cls: string, min: number): string =>
+  `${prefix}(?=${cls}{${min}}|${cls}*${PLACEHOLDER})`;
+const SK = opener("sk-", "[\\w-]", 16);
+const XOX = opener("xox[abp]-", "[A-Za-z0-9-]", 10);
+const OPENS_KEY = new RegExp(`^(?:${SK}|${XOX})`);
+
+// The rest of the word-and-dash run, placeholders included. A number that the
+// older rules skip because it follows `digit-` (`…7-0412 345 678`) goes too.
+const OPEN_BODY = `(?:[\\w-]|${PLACEHOLDER})+(?:(?<=-\\d+)(?:[ .]\\d+)+)?`;
+
 /**
  * Splits a glued run into its keys, left to right from its start. Every key
  * but the last has a whole key behind it; the last one also needs the end or
- * a character outside its body alphabet behind it, else it is left as is.
+ * a character outside its body alphabet behind it (or, for a GitHub token,
+ * an `sk-` key or Slack token), else it is left as is. `next` is the rest of
+ * the text.
  */
 function splitKeys(run: string, next: string): Array<[RedactionType, number]> {
   const keys: Array<[RedactionType, number]> = [];
   for (let i = 0; i < run.length; i += keys[keys.length - 1]![1]) {
     keys.push(run[i] === "A" ? ["AWS_KEY", 20] : ["GITHUB_TOKEN", run[i] === "_" ? 37 : 40]);
   }
-  if ((keys[keys.length - 1]![0] === "AWS_KEY" ? /[A-Z0-9]/ : /[A-Za-z0-9]/).test(next)) {
+  const aws = keys[keys.length - 1]![0] === "AWS_KEY";
+  if (aws ? /^[A-Z0-9]/.test(next) : /^[A-Za-z0-9]/.test(next) && !OPENS_KEY.test(next)) {
     keys.pop();
   }
   return keys;
@@ -126,6 +154,14 @@ const RULES: Rule[] = [
     type: "EMAIL",
     pattern:
       /(?<![\w.%+-])[\w.%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?![A-Za-z0-9-])/g,
+  },
+  {
+    type: "API_KEY",
+    pattern: new RegExp(`(?<!\\w)${SK}${OPEN_BODY}`, "g"),
+  },
+  {
+    type: "SLACK_TOKEN",
+    pattern: new RegExp(`(?<!\\w)${XOX}${OPEN_BODY}`, "g"),
   },
   {
     // AWS keys and GitHub tokens (splitKeys names each key's type): a run of
@@ -201,7 +237,7 @@ function applyRule(text: string, rule: Rule): { text: string; hits: RedactionTyp
   const hits: RedactionType[] = [];
   let m: RegExpExecArray | null;
   while ((m = pattern.exec(text)) !== null) {
-    const parts = partsOf(rule, m[0], text.charAt(m.index + m[0].length));
+    const parts = partsOf(rule, m[0], text.slice(m.index + m[0].length));
     if (parts.length === 0) {
       // Rejected candidates consume nothing; retry from the next character.
       pattern.lastIndex = m.index + 1;
@@ -219,7 +255,7 @@ function applyRule(text: string, rule: Rule): { text: string; hits: RedactionTyp
   return { text: out + text.slice(last), hits };
 }
 
-const KEY_TYPES = new Set<string>(["AWS_KEY", "GITHUB_TOKEN"]);
+const KEY_TYPES = new Set<string>(["AWS_KEY", "API_KEY", "GITHUB_TOKEN", "SLACK_TOKEN"]);
 const LEGACY_RULES = RULES.filter((r) => !KEY_TYPES.has(r.type));
 
 type Counts = Map<RedactionType, number>;
