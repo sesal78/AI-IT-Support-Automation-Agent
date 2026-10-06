@@ -46,6 +46,27 @@ describe("packages/shared/scripts/mutation-gate.mjs", () => {
     expect(run.status).toBe(2);
   });
 
+  // A preload swaps in the list text, so the real guard-modules.json is never touched.
+  it.each([
+    ["an invalid list", '[{ "path": "a/b.ts", "statements": 90, "mutation": 80, "tests": "x" }]'],
+    ["text that is not JSON", "[{"],
+  ])("exits 2 and names guard-modules.json for %s", (_case, text) => {
+    const preload = `import fs from "node:fs";
+      import { syncBuiltinESMExports } from "node:module";
+      const read = fs.readFileSync;
+      fs.readFileSync = (file, ...rest) =>
+        file === "guard-modules.json" ? ${JSON.stringify(text)} : read(file, ...rest);
+      syncBuiltinESMExports();`;
+    const run = spawnSync(
+      process.execPath,
+      ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, scriptPath, "--all"],
+      { cwd: repoRoot, encoding: "utf8" },
+    );
+    expect(run.stderr).toContain("test:mutation: guard-modules.json: ");
+    expect(run.stdout).not.toContain("mutation:");
+    expect(run.status).toBe(2);
+  });
+
   // @stryker-mutator/vitest-runner 10.0.0 marks every test "skipped" on Vitest 5, so its score is false.
   it("uses Stryker's built-in command runner, pinned exactly, and never the Vitest runner", () => {
     const script = readFileSync(scriptPath, "utf8");

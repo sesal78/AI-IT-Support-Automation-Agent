@@ -21,6 +21,9 @@ describe("parseGuardModules", () => {
   it.each([
     ["statements below 90", { ...redact, statements: 89.9 }, "statements"],
     ["mutation below 80", { ...redact, mutation: 79.9 }, "mutation"],
+    // Whole numbers, so only the minimum can reject them.
+    ["whole statements below 90", { ...redact, statements: 89 }, "statements"],
+    ["whole mutation below 80", { ...redact, mutation: 79 }, "mutation"],
     ["a fractional statements floor", { ...redact, statements: 90.5 }, "statements"],
     ["a fractional mutation floor", { ...redact, mutation: 80.5 }, "mutation"],
     ["tests that are not a list", { ...redact, tests: "a/b.test.ts" }, "tests"],
