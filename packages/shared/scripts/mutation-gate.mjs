@@ -61,8 +61,8 @@ if (!all && !gate.guardFilesTouched(fakeChanged ?? changedFiles(), list)) {
 // The Stryker options (no config file). The command runner runs Vitest per mutant
 // on the tests that import the module, coverage off (per-file floors would fail a
 // partial run). In place: Stryker restores the module from .stryker-tmp/ at the
-// end; disableTypeChecks: false, so it never writes `// @ts-nocheck` into source
-// files that a killed run would leave behind (Vitest strips types unchecked).
+// end. Type-check disabling is off, so Stryker never writes `// @ts-nocheck` into
+// source files that a killed run would leave behind (Vitest strips types unchecked).
 // Guard paths need no quoting (REPO_PATH); default thresholds are integers.
 const { Stryker } = await import("@stryker-mutator/core");
 let failed = false;

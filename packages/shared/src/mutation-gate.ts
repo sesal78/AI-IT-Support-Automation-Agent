@@ -9,7 +9,7 @@ import { type GuardModule, REPO_PATH } from "./guard-modules.ts";
 
 /**
  * Files whose change re-runs every module with a floor: the list and its parser,
- * the gate itself (it holds the Stryker options), the Vitest configs that the
+ * the gate itself (it holds the Stryker options), every Vitest config that the
  * command runner loads, and the root package.json and lockfile (the Stryker and
  * Vitest versions and the `test:mutation` script).
  */
@@ -20,6 +20,10 @@ const GATE_FILES = [
   "packages/shared/src/mutation-gate.ts",
   "vitest.config.ts",
   "apps/web/vitest.config.ts",
+  "packages/ai/vitest.config.ts",
+  "packages/db/vitest.config.ts",
+  "packages/shared/vitest.config.ts",
+  "services/pipeline/vitest.config.ts",
   "package.json",
   "pnpm-lock.yaml",
 ];
