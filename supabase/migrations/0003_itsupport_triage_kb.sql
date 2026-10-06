@@ -58,3 +58,25 @@ alter table itsupport.triage_results
   add constraint triage_results_route_check check (route in ('auto', 'review')),
   add constraint triage_results_grounding_score_check
     check (grounding_score between 0 and 1);
+
+-- Part 2: knowledge base articles (plan §6.1). Internal; written by the
+-- kb-ingest task (P3-T5b). A new table, so no existing row is touched.
+create table if not exists itsupport.kb_articles (
+  id uuid primary key default gen_random_uuid(),
+  slug text not null unique,
+  title text not null,
+  content text not null,
+  -- The 6 dev420188 incident categories, as in triage_results_category_check.
+  category text not null constraint kb_articles_category_check check (category in (
+    'database', 'inquiry', 'software', 'hardware', 'password_reset', 'network'
+  )),
+  assignment_group text not null,
+  search tsvector generated always as (to_tsvector('english', title || ' ' || content)) stored
+);
+create index if not exists kb_articles_search_idx on itsupport.kb_articles using gin (search);
+
+-- Row level security on, no policies. Only service_role may read, add or
+-- change articles; nobody but the owner may delete them.
+alter table itsupport.kb_articles enable row level security;
+revoke all on itsupport.kb_articles from public, anon, authenticated, service_role;
+grant select, insert, update on itsupport.kb_articles to service_role;
