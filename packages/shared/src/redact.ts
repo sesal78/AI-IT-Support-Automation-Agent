@@ -143,9 +143,15 @@ function bodyEnd(text: string, p: number, key: Open, orig: Origin): number {
 /**
  * Reads a JWT on the original text: `head` from `h`, then `text` from `p`.
  * Returns [its end in `text` (-1 for none), where its first part ended (a
- * position in `head` as minus one minus its index)].
+ * position in `head` as minus one minus its index), whether it reached `text`].
  */
-function jwtRead(text: string, p: number, orig: Origin, head = "", h = 0): [number, number] {
+function jwtRead(
+  text: string,
+  p: number,
+  orig: Origin,
+  head = "",
+  h = 0,
+): [number, number, boolean] {
   let part = 0;
   let len = 0;
   let pad = 0;
@@ -164,16 +170,16 @@ function jwtRead(text: string, p: number, orig: Origin, head = "", h = 0): [numb
     if (part >= 2 && len >= (part === 2 ? 10 : 1)) end = after;
     return true;
   };
-  for (; h < head.length; h++) if (!feed(head[h]!, -1 - h, -1)) return [end, resume];
+  for (; h < head.length; h++) if (!feed(head[h]!, -1 - h, -1)) return [end, resume, false];
   for (let k = 0; p < text.length;) {
     PLACEHOLDER_AT.lastIndex = p;
     const at = PLACEHOLDER_AT.test(text);
     const unit = at ? orig(k++) : text[p]!;
     const after = at ? PLACEHOLDER_AT.lastIndex : p + 1;
-    for (const c of unit) if (!feed(c, p, after)) return [end, resume];
+    for (const c of unit) if (!feed(c, p, after)) return [end, resume, true];
     p = after;
   }
-  return [end, resume];
+  return [end, resume, true];
 }
 
 /** A JWT's end, or minus the position to resume scanning from. */
@@ -187,9 +193,10 @@ function jwtEnd(text: string, p: number, orig: Origin): number {
   const start = /(?<!\w)eyJ/g;
   start.lastIndex = email.indexOf("@");
   while (start.exec(email)) {
-    const [end, resume] = jwtRead(text, p, orig, email, start.lastIndex - 3);
+    const [end, resume, reachedText] = jwtRead(text, p, orig, email, start.lastIndex - 3);
     if (end >= 0) return end;
-    if (resume >= 0) break;
+    // A later start reads the same rest with fewer parts, so it fails too.
+    if (resume >= 0 || reachedText) break;
     start.lastIndex = -1 - resume;
   }
   return -(p + 1);
