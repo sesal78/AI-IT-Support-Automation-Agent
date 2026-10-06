@@ -70,7 +70,7 @@ select e.object,
       select coalesce(string_agg(k.conname, ', ' order by k.conname), '') from pg_catalog.pg_constraint k
       where k.conrelid = to_regclass('itsupport.' || e.tbl) and k.contype = 'c'
     )
-    when 'grants' then e.def = (
+    when 'grants' then to_regclass('itsupport.' || e.tbl) is not null and e.def = (
       select coalesce(string_agg(w.who || ' ' || g.priv, ', ' order by w.who, g.priv), '')
       from (
         select x.grantee, x.privilege_type || case when x.is_grantable then '*' else '' end
@@ -231,6 +231,7 @@ from (
       'id, source, kind, window_start, count, sample'),
     ('grants itsupport.security_events', 'grants', 'security_events', null, null, null,
       'service_role INSERT, service_role SELECT, service_role UPDATE'),
+    ('grants itsupport.security_events_id_seq', 'grants', 'security_events_id_seq', null, null, null, ''),
     ('rls itsupport.security_events', 'rls', 'security_events', null, null, null, null),
     ('owner itsupport.security_events', 'owner', null, 'security_events', 'table', null, null),
     ('function itsupport.security_event_record', 'function', null, 'security_event_record(text, text, jsonb)', 'plpgsql', null,

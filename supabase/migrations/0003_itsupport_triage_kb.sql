@@ -227,11 +227,14 @@ create index if not exists security_events_window_start_idx
 alter table itsupport.security_events enable row level security;
 revoke all on itsupport.security_events from public, anon, authenticated, service_role;
 grant select, insert, update on itsupport.security_events to service_role;
+-- Identity inserts need no sequence right; Supabase default privileges would grant it.
+revoke all on sequence itsupport.security_events_id_seq from public, anon, authenticated, service_role;
 
 -- Records one event and returns the count of its minute. The window is the
 -- current minute in UTC, so the session time zone does not matter. A blank
 -- or null source or kind raises 22023 and writes nothing. ON CONFLICT makes
 -- parallel callers in the same minute share one row (READ COMMITTED).
+-- Under SERIALIZABLE, concurrent callers may get 40001 and must retry; use READ COMMITTED (the default).
 create or replace function itsupport.security_event_record(
   p_source text, p_kind text, p_sample jsonb default '{}'
 )
