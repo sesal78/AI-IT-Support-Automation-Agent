@@ -624,3 +624,238 @@ describe("redact: glued runs split from their start", () => {
     }
   });
 });
+
+// P3-T3a2: `sk-` keys and Slack tokens. Both are open-ended: a key runs to the
+// end of its run of body characters in the original text. Built from pieces
+// so no literal matches.
+const SKP = "s" + "k-";
+const XB = "xo" + "xb-";
+const skKey = SKP + "aB3d".repeat(5);
+const slackKey = (c: string) => "xo" + "x" + c + "-" + "12ab".repeat(5);
+const AK = "[REDACTED_API_KEY]";
+const SL = "[REDACTED_SLACK_TOKEN]";
+const NEW_TYPES = ["API_KEY", "SLACK_TOKEN"];
+const openKeys = [skKey, slackKey("a"), slackKey("b"), slackKey("p")];
+const strip = (s: string) => s.replace(/\[REDACTED_[A-Z0-9_]+\]/g, "|");
+
+describe("redact: sk- keys and Slack tokens", () => {
+  it("redacts an sk- key and each Slack prefix with a per-type log", () => {
+    expect(redact("key " + skKey)).toEqual({
+      text: "key " + AK,
+      log: [{ type: "API_KEY", count: 1 }],
+    });
+    for (const c of ["a", "b", "p"]) {
+      expect(redact(`(${slackKey(c)})`)).toEqual({
+        text: `(${SL})`,
+        log: [{ type: "SLACK_TOKEN", count: 1 }],
+      });
+    }
+  });
+
+  it("leaves near-misses unchanged", () => {
+    for (const input of [
+      SKP + "1234",
+      "risk-assessment-document-final",
+      "task-force-alpha-bravo-charlie",
+      SKP + "a".repeat(15),
+      "x" + skKey,
+      "_" + skKey,
+      skKey.toUpperCase(),
+      slackKey("z"),
+      "xo" + "xb-short",
+      "xo" + "xb-" + "a".repeat(9),
+      "x" + slackKey("b"),
+      "xo" + "xb-ab_" + "c".repeat(20),
+      ghToken + SKP + "1234",
+    ]) {
+      expect(redact(input), input).toEqual({ text: input, log: [] });
+    }
+  });
+
+  it("redacts a key after a dash, punctuation, the start or any placeholder", () => {
+    const types = ["SECRET", "EMAIL", "AWS_KEY", "API_KEY", "GITHUB_TOKEN", "SLACK_TOKEN"];
+    const fronts = ["", "-", "--", "prod-", "(", ".", "/", " ", "\n", '"', "'", "#"];
+    for (const t of [...types, "CARD", "SSN", "IPV4", "PHONE", "AU_TFN"]) {
+      fronts.push(`[REDACTED_${t}]`);
+    }
+    for (const front of fronts) {
+      for (const [key, ph] of [
+        [skKey, AK],
+        [slackKey("b"), SL],
+      ] as const) {
+        for (const back of ["", ".", " end", ")"]) {
+          const input = front + key + back;
+          expect(redact(input).text, input).toBe(front + ph + back);
+        }
+      }
+    }
+  });
+
+  it("replaces a key holding a Luhn-valid digit run with one placeholder", () => {
+    const rows: Array<[string, string]> = [
+      [SKP + card16, AK],
+      [SKP + "ab-" + card16, AK],
+      [`${SKP}abcd-${card16}.`, AK + "."],
+      [`${slackKey("b")}-${card16}-abcd 5`, SL + " 5"],
+      [`${skKey}-4111 1111 1111 1111`, AK],
+    ];
+    for (const [input, text] of rows) {
+      const out = redact(input);
+      expect(out.text, input).toBe(text);
+      expect(out.log.filter((e) => NEW_TYPES.includes(e.type)).length, input).toBe(1);
+    }
+  });
+
+  // Review 2 (retry 1): a placeholder only counts for the body characters its
+  // original text had, so these equal dev in text and log.
+  it("leaves a short key next to another item as dev does", () => {
+    const rows: Array<[string, string, string]> = [
+      [SKP + "1234 5678 1234 5670", SKP + "[REDACTED_CARD]", "CARD"],
+      [SKP + "123-45-6789", SKP + "[REDACTED_SSN]", "SSN"],
+      [SKP + "1.2.3.4", SKP + "[REDACTED_IPV4]", "IPV4"],
+      [SKP + "+61 412 345 678", SKP + "[REDACTED_PHONE]", "PHONE"],
+      [SKP + "4222222222222", SKP + "[REDACTED_CARD]", "CARD"],
+      [XB + "10.0.0.1", XB + "[REDACTED_IPV4]", "IPV4"],
+      [SKP + "[REDACTED_EMAIL]", SKP + "[REDACTED_EMAIL]", ""],
+      ["desk-" + SKP + "123-45-6789", "desk-" + SKP + "[REDACTED_SSN]", "SSN"],
+      ["xo" + "xp-[REDACTED_EMAIL]a7a", "xo" + "xp-[REDACTED_EMAIL]a7a", ""],
+    ];
+    for (const [input, text, type] of rows) {
+      expect(redact(input), input).toEqual({ text, log: type ? [{ type, count: 1 }] : [] });
+    }
+  });
+
+  it("ends a key where its original run of body characters ends", () => {
+    const rows: Array<[string, string]> = [
+      [`${skKey}-7 2024 was`, AK + " 2024 was"],
+      [`${SKP}front-desk-line-77-0412 345 678`, AK + " 345 678"],
+      [`${slackKey("b")}_x`, SL + "_x"],
+      [`${slackKey("b")}-1234_5678`, SL + "_5678"],
+    ];
+    for (const [input, text] of rows) expect(redact(input).text, input).toBe(text);
+  });
+
+  it("redacts keys glued to each other and to AWS and GitHub keys", () => {
+    const A = "[REDACTED_AWS_KEY]";
+    const G = "[REDACTED_GITHUB_TOKEN]";
+    const rows: Array<[string, string]> = [
+      [skKey + skKey, AK],
+      [skKey + awsKey + ghToken, AK],
+      [slackKey("p") + "-" + ghToken, SL],
+      [awsKey + skKey, A + AK],
+      [awsKey + "-" + slackKey("a"), A + "-" + SL],
+      [`${awsKey}.${slackKey("a")}-${skKey}`, `${A}.${SL}`],
+      [ghToken + "-" + skKey, G + "-" + AK],
+      // Glued after a word character: a near-miss, as on dev.
+      [ghToken + skKey, ghToken + skKey],
+      [ghToken + slackKey("b"), ghToken + slackKey("b")],
+      // A typed placeholder is not body text: the key stops in front of it.
+      [skKey + "[REDACTED_CARD]" + "b".repeat(16), AK + "[REDACTED_CARD]" + "b".repeat(16)],
+    ];
+    for (const [input, text] of rows) {
+      expect(redact(input).text, input).toBe(text);
+      expect(redact(text).text, input).toBe(text);
+    }
+    // An sk- key covers a Slack token glued after it (its body alphabet is
+    // wider); a Slack token glued in front of an sk- key logs both.
+    expect(redact(`${skKey}-${slackKey("b")}`).log).toEqual([{ type: "API_KEY", count: 1 }]);
+    expect(redact(`${slackKey("b")}-${skKey}`).log).toEqual([
+      { type: "API_KEY", count: 1 },
+      { type: "SLACK_TOKEN", count: 1 },
+    ]);
+  });
+
+  // Reviews 1 and 2 (retry 2): an sk- key that stopped before a glued Slack
+  // token left the rest of its run (`_…`) visible.
+  it("leaves nothing of an sk- key's run after a glued Slack token", () => {
+    const head = SKP + "a".repeat(16) + "-" + XB + "b".repeat(10);
+    const proj = `${SKP}proj-${"A1b2".repeat(4)}-${XB}${"Zz9Y".repeat(3)}_${"T4il".repeat(2)}`;
+    const slackHead = `${skKey}-${XB}${"12ab".repeat(5)}`;
+    const tails = ["_" + skKey, "_" + ghToken, "-x_secretTail"];
+    for (const input of [
+      head + "_TAIL",
+      head + "_TAIL-more",
+      proj,
+      ...tails.map((t) => slackHead + t),
+    ]) {
+      const out = redact(input);
+      expect(out.text, input).toBe(AK);
+      expect(out.log, input).toEqual([{ type: "API_KEY", count: 1 }]);
+    }
+  });
+
+  it("redacts keys glued to other sensitive items in both orders", () => {
+    for (const key of openKeys) {
+      for (const item of [...sensitive, kv("token", "=", "x1")]) {
+        for (const join of ["-", " ", "."]) {
+          for (const input of [item + join + key, key + join + item]) {
+            const out = strip(redact(input).text);
+            expect(out, input).not.toMatch(/\d|sk-|xox/);
+          }
+        }
+      }
+    }
+  });
+
+  it("logs types and counts only, never a matched value", () => {
+    const out = redact(openKeys.join(" ") + " " + skKey);
+    expect(out.log).toEqual([
+      { type: "API_KEY", count: 2 },
+      { type: "SLACK_TOKEN", count: 3 },
+    ]);
+    for (const key of openKeys) expect(JSON.stringify(out)).not.toContain(key);
+  });
+
+  it("keeps the new rules out of the legacy rule set", () => {
+    for (const key of openKeys) {
+      expect(redactLegacy("key " + key)).toEqual({ text: "key " + key, log: [] });
+    }
+  });
+
+  it("is idempotent over old and new fixtures, alone and in pairs", () => {
+    for (const a of [...fixtures, ...keys, ...openKeys]) {
+      for (const input of [
+        a,
+        ...openKeys.flatMap((k) => [`${a} ${k}`, k + a, a + k, `${a}-${k}`]),
+      ]) {
+        const once = redact(input).text;
+        expect(redact(once).text, input).toBe(once);
+      }
+    }
+  });
+
+  it("has no literal in this file that matches a new spec pattern", () => {
+    const spec = /(?<!\w)(?:sk-[\w-]{16}|xox[abp]-[A-Za-z0-9-]{10})/;
+    for (const key of openKeys) expect(key).toMatch(spec);
+    expect(readFileSync(fileURLToPath(import.meta.url), "utf8")).not.toMatch(spec);
+  });
+
+  it("stays linear on long and repeated key-shaped input", () => {
+    const units = [
+      SKP,
+      "xo" + "xb-",
+      "-",
+      SKP + "1-",
+      SKP + "a-1 ",
+      "-" + SKP + "a_",
+      ghToken + SKP,
+      // Review 1 (retry 1): a key glued to a number and the next key.
+      SKP + "a".repeat(16) + "-1 1",
+      XB + "a".repeat(10) + "-1 1",
+      skKey + "-" + slackKey("b") + "-",
+    ];
+    for (const [size, limit] of [
+      [5_000, 500],
+      [50_000, 2_000],
+      [100_000, 2_000],
+    ] as const) {
+      const inputs = units.map((u) => u.repeat(Math.ceil(size / u.length)));
+      inputs.push(SKP + "a".repeat(size * 2), SKP + "a-1" + " 1".repeat(size));
+      for (const input of inputs) {
+        const start = performance.now();
+        redact(input);
+        expect(performance.now() - start, `${size} ${input.slice(0, 8)}`).toBeLessThan(limit);
+      }
+    }
+  });
+});
