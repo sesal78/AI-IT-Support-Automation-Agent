@@ -70,3 +70,9 @@ export {
   type TriageResult,
   type Urgency,
 } from "./triage.js";
+export {
+  KB_ARTICLE_CONTENT_MAX,
+  KB_ARTICLE_CONTENT_MIN,
+  kbArticleSchema,
+  type KbArticle,
+} from "./kb-article.js";
