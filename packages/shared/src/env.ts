@@ -32,6 +32,17 @@ export const internalEnvShape = {
 };
 
 /**
+ * End-to-end test mode flag (apps/web). Only the exact strings `true` and
+ * `false` are accepted, so a typo such as `TRUE` or `1` fails at boot.
+ */
+export const e2eEnvShape = {
+  E2E_MODE: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+};
+
+/**
  * Sensitive-topic check env for the intake-ticket task (services/pipeline).
  * SENSITIVE_THRESHOLD is the TypeSafe Noul probability at or above which a
  * topic is flagged; phase 3 evals tune the 0.5 starting value.

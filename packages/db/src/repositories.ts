@@ -62,6 +62,12 @@ interface SupabaseResult {
 }
 
 const UNIQUE_VIOLATION = "23505";
+const PROBE_TIMEOUT_MS = 3000;
+
+export interface SchemaProbe {
+  database: boolean;
+  migration0003: boolean;
+}
 
 function supabaseError(operation: string, error: { code: string }): DbError {
   const code = error.code || undefined;
@@ -149,6 +155,43 @@ export function createRepositories(client: DbClient) {
         .select()
         .single();
       return parseRow("saveTriage", triageSchema, result);
+    },
+
+    /**
+     * Cheap schema probe for the public health endpoint. Never throws and
+     * never returns error text: any failure, timeout included, is `false`.
+     * `database` is a select on tickets; `migration0003` needs selects on
+     * tickets.is_test, kb_articles, ai_calls and security_events to work.
+     */
+    async probeSchema(timeoutMs = PROBE_TIMEOUT_MS): Promise<SchemaProbe> {
+      const works = async (table: string, column: string): Promise<boolean> => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const query = client
+            .from(table)
+            .select(column)
+            .limit(1)
+            .abortSignal(AbortSignal.timeout(timeoutMs));
+          const timeout = new Promise<false>((resolve) => {
+            timer = setTimeout(() => resolve(false), timeoutMs);
+          });
+          const outcome = await Promise.race([Promise.resolve(query), timeout]);
+          return outcome !== false && !outcome.error;
+        } catch {
+          return false;
+        } finally {
+          clearTimeout(timer);
+        }
+      };
+
+      if (!(await works("tickets", "id"))) return { database: false, migration0003: false };
+      const results = await Promise.all([
+        works("tickets", "is_test"),
+        works("kb_articles", "id"),
+        works("ai_calls", "id"),
+        works("security_events", "id"),
+      ]);
+      return { database: true, migration0003: results.every(Boolean) };
     },
   };
 }

@@ -12,6 +12,7 @@ export {
   type NewTriage,
   type Redaction,
   type Repositories,
+  type SchemaProbe,
   type Ticket,
   type TicketEvent,
   type Triage,

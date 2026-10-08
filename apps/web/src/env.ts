@@ -1,4 +1,5 @@
 import {
+  e2eEnvShape,
   formatEnvIssues,
   intakeEnvShape,
   internalEnvShape,
@@ -10,7 +11,7 @@ import { PHASE_PRODUCTION_BUILD } from "next/constants";
 // Validated at import time. Skipped only while `next build` collects route
 // modules, so a build does not need real values; they are checked at boot.
 export const env = createEnv({
-  server: { ...phase1EnvShape, ...intakeEnvShape, ...internalEnvShape },
+  server: { ...phase1EnvShape, ...intakeEnvShape, ...internalEnvShape, ...e2eEnvShape },
   experimental__runtimeEnv: {},
   emptyStringAsUndefined: true,
   skipValidation: process.env.NEXT_PHASE === PHASE_PRODUCTION_BUILD,

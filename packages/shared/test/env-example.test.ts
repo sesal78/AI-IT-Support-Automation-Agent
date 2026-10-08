@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  e2eEnvShape,
   intakeEnvShape,
   internalEnvShape,
   parseEnv,
@@ -16,6 +17,7 @@ const allEnvShapes = {
   ...phase1EnvShape,
   ...intakeEnvShape,
   ...internalEnvShape,
+  ...e2eEnvShape,
   ...sensitiveCheckEnvShape,
   ...triggerProjectEnvShape,
 };
