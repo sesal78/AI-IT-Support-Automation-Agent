@@ -39,6 +39,15 @@ describe("supabase migrations", () => {
     );
   });
 
+  it("has the 0004 lock-sequences up and down files", () => {
+    expect(migrationFiles).toEqual(
+      expect.arrayContaining([
+        "0004_itsupport_lock_sequences.sql",
+        "0004_itsupport_lock_sequences.down.sql",
+      ]),
+    );
+  });
+
   it.each(migrationFiles)("%s only touches the itsupport and extensions schemas", (file) => {
     const sql = readFileSync(join(migrationsDir, file), "utf8");
     const schemas = referencedSchemas(sql);
