@@ -1,4 +1,4 @@
-import type { InternalTicketView } from "@ai-it-support/shared";
+import type { AiUsage, InternalTicketView } from "@ai-it-support/shared";
 import { z } from "zod";
 import type { DbClient } from "./client.js";
 import { DbError } from "./errors.js";
@@ -78,6 +78,8 @@ const VIEW_TRIAGE_COLUMNS =
   "flags,probabilities,grounding_score,kb_article_ids,suggested_fix,model_versions,triaged_at";
 const VIEW_EVENT_COLUMNS = "type,at";
 const VIEW_EVENT_LIMIT = 500;
+const SECURITY_EVENT_COLUMNS = "source,kind,window_start,count";
+const MAX_SECURITY_EVENTS = 500;
 
 const viewTicketSchema = z.object({
   id: z.uuid(),
@@ -108,7 +110,32 @@ const viewTriageSchema = z.object({
   triaged_at: timestamp.nullable(),
 });
 const viewEventSchema = z.object({ type: z.string(), at: timestamp });
+const securityEventRowSchema = z.object({
+  source: z.string(),
+  kind: z.string(),
+  window_start: timestamp,
+  count: z.number().int(),
+});
+const usageRowSchema = z.object({
+  provider: z.string(),
+  calls: z.coerce.number(),
+  tokens_in: z.coerce.number().nullable(),
+  tokens_out: z.coerce.number().nullable(),
+  cost_usd: z.coerce.number().nullable(),
+});
+
 type ViewTriage = NonNullable<InternalTicketView["triage"]>;
+
+export interface SecurityEventRow {
+  source: string;
+  kind: string;
+  windowStart: string;
+  count: number;
+}
+export interface AiUsageMonth {
+  llm: AiUsage;
+  typesafe: AiUsage;
+}
 
 interface SupabaseResult {
   data: unknown;
@@ -287,6 +314,53 @@ export function createRepositories(client: DbClient) {
         notifications: [],
         autofix: [],
       };
+    },
+
+    /**
+     * Usage of the UTC month that contains `monthStart` (`YYYY-MM-DD`), from
+     * RPC ai_usage_month. A provider without rows gets zeros and a null cost.
+     */
+    async getAiUsage(monthStart: string): Promise<AiUsageMonth> {
+      const op = "getAiUsage";
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(monthStart)) throw new DbError(op, "invalid month start");
+      const result = await client.rpc("ai_usage_month", { p_month_start: monthStart });
+      const rows = parseRow(op, z.array(usageRowSchema), result);
+      const totals = (provider: string): AiUsage => {
+        const row = rows.find((candidate) => candidate.provider === provider);
+        return {
+          calls: row?.calls ?? 0,
+          tokensIn: row?.tokens_in ?? 0,
+          tokensOut: row?.tokens_out ?? 0,
+          costUsd: row?.cost_usd ?? null,
+        };
+      };
+      return { llm: totals("llm"), typesafe: totals("typesafe") };
+    },
+
+    /**
+     * Security events at or after `since`, newest first. `limit` is clamped
+     * to 1-500. The `sample` column is never selected.
+     */
+    async listSecurityEvents(
+      since: Date,
+      limit = MAX_SECURITY_EVENTS,
+    ): Promise<SecurityEventRow[]> {
+      const bounded = Number.isFinite(limit)
+        ? Math.min(MAX_SECURITY_EVENTS, Math.max(1, Math.trunc(limit)))
+        : MAX_SECURITY_EVENTS;
+      const result = await client
+        .from("security_events")
+        .select(SECURITY_EVENT_COLUMNS)
+        .gte("window_start", since.toISOString())
+        .order("window_start", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(bounded);
+      return parseRow("listSecurityEvents", z.array(securityEventRowSchema), result).map((row) => ({
+        source: row.source,
+        kind: row.kind,
+        windowStart: new Date(row.window_start).toISOString(),
+        count: row.count,
+      }));
     },
 
     /**

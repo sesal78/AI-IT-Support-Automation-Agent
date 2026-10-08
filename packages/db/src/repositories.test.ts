@@ -537,3 +537,91 @@ describe("getTicketView", () => {
     await expectDbError(repos.getTicketView(ticketId), "getTicketView");
   });
 });
+
+describe("getAiUsage", () => {
+  it("calls the RPC with the month start and maps both providers", async () => {
+    const calls = respond(
+      ok([
+        { provider: "llm", calls: 12, tokens_in: 1200, tokens_out: 600, cost_usd: null },
+        { provider: "typesafe", calls: "340", tokens_in: null, tokens_out: 5, cost_usd: 1.5 },
+      ]),
+    );
+    expect(await repos.getAiUsage("2026-10-01")).toEqual({
+      llm: { calls: 12, tokensIn: 1200, tokensOut: 600, costUsd: null },
+      typesafe: { calls: 340, tokensIn: 0, tokensOut: 5, costUsd: 1.5 },
+    });
+    expect(calls[0]?.url.pathname.endsWith("/rpc/ai_usage_month")).toBe(true);
+    expect(calls[0]?.body).toEqual({ p_month_start: "2026-10-01" });
+  });
+
+  it("returns zeros and a null cost for a month without rows", async () => {
+    respond(ok([]));
+    const zero = { calls: 0, tokensIn: 0, tokensOut: 0, costUsd: null };
+    expect(await repos.getAiUsage("2026-10-01")).toEqual({ llm: zero, typesafe: zero });
+  });
+
+  it("throws DbError on a Supabase error and on a malformed month, without a request", async () => {
+    respond(pgError("42883", 404));
+    await expectDbError(repos.getAiUsage("2026-10-01"), "getAiUsage");
+    const calls = respond();
+    await expectDbError(repos.getAiUsage("2026-10"), "getAiUsage");
+    expect(calls.length).toBe(0);
+  });
+});
+
+describe("listSecurityEvents", () => {
+  const row = (id: number) => ({
+    source: "internal_api",
+    kind: "bad_token",
+    window_start: `2026-10-0${id}T10:00:00+00:00`,
+    count: id,
+    sample: { path: "m".repeat(20) },
+  });
+  const since = new Date("2026-10-01T00:00:00.000Z");
+
+  it("selects named columns, filters, orders newest first and maps the rows", async () => {
+    const calls = respond(ok([row(3), row(2)]));
+    const events = await repos.listSecurityEvents(since, 50);
+    const params = calls[0]?.url.searchParams;
+    expect(params?.get("select")).toBe("source,kind,window_start,count");
+    expect(params?.get("window_start")).toBe("gte.2026-10-01T00:00:00.000Z");
+    expect(params?.get("order")).toBe("window_start.desc,id.desc");
+    expect(params?.get("limit")).toBe("50");
+    expect(events).toEqual([
+      {
+        source: "internal_api",
+        kind: "bad_token",
+        windowStart: "2026-10-03T10:00:00.000Z",
+        count: 3,
+      },
+      {
+        source: "internal_api",
+        kind: "bad_token",
+        windowStart: "2026-10-02T10:00:00.000Z",
+        count: 2,
+      },
+    ]);
+    expect(JSON.stringify(events)).not.toContain("m".repeat(20));
+  });
+
+  it.each([
+    [0, "1"],
+    [-5, "1"],
+    [600, "500"],
+    [7.9, "7"],
+    [Number.NaN, "500"],
+    [Infinity, "500"],
+  ])("clamps limit %s to %s", async (limit, expected) => {
+    const calls = respond(ok([]));
+    await repos.listSecurityEvents(since, limit);
+    expect(calls[0]?.url.searchParams.get("limit")).toBe(expected);
+  });
+
+  it("defaults the limit to 500 and throws DbError on a Supabase error", async () => {
+    const calls = respond(ok([]));
+    await repos.listSecurityEvents(since);
+    expect(calls[0]?.url.searchParams.get("limit")).toBe("500");
+    respond(pgError("42P01", 404));
+    await expectDbError(repos.listSecurityEvents(since), "listSecurityEvents");
+  });
+});
