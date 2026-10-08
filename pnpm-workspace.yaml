@@ -9,6 +9,7 @@ packages:
 allowBuilds:
   "@depot/cli": false
   esbuild: false
+  msw: false
   sharp: false
   unrs-resolver: false
 
