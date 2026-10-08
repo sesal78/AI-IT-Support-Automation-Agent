@@ -22,6 +22,12 @@ export {
   type EnvIssue,
 } from "./env.js";
 export { healthConfigSchema, type HealthConfig } from "./health.js";
+export {
+  buildKbQuery,
+  KB_QUERY_MAX_WORD_LENGTH,
+  KB_QUERY_MAX_WORDS,
+  KB_QUERY_MIN_WORD_LENGTH,
+} from "./kb-query.js";
 export { redact, type RedactionResult, type RedactionType } from "./redact.js";
 export {
   assertTransition,

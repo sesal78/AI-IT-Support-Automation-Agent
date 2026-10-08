@@ -321,3 +321,74 @@ describe("probeSchema", () => {
     expect(Date.now() - started).toBeLessThan(2000);
   });
 });
+
+describe("searchKb", () => {
+  const hit = {
+    id: randomUUID(),
+    slug: "vpn-reset",
+    title: "Reset the VPN client",
+    content: "Steps to reset the VPN client.",
+    category: "network",
+    assignment_group: "Network Support",
+    rank: 0.0607927,
+  };
+
+  it("calls the kb_search RPC with the query and the default limit of 5", async () => {
+    const calls = respond(ok([hit]));
+    expect(await repos.searchKb("vpn or home")).toEqual([hit]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[0]?.url.pathname).toBe("/rest/v1/rpc/kb_search");
+    expect(calls[0]?.body).toEqual({ p_query: "vpn or home", p_limit: 5 });
+  });
+
+  it("returns an empty array for no rows", async () => {
+    respond(ok([]));
+    expect(await repos.searchKb("vpn")).toEqual([]);
+  });
+
+  it.each(["", "   ", "\t\n"])("returns [] without a database call for %j", async (query) => {
+    const calls = respond();
+    expect(await repos.searchKb(query)).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each([
+    [0, 1],
+    [-3, 1],
+    [1, 1],
+    [20, 20],
+    [1000, 20],
+  ])("clamps the limit %s to %s, as the RPC does", async (limit, sent) => {
+    const calls = respond(ok([]));
+    await repos.searchKb("vpn", limit);
+    expect((calls[0]?.body as { p_limit: number }).p_limit).toBe(sent);
+  });
+
+  it.each([1.5, Number.NaN, Number.POSITIVE_INFINITY, "5", null])(
+    "throws a RangeError for the limit %s and makes no call",
+    async (limit) => {
+      const calls = respond();
+      await expect(repos.searchKb("vpn", limit as never)).rejects.toThrow(RangeError);
+      expect(calls).toHaveLength(0);
+    },
+  );
+
+  it.each([undefined, null, 42, ["vpn"]])("throws a TypeError for the query %s", async (query) => {
+    const calls = respond();
+    await expect(repos.searchKb(query as never)).rejects.toThrow(TypeError);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("throws DbError on a Supabase error, without the query text", async () => {
+    respond(pgError("XX000", 500));
+    const error = await expectDbError(repos.searchKb("vpn"), "searchKb");
+    expect(error.code).toBe("XX000");
+  });
+
+  it("throws DbError when a row has an unexpected shape", async () => {
+    respond(ok([{ ...hit, rank: "high" }]));
+    const error = await expectDbError(repos.searchKb("vpn"), "searchKb");
+    expect(error.message).toContain("unexpected response shape");
+  });
+});

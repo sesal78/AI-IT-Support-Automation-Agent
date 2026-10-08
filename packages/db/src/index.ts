@@ -3,10 +3,12 @@ export { createDbClient, dbEnvShape, type DbClient } from "./client.js";
 export { DbError } from "./errors.js";
 export {
   createRepositories,
+  kbSearchResultSchema,
   redactionSchema,
   ticketEventSchema,
   ticketSchema,
   triageSchema,
+  type KbSearchResult,
   type NewRedaction,
   type NewTicket,
   type NewTriage,

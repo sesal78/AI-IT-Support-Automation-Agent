@@ -43,10 +43,22 @@ export const triageSchema = z.object({
   created_at: timestamp,
 });
 
+export const kbSearchResultSchema = z.object({
+  id: z.uuid(),
+  slug: z.string(),
+  title: z.string(),
+  content: z.string(),
+  category: z.string(),
+  assignment_group: z.string(),
+  rank: z.number(),
+});
+
 export type Ticket = z.infer<typeof ticketSchema>;
 export type TicketEvent = z.infer<typeof ticketEventSchema>;
 export type Redaction = z.infer<typeof redactionSchema>;
 export type Triage = z.infer<typeof triageSchema>;
+
+export type KbSearchResult = z.infer<typeof kbSearchResultSchema>;
 
 export type NewTicket = Pick<
   Ticket,
@@ -68,6 +80,9 @@ export interface SchemaProbe {
   database: boolean;
   migration0003: boolean;
 }
+// The kb_search RPC clamps p_limit to this range; searchKb does the same.
+const KB_SEARCH_MIN_LIMIT = 1;
+const KB_SEARCH_MAX_LIMIT = 20;
 
 function supabaseError(operation: string, error: { code: string }): DbError {
   const code = error.code || undefined;
@@ -192,6 +207,23 @@ export function createRepositories(client: DbClient) {
         works("security_events", "id"),
       ]);
       return { database: true, migration0003: results.every(Boolean) };
+    },
+
+    /**
+     * Ranked full-text search of the knowledge base (RPC `kb_search`). `query` is
+     * the output of buildKbQuery; a blank query returns [] without a database
+     * call. `limit` is clamped to 1..20 like the RPC; a non-integer throws a
+     * RangeError and a non-string query a TypeError.
+     */
+    async searchKb(query: string, limit = 5): Promise<KbSearchResult[]> {
+      if (typeof query !== "string") throw new TypeError("searchKb expects a string query");
+      if (!Number.isInteger(limit)) throw new RangeError("searchKb expects an integer limit");
+      if (query.trim() === "") return [];
+      const result = await client.rpc("kb_search", {
+        p_query: query,
+        p_limit: Math.min(Math.max(limit, KB_SEARCH_MIN_LIMIT), KB_SEARCH_MAX_LIMIT),
+      });
+      return parseRow("searchKb", z.array(kbSearchResultSchema), result);
     },
   };
 }
