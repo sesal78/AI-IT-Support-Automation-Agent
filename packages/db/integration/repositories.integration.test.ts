@@ -3,6 +3,7 @@ import { buildKbQuery } from "@ai-it-support/shared";
 import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDbClient, type DbClient } from "../src/client.js";
+import { DbError } from "../src/errors.js";
 import { createRepositories, type NewTicket, type Repositories } from "../src/repositories.js";
 import { clientFor } from "./pg-container.js";
 import { removeRestStack, startRestStack, type RestStack } from "./rest-stack.js";
@@ -227,5 +228,76 @@ describe("searchKb over supabase-js + PostgREST", () => {
   it("the attack inputs left the table intact", async () => {
     const { rows } = await sql().query("select to_regclass('itsupport.kb_articles')::text as t");
     expect(rows[0]).toEqual({ t: "itsupport.kb_articles" });
+  });
+});
+
+describe("reserveAiCall and completeAiCall over supabase-js + PostgREST", () => {
+  const base = { kind: "it-meter", calls: 1, capCalls: 1_000_000, environment: "it" } as const;
+
+  it("reserveAiCall writes a row with null tokens; completeAiCall sets them", async () => {
+    const reservation = await repos.reserveAiCall({ ...base, provider: "llm" });
+    expect(reservation.allowed).toBe(true);
+    expect(reservation.callId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(reservation.usedCalls).toBeGreaterThanOrEqual(1);
+
+    const before = await sql().query(
+      "select provider, kind, calls, tokens_in, tokens_out, environment from itsupport.ai_calls where id = $1",
+      [reservation.callId],
+    );
+    expect(before.rows).toEqual([
+      {
+        provider: "llm",
+        kind: "it-meter",
+        calls: 1,
+        tokens_in: null,
+        tokens_out: null,
+        environment: "it",
+      },
+    ]);
+
+    await repos.completeAiCall(reservation.callId as string, { tokensIn: 120, tokensOut: 30 });
+    const after = await sql().query(
+      "select tokens_in, tokens_out from itsupport.ai_calls where id = $1",
+      [reservation.callId],
+    );
+    expect(after.rows).toEqual([{ tokens_in: 120, tokens_out: 30 }]);
+  });
+
+  it("reserves several calls at once and links a ticket", async () => {
+    const { ticket: row } = await repos.createTicket(ticket(`it-${randomUUID()}`));
+    const reservation = await repos.reserveAiCall({
+      ...base,
+      provider: "typesafe",
+      calls: 7,
+      ticketId: row.id,
+    });
+    const { rows } = await sql().query(
+      "select calls, ticket_id from itsupport.ai_calls where id = $1",
+      [reservation.callId],
+    );
+    expect(rows).toEqual([{ calls: 7, ticket_id: row.id }]);
+  });
+
+  it("refuses with no row when the cap is 0", async () => {
+    const reservation = await repos.reserveAiCall({
+      ...base,
+      provider: "llm",
+      kind: "it-refused",
+      capCalls: 0,
+    });
+    expect(reservation).toMatchObject({ allowed: false, callId: null });
+    const { rows } = await sql().query(
+      "select count(*)::int as n from itsupport.ai_calls where kind = 'it-refused'",
+    );
+    expect(rows[0].n).toBe(0);
+  });
+
+  it("completeAiCall throws DbError for an unknown call id and for a malformed one", async () => {
+    await expect(
+      repos.completeAiCall(randomUUID(), { tokensIn: 1, tokensOut: 1 }),
+    ).rejects.toBeInstanceOf(DbError);
+    await expect(
+      repos.completeAiCall("not-a-uuid", { tokensIn: 1, tokensOut: 1 }),
+    ).rejects.toBeInstanceOf(DbError);
   });
 });
