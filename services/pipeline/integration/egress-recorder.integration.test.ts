@@ -10,6 +10,9 @@ import { egress } from "../test-support/egress.js";
 // must already be running when this line executes.
 const earlyFetch = globalThis.fetch;
 
+const stripAnsi = (text: string): string =>
+  text.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g"), "");
+
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("pipeline integration setup (T3.S.01)", () => {
@@ -39,9 +42,14 @@ describe("pipeline integration setup (T3.S.01)", () => {
     const run = spawnSync(
       process.execPath,
       [vitest, "run", "--config", "test-support/selftest.vitest.config.ts"],
-      { cwd: root, encoding: "utf8", timeout: 120_000 },
+      {
+        cwd: root,
+        encoding: "utf8",
+        timeout: 120_000,
+        env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
+      },
     );
-    const output = `${run.stdout}\n${run.stderr}`;
+    const output = stripAnsi(`${run.stdout}\n${run.stderr}`);
     expect(run.status).not.toBe(0);
     expect(output).toMatch(/1 failed \| 1 passed/);
     expect(output).toContain("leaks an email canary");

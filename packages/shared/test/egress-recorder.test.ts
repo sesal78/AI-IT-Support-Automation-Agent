@@ -102,8 +102,8 @@ describe("egress recorder: hosts", () => {
   });
 
   it("treats localhost and [::1] as un-mocked (only 127.0.0.1 passes)", async () => {
-    expect((await fetch("http://localhost:9/")).status).toBe(500);
-    expect((await fetch("http://[::1]:9/")).status).toBe(500);
+    expect((await fetch("https://localhost:9/")).status).toBe(500);
+    expect((await fetch("https://[::1]:9/")).status).toBe(500);
     const message = leakMessage();
     expect(message).toContain("localhost:9");
     expect(message).toContain("[::1]:9");
