@@ -32,6 +32,7 @@ const ticketRow = {
   status: "new",
   servicenow_sys_id: null,
   servicenow_number: null,
+  is_test: false,
   created_at: now,
 };
 const eventRow = { id: 7, ticket_id: ticketId, type: "received", payload: { a: 1 }, at: now };

@@ -1,19 +1,11 @@
 import { createDbClient, createRepositories, type Repositories } from "@ai-it-support/db";
-import {
-  INTAKE_TICKET_TASK_ID,
-  ticketSubmissionSchema,
-  type IntakeTicketPayload,
-} from "@ai-it-support/shared";
-import { tasks, type Task } from "@trigger.dev/sdk";
+import { ticketSubmissionSchema } from "@ai-it-support/shared";
 import { z } from "zod";
 import { env } from "@/env";
+import { createAndEnqueueTicket } from "@/lib/intake/create-ticket";
 import { createRateLimiter } from "@/lib/intake/rate-limit";
 import { clientIp, idempotencyKey } from "@/lib/intake/request";
 import { verifyTurnstile } from "@/lib/intake/turnstile";
-
-// The intake task lives in services/pipeline (P2-T6); it is triggered by id
-// with a locally declared payload type so this route does not import it.
-type IntakeTicketTask = Task<typeof INTAKE_TICKET_TASK_ID, IntakeTicketPayload>;
 
 // 5 submits per IP per 10 minutes, in memory (single replica).
 const limiter = createRateLimiter({ limit: 5, windowMs: 10 * 60 * 1000 });
@@ -31,9 +23,6 @@ function repos(): Repositories {
 }
 
 const json = (body: unknown, status: number) => Response.json(body, { status });
-
-// Error class name only: messages and stacks can carry request data.
-const errorName = (error: unknown) => (error instanceof Error ? error.name : "unknown");
 
 // Logs never include the request body (name, email, title, description) or the Turnstile token.
 export async function POST(request: Request) {
@@ -64,42 +53,24 @@ export async function POST(request: Request) {
 
   if (!limiter.hit(ip ?? "unknown")) return json({ error: "rate_limited" }, 429);
 
-  const db = repos();
-  let ticketId: string;
-  let created: boolean;
-  try {
-    const result = await db.createTicket({
-      source: "web",
-      raw_title: submission.title,
-      raw_description: submission.description,
-      requester_email: submission.email,
-      requester_name: submission.name,
-      department: submission.department,
-      idempotency_key: idempotencyKey(request.headers, submission),
-    });
-    ticketId = result.ticket.id;
-    created = result.created;
-    if (created) await db.addEvent(ticketId, "received");
-  } catch (error) {
-    console.error(`[api/tickets] store failed: ${errorName(error)}`);
-    return json({ error: "internal_error" }, 500);
-  }
-
-  // A repeated idempotency key returns the existing ticket; its task was already triggered.
-  if (!created) return json({ ticketId, queued: true, duplicate: true }, 201);
-
-  try {
-    await tasks.trigger<IntakeTicketTask>(INTAKE_TICKET_TASK_ID, { ticketId });
-    return json({ ticketId, queued: true }, 201);
-  } catch (error) {
-    console.error(`[api/tickets] enqueue failed for ticket ${ticketId}: ${errorName(error)}`);
-    try {
-      await db.addEvent(ticketId, "enqueue_failed", { error: errorName(error) });
-    } catch (eventError) {
-      console.error(
-        `[api/tickets] recording enqueue_failed failed for ticket ${ticketId}: ${errorName(eventError)}`,
-      );
-    }
-    return json({ ticketId, queued: false }, 201);
+  const result = await createAndEnqueueTicket(repos(), {
+    name: submission.name,
+    email: submission.email,
+    department: submission.department,
+    title: submission.title,
+    description: submission.description,
+    idempotencyKey: idempotencyKey(request.headers, submission),
+    // Only the server's own mode decides this. The body is never consulted.
+    isTest: env.E2E_MODE,
+  });
+  switch (result.outcome) {
+    case "store_failed":
+      return json({ error: "internal_error" }, 500);
+    case "duplicate":
+      return json({ ticketId: result.ticketId, queued: true, duplicate: true }, 201);
+    case "queued":
+      return json({ ticketId: result.ticketId, queued: true }, 201);
+    case "enqueue_failed":
+      return json({ ticketId: result.ticketId, queued: false }, 201);
   }
 }

@@ -47,6 +47,12 @@ export {
   type TicketStatus,
 } from "./status.js";
 export {
+  effectiveTestOverrides,
+  TestOverridesError,
+  testOverridesSchema,
+  type TestOverrides,
+} from "./test-overrides.js";
+export {
   INTAKE_TICKET_TASK_ID,
   ticketSubmissionSchema,
   type IntakeTicketPayload,
