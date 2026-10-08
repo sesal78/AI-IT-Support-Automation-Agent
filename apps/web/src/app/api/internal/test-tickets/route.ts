@@ -60,7 +60,10 @@ export async function POST(request: Request) {
   }
   const parsed = testTicketSchema.safeParse(body);
   if (!parsed.success) {
-    return json({ error: "invalid_body", fieldErrors: z.flattenError(parsed.error).fieldErrors }, 400);
+    return json(
+      { error: "invalid_body", fieldErrors: z.flattenError(parsed.error).fieldErrors },
+      400,
+    );
   }
   const { testId, testOverrides: requested, ...submission } = parsed.data;
 
@@ -68,7 +71,8 @@ export async function POST(request: Request) {
   try {
     testOverrides = effectiveTestOverrides({ e2eMode: env.E2E_MODE, isTest: true, requested });
   } catch (error) {
-    if (error instanceof TestOverridesError) return json({ error: "invalid_body", fieldErrors: {} }, 400);
+    if (error instanceof TestOverridesError)
+      return json({ error: "invalid_body", fieldErrors: {} }, 400);
     throw error;
   }
 
@@ -98,11 +102,4 @@ function other(allow: string) {
 }
 
 const rest = other("POST");
-export {
-  rest as DELETE,
-  rest as GET,
-  rest as HEAD,
-  rest as OPTIONS,
-  rest as PATCH,
-  rest as PUT,
-};
+export { rest as DELETE, rest as GET, rest as HEAD, rest as OPTIONS, rest as PATCH, rest as PUT };
