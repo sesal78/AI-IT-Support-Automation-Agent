@@ -16,7 +16,6 @@ vi.mock("@/lib/intake/turnstile", () => ({ verifyTurnstile: siteverify }));
 
 const TOKEN = "fakeInternalApiToken0123456789ABCDEF";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const NOT_FOUND = "NEXT_HTTP_ERROR_FALLBACK;404";
 const DESCRIPTION = "My laptop shows RAW-DESCRIPTION-MARKER-7731 on boot, then a black screen.";
 const valid = {
   testId: "eval-1",
@@ -72,13 +71,12 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-async function digestOf(promise: Promise<Response>) {
-  try {
-    await promise;
-  } catch (error) {
-    return (error as { digest?: string }).digest;
-  }
-  return undefined;
+async function notFound(promise: Promise<Response>) {
+  const res = await promise;
+  expect(res.status).toBe(404);
+  expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+  expect(res.headers.get("cache-control")).toContain("no-store");
+  expect(await res.text()).toContain("404: This page could not be found.");
 }
 
 describe("POST /api/internal/test-tickets with E2E_MODE=true", () => {
@@ -222,7 +220,7 @@ describe.each([undefined, "false"])("with E2E_MODE=%s", (mode) => {
   beforeEach(() => load(mode));
 
   it("looks absent with the right token and a valid body, and stores nothing", async () => {
-    expect(await digestOf(route.POST(post(valid)))).toBe(NOT_FOUND);
+    await notFound(route.POST(post(valid)));
     expect(repo.createTicket).not.toHaveBeenCalled();
     expect(trigger).not.toHaveBeenCalled();
     expect(repo.recordSecurityEvent).toHaveBeenCalledWith("internal_api", "test_tickets_disabled", {
@@ -232,24 +230,22 @@ describe.each([undefined, "false"])("with E2E_MODE=%s", (mode) => {
   });
 
   it("does not look at the token, even in the query string", async () => {
-    expect(await digestOf(route.POST(post(valid, {}, `?token=${TOKEN}`)))).toBe(NOT_FOUND);
-    expect(await digestOf(route.POST(post(valid, { authorization: "Bearer wrong" })))).toBe(
-      NOT_FOUND,
-    );
+    await notFound(route.POST(post(valid, {}, `?token=${TOKEN}`)));
+    await notFound(route.POST(post(valid, { authorization: "Bearer wrong" })));
     const kinds = repo.recordSecurityEvent.mock.calls.map((call) => call[1]);
     expect(new Set(kinds)).toEqual(new Set(["test_tickets_disabled"]));
   });
 
   it("is 404 for every method", async () => {
     for (const method of ["GET", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"] as const) {
-      expect(await digestOf(route[method](new Request(URL_, { method })))).toBe(NOT_FOUND);
+      await notFound(route[method](new Request(URL_, { method })));
     }
   });
 
   it("stays 404 when recording the event fails", async () => {
     repo.recordSecurityEvent.mockRejectedValue(new Error(DESCRIPTION));
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(await digestOf(route.POST(post(valid)))).toBe(NOT_FOUND);
+    await notFound(route.POST(post(valid)));
     expect(JSON.stringify(spy.mock.calls)).not.toContain(DESCRIPTION);
   });
 });

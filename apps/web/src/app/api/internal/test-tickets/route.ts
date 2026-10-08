@@ -4,7 +4,6 @@ import {
   testOverridesSchema,
   ticketSubmissionSchema,
 } from "@ai-it-support/shared";
-import { notFound } from "next/navigation";
 import { z } from "zod";
 import { env } from "@/env";
 import { createAndEnqueueTicket } from "@/lib/intake/create-ticket";
@@ -24,12 +23,27 @@ const testTicketSchema = ticketSubmissionSchema
   })
   .strict();
 
+// Next answers an unknown route with a text/html 404 that is never cached. Its
+// full page is build-specific, so this is the closest stable copy: same status,
+// content type and cache header, and the same title line.
+const NOT_FOUND_HTML =
+  '<!DOCTYPE html><html><head><meta charSet="utf-8"/><title>404: This page could not be found.</title></head>' +
+  "<body><h1>404</h1><h2>This page could not be found.</h2></body></html>";
+const notFoundResponse = () =>
+  new Response(NOT_FOUND_HTML, {
+    status: 404,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "private, no-cache, no-store, max-age=0, must-revalidate",
+    },
+  });
+
 /**
  * Outside E2E mode this route does not exist: the same 404 as an unknown
  * route, for every method, before the token is looked at. The probe is
  * counted; if counting fails the answer is still 404.
  */
-async function disabled(request: Request): Promise<never> {
+async function disabled(request: Request): Promise<Response> {
   try {
     const url = new URL(request.url);
     await repos().recordSecurityEvent("internal_api", "test_tickets_disabled", {
@@ -39,7 +53,7 @@ async function disabled(request: Request): Promise<never> {
   } catch (error) {
     console.error(`[internal-api] security event not recorded: ${errorName(error)}`);
   }
-  notFound();
+  return notFoundResponse();
 }
 
 /**
