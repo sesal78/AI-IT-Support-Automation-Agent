@@ -28,6 +28,8 @@ export {
   KB_QUERY_MAX_WORDS,
   KB_QUERY_MIN_WORD_LENGTH,
 } from "./kb-query.js";
+
+export { internalTicketViewSchema, type InternalTicketView } from "./internal-ticket.js";
 export { redact, type RedactionResult, type RedactionType } from "./redact.js";
 export {
   assertTransition,

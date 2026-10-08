@@ -1,3 +1,4 @@
+import type { InternalTicketView } from "@ai-it-support/shared";
 import { z } from "zod";
 import type { DbClient } from "./client.js";
 import { DbError } from "./errors.js";
@@ -67,6 +68,47 @@ export type NewTicket = Pick<
   Partial<Pick<Ticket, "requester_name" | "department">>;
 export type NewRedaction = Omit<Redaction, "created_at">;
 export type NewTriage = Omit<Triage, "created_at">;
+
+// Named columns for the internal ticket view. The raw title, raw description,
+// requester name, requester email and department are never in these lists.
+const VIEW_TICKET_COLUMNS = "id,status,is_test,source,created_at";
+const VIEW_REDACTION_COLUMNS = "redacted_title,redacted_description";
+const VIEW_TRIAGE_COLUMNS =
+  "sensitive,sensitive_flags,category,subcategory,priority,urgency,assignment_group,route," +
+  "flags,probabilities,grounding_score,kb_article_ids,suggested_fix,model_versions,triaged_at";
+const VIEW_EVENT_COLUMNS = "type,at";
+const VIEW_EVENT_LIMIT = 500;
+
+const viewTicketSchema = z.object({
+  id: z.uuid(),
+  status: z.string(),
+  is_test: z.boolean(),
+  source: z.string(),
+  created_at: timestamp,
+});
+const viewRedactionSchema = z.object({
+  redacted_title: z.string(),
+  redacted_description: z.string(),
+});
+const viewTriageSchema = z.object({
+  sensitive: z.boolean(),
+  sensitive_flags: z.array(z.string()),
+  category: z.string().nullable(),
+  subcategory: z.string().nullable(),
+  priority: z.string().nullable(),
+  urgency: z.string().nullable(),
+  assignment_group: z.string().nullable(),
+  route: z.string().nullable(),
+  flags: z.array(z.string()).nullable(),
+  probabilities: z.record(z.string(), z.number()).nullable(),
+  grounding_score: z.number().nullable(),
+  kb_article_ids: z.array(z.string()).nullable(),
+  suggested_fix: z.record(z.string(), z.json()).nullable(),
+  model_versions: z.record(z.string(), z.string()).nullable(),
+  triaged_at: timestamp.nullable(),
+});
+const viewEventSchema = z.object({ type: z.string(), at: timestamp });
+type ViewTriage = NonNullable<InternalTicketView["triage"]>;
 
 interface SupabaseResult {
   data: unknown;
@@ -170,6 +212,81 @@ export function createRepositories(client: DbClient) {
         .select()
         .single();
       return parseRow("saveTriage", triageSchema, result);
+    },
+
+    /**
+     * Read-only view for the internal API: named columns only, so the raw
+     * title, raw description and requester data are never selected. Returns
+     * null when no ticket has this id.
+     */
+    async getTicketView(id: string): Promise<InternalTicketView | null> {
+      const op = "getTicketView";
+      const ticketResult = await client
+        .from("tickets")
+        .select(VIEW_TICKET_COLUMNS)
+        .eq("id", id)
+        .maybeSingle();
+      const ticket = parseRow(op, viewTicketSchema.nullable(), ticketResult);
+      if (!ticket) return null;
+
+      const [redactionResult, triageResult, callsResult, eventsResult] = await Promise.all([
+        client
+          .from("ticket_redactions")
+          .select(VIEW_REDACTION_COLUMNS)
+          .eq("ticket_id", id)
+          .maybeSingle(),
+        client.from("triage_results").select(VIEW_TRIAGE_COLUMNS).eq("ticket_id", id).maybeSingle(),
+        client.from("ai_calls").select("id", { count: "exact", head: true }).eq("ticket_id", id),
+        client
+          .from("ticket_events")
+          .select(VIEW_EVENT_COLUMNS)
+          .eq("ticket_id", id)
+          .order("at", { ascending: true })
+          .order("id", { ascending: true })
+          .limit(VIEW_EVENT_LIMIT),
+      ]);
+      const redaction = parseRow(op, viewRedactionSchema.nullable(), redactionResult);
+      const triage = parseRow(op, viewTriageSchema.nullable(), triageResult);
+      const events = parseRow(op, z.array(viewEventSchema), eventsResult);
+      if (callsResult.error) throw supabaseError(op, callsResult.error);
+
+      // Fields are copied one by one, so a column the database returns
+      // beyond the ones asked for can never reach the view. The enum-like
+      // columns are guarded by check constraints in the database.
+      return {
+        id: ticket.id,
+        status: ticket.status as InternalTicketView["status"],
+        isTest: ticket.is_test,
+        source: ticket.source as InternalTicketView["source"],
+        createdAt: ticket.created_at,
+        redacted: redaction
+          ? { title: redaction.redacted_title, description: redaction.redacted_description }
+          : null,
+        triage: triage
+          ? {
+              sensitive: triage.sensitive,
+              sensitiveFlags: triage.sensitive_flags,
+              category: triage.category as ViewTriage["category"],
+              subcategory: triage.subcategory,
+              priority: triage.priority as ViewTriage["priority"],
+              urgency: triage.urgency as ViewTriage["urgency"],
+              assignmentGroup: triage.assignment_group as ViewTriage["assignmentGroup"],
+              route: triage.route as ViewTriage["route"],
+              flags: triage.flags ?? [],
+              probabilities: triage.probabilities,
+              groundingScore: triage.grounding_score,
+              kbArticleIds: triage.kb_article_ids ?? [],
+              suggestedFix: triage.suggested_fix,
+              modelVersions: triage.model_versions,
+              triagedAt: triage.triaged_at,
+            }
+          : null,
+        aiCallCount: callsResult.count ?? 0,
+        events: events.map((event) => ({ type: event.type, at: event.at })),
+        reviews: [],
+        notifications: [],
+        autofix: [],
+      };
     },
 
     /**
