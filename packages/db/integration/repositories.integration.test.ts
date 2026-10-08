@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { buildKbQuery } from "@ai-it-support/shared";
 import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDbClient, type DbClient } from "../src/client.js";
@@ -174,5 +175,57 @@ describe("repositories over supabase-js + PostgREST", () => {
         redaction_log: [{ type: "PHONE", count: 1 }],
       },
     ]);
+  });
+});
+
+describe("searchKb over supabase-js + PostgREST", () => {
+  const SLUG = `it-kb-${randomUUID()}`;
+
+  beforeAll(async () => {
+    await sql().query(
+      `insert into itsupport.kb_articles (slug, title, content, category, assignment_group)
+       values ($1, 'VPN will not connect', 'Restart the VPN client and connect again from home.', 'network', 'Network')`,
+      [SLUG],
+    );
+  });
+
+  it("finds the article for the built query", async () => {
+    const query = buildKbQuery("My VPN will not connect from home");
+    expect(query).toBe("vpn or connect or home");
+    const hits = await repos.searchKb(query, 5);
+    expect(hits.map((hit) => hit.slug)).toContain(SLUG);
+    expect(hits[0]?.rank).toBeGreaterThan(0);
+  });
+
+  it("returns [] for a blank query and clamps the limit", async () => {
+    expect(await repos.searchKb("")).toEqual([]);
+    expect(await repos.searchKb(buildKbQuery("the and of it is"))).toEqual([]);
+    expect((await repos.searchKb("vpn", 0)).length).toBeLessThanOrEqual(1);
+    expect((await repos.searchKb("vpn", 1000)).length).toBeLessThanOrEqual(20);
+  });
+
+  const inputs = [
+    "",
+    "the and of it is",
+    "!!! ??? ...",
+    "x".repeat(5000),
+    Array.from({ length: 1000 }, (_, i) => `word${i}`)
+      .join(" ")
+      .slice(0, 5000),
+    "call [REDACTED_PHONE] about the printer",
+    `"vpn" -wifi (router) OR laptop AND mouse`,
+    "vpn:* & wifi | !router <-> dock",
+    "'; drop table itsupport.kb_articles; --",
+    "foo[REDACTED_EMAIL]bar [redacted_x] [[[ ]]]",
+    "Caf\u00e9 na\u00efve \u043f\u0440\u0438\u0432\u0435\u0442 \u4f60\u597d \u{1F600} vpn\tdown\nrouter",
+  ];
+  it.each(inputs)("runs the built query for %j without an error", async (text) => {
+    const hits = await repos.searchKb(buildKbQuery(text));
+    expect(Array.isArray(hits)).toBe(true);
+  });
+
+  it("the attack inputs left the table intact", async () => {
+    const { rows } = await sql().query("select to_regclass('itsupport.kb_articles')::text as t");
+    expect(rows[0]).toEqual({ t: "itsupport.kb_articles" });
   });
 });
