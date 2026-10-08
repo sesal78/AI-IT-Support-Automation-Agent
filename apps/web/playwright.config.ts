@@ -31,6 +31,7 @@ export default defineConfig({
       TRIGGER_SECRET_KEY: "fake-e2e-trigger-secret",
       ADMIN_HEALTH_TOKEN: "fake-e2e-admin-health-token",
       APP_VERSION: "0.0.0-e2e",
+      INTERNAL_API_TOKEN: "fakeE2eInternalApiToken0123456789AB",
       TURNSTILE_SECRET_KEY: "fake-e2e-turnstile-secret-key",
       TURNSTILE_SITE_KEY: turnstileTestSiteKey,
     },

@@ -249,3 +249,26 @@ describe("saveRedaction and saveTriage", () => {
     expect(calls[0]?.body).toEqual(input);
   });
 });
+
+describe("recordSecurityEvent", () => {
+  it("calls the security_event_record RPC with the source, kind and sample", async () => {
+    const calls = respond(ok(1));
+    await repos.recordSecurityEvent("internal_api", "bad_token", { path: "/x", method: "POST" });
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[0]?.url.pathname).toBe("/rest/v1/rpc/security_event_record");
+    expect(calls[0]?.body).toEqual({
+      p_source: "internal_api",
+      p_kind: "bad_token",
+      p_sample: { path: "/x", method: "POST" },
+    });
+  });
+
+  it("throws DbError naming the operation and the code, without Supabase text", async () => {
+    respond(pgError("22023"));
+    const error = await expectDbError(
+      repos.recordSecurityEvent("internal_api", "bad_token", {}),
+      "recordSecurityEvent",
+    );
+    expect(error.code).toBe("22023");
+  });
+});

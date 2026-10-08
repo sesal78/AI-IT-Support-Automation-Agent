@@ -92,13 +92,12 @@ export async function check(): Promise<{ object: string; ok: boolean }[]> {
 /**
  * Starts Postgres 17 with 0001 and 0002 applied and phase-2-shaped rows: two
  * `new` tickets, each with a redaction, a triage result and 3 events.
- * Returns their snapshot. `before` runs first (e.g. default privileges).
+ * Returns their snapshot.
  */
-export async function startWithPhase2Rows(before?: string): Promise<Record<string, unknown[]>> {
+export async function startWithPhase2Rows(): Promise<Record<string, unknown[]>> {
   container = await startPgContainer();
   db = clientFor(container);
   await db.connect();
-  if (before) await db.query(before);
   applied(read("migrations/0001_itsupport_foundation.sql"));
   applied(read("migrations/0002_itsupport_intake.sql"));
   await db.query(`
