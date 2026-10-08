@@ -6,6 +6,10 @@ import { describe, expect, it } from "vitest";
 import { buildCanaries } from "../../../packages/shared/src/canaries.js";
 import { egress } from "../test-support/egress.js";
 
+// Bound at module scope, as an SDK client does at construction. The recorder
+// must already be running when this line executes.
+const earlyFetch = globalThis.fetch;
+
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("pipeline integration setup (T3.S.01)", () => {
@@ -42,5 +46,33 @@ describe("pipeline integration setup (T3.S.01)", () => {
     expect(output).toMatch(/1 failed \| 1 passed/);
     expect(output).toContain("leaks an email canary");
     expect(output).toContain("POST api.typesafe.ai: body: email");
+  });
+
+  it("records a request made with a fetch captured at module scope", async () => {
+    egress.mock("https://api.typesafe.ai");
+    const email = buildCanaries(egress.runId).find((entry) => entry.type === "email")?.value ?? "";
+    await earlyFetch("https://api.typesafe.ai/v1/systemone", { method: "POST", body: email });
+    expect(egress.requests()).toHaveLength(1);
+    expect(() => egress.assertClean()).toThrow(/email/);
+    egress.reset();
+  });
+
+  it("does not echo a canary placed in the host name of an un-mocked request", async () => {
+    const key = buildCanaries(egress.runId).find((entry) => entry.type === "api_key")?.value ?? "";
+    const label = key.toLowerCase();
+    const host = `${label}.invalid`;
+    const res = await earlyFetch(`https://${host}/x`);
+    const text = await res.text();
+    expect(text).toContain("host:<redacted>");
+    expect(text).not.toContain(label);
+    let message = "";
+    try {
+      egress.assertClean();
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain("host:<redacted>");
+    expect(message).not.toContain(label);
+    egress.reset();
   });
 });

@@ -13,6 +13,8 @@
 // - Only 127.0.0.1 passes through. `localhost` and `[::1]` are treated like
 //   any other host, so they fail unless mocked (fail closed).
 //
+// Not scanned or not intercepted (documented, not built): header NAMES are not
+// scanned (only values); raw `net` sockets (pg, SMTP) are not intercepted.
 // Scan limits (documented, not covered): base64 or other binary-in-text
 // encodings of a canary, and UTF-16 bodies. Interception limit: msw patches
 // global fetch and node:http/https. It does NOT see the npm `undici` package's
@@ -41,7 +43,11 @@ export type RecordedRequest = {
 export type EgressRecorder = {
   /** The run ID whose canaries every `assertClean()` call checks. */
   readonly runId: string;
-  /** Starts intercepting. Safe to call twice. */
+  /**
+   * Starts intercepting. Safe to call twice. Call it before any code that may
+   * keep a reference to `fetch` loads (the pipeline setup file does it at top
+   * level); a reference captured earlier bypasses msw.
+   */
   start(): void;
   /** Stops intercepting and forgets everything, including mocks and forbidden strings. */
   stop(): void;
@@ -184,9 +190,19 @@ export function createEgressRecorder(options: { runId?: string } = {}): EgressRe
   }
 
   function findingsOf(entry: Entry, runIds: string[]): string[] {
+    return scan(entry.haystacks, runIds);
+  }
+
+  /** Host label for messages: the host, or `host:<redacted>` plus types when it holds PII. */
+  function hostLabel(host: string, runIds: string[]): string {
+    const types = scan([{ where: "host", text: host }], runIds).map((f) => f.replace("host: ", ""));
+    return types.length === 0 ? host : `host:<redacted> (${types.join(", ")})`;
+  }
+
+  function scan(haystacks: Haystack[], runIds: string[]): string[] {
     const canaries = runIds.flatMap((id) => buildCanaries(id));
     const found = new Set<string>();
-    for (const { where, text } of entry.haystacks) {
+    for (const { where, text } of haystacks) {
       const lower = text.toLowerCase();
       for (const view of [lower, unescapeText(lower)]) {
         let rest = view;
@@ -221,7 +237,7 @@ export function createEgressRecorder(options: { runId?: string } = {}): EgressRe
           if (url.hostname === LOOPBACK) return; // passes through, not recorded
           unmocked.add(url.host);
           throw new Error(
-            `Egress recorder: no mock for host ${url.host}; the request was blocked (no real network call)`,
+            `Egress recorder: no mock for ${hostLabel(url.host, [runId])}; the request was blocked (no real network call)`,
           );
         },
       });
@@ -267,7 +283,8 @@ export function createEgressRecorder(options: { runId?: string } = {}): EgressRe
       const runIds =
         extraRunId === undefined || extraRunId === runId ? [runId] : [runId, extraRunId];
       const problems: string[] = [];
-      for (const host of unmocked) problems.push(`${host}: request to a host with no mock`);
+      for (const host of unmocked)
+        problems.push(`${hostLabel(host, runIds)}: request to a host with no mock`);
       for (const entry of entries) {
         const label = `${entry.record.method} ${entry.record.host}`;
         if (entry.unreadable) problems.push(`${label}: ${entry.unreadable} (fail closed)`);
