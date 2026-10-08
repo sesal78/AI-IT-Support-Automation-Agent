@@ -85,4 +85,17 @@ describe("web env module", () => {
     stubAll({ SUPABASE_URL: undefined });
     await expect(import("./env")).resolves.toBeDefined();
   });
+
+  it("defaults E2E_MODE to false and accepts true", async () => {
+    stubAll({ E2E_MODE: undefined });
+    expect((await import("./env")).env.E2E_MODE).toBe(false);
+    vi.resetModules();
+    stubAll({ E2E_MODE: "true" });
+    expect((await import("./env")).env.E2E_MODE).toBe(true);
+  });
+
+  it.each(["TRUE", "1", "yes"])("throws naming E2E_MODE when it is %s", async (value) => {
+    stubAll({ E2E_MODE: value });
+    await expect(import("./env")).rejects.toThrow(/E2E_MODE/);
+  });
 });

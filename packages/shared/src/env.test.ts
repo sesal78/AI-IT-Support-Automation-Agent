@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  e2eEnvShape,
   formatEnvIssues,
   intakeEnvShape,
   internalEnvShape,
@@ -148,4 +149,24 @@ describe("triggerProjectEnvShape", () => {
       /TRIGGER_PROJECT_REF/,
     );
   });
+});
+
+describe("e2eEnvShape", () => {
+  const parse = (value: string | undefined) => parseEnv(e2eEnvShape, { E2E_MODE: value });
+
+  it.each([
+    ["unset", undefined, false],
+    ["empty", "", false],
+    ["false", "false", false],
+    ["true", "true", true],
+  ])("E2E_MODE %s parses to %s", (_label, value, expected) => {
+    expect(parse(value).E2E_MODE).toBe(expected);
+  });
+
+  it.each(["TRUE", "True", "1", "yes", "false ", " true", "0"])(
+    "rejects %j, naming E2E_MODE",
+    (value) => {
+      expect(() => parse(value)).toThrow(/E2E_MODE/);
+    },
+  );
 });

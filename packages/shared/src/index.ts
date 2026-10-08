@@ -11,6 +11,7 @@ export {
   type CanaryType,
 } from "./canaries.js";
 export {
+  e2eEnvShape,
   formatEnvIssues,
   intakeEnvShape,
   internalEnvShape,
@@ -20,6 +21,7 @@ export {
   triggerProjectEnvShape,
   type EnvIssue,
 } from "./env.js";
+export { healthConfigSchema, type HealthConfig } from "./health.js";
 export { redact, type RedactionResult, type RedactionType } from "./redact.js";
 export {
   assertTransition,

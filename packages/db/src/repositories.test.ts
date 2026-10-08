@@ -272,3 +272,52 @@ describe("recordSecurityEvent", () => {
     expect(error.code).toBe("22023");
   });
 });
+
+describe("probeSchema", () => {
+  const tableOf = (call: Captured | undefined) => call?.url.pathname.split("/").pop();
+
+  it("reports both true when every probe succeeds, selecting only one row", async () => {
+    const calls = respond(ok([]), ok([]), ok([]), ok([]), ok([]));
+    expect(await repos.probeSchema()).toEqual({ database: true, migration0003: true });
+    expect(calls.map(tableOf).sort()).toEqual(
+      ["ai_calls", "kb_articles", "security_events", "tickets", "tickets"].sort(),
+    );
+    expect(calls.some((c) => c.url.searchParams.get("select") === "is_test")).toBe(true);
+    for (const call of calls) expect(call.url.searchParams.get("limit")).toBe("1");
+  });
+
+  it("reports migration0003 false when one migration probe fails", async () => {
+    vi.stubGlobal("fetch", async (input: string | URL) => {
+      const url = new URL(String(input));
+      return url.pathname.endsWith("/kb_articles") ? pgError("42P01", 404) : ok([]);
+    });
+    expect(await repos.probeSchema()).toEqual({ database: true, migration0003: false });
+  });
+
+  it("reports migration0003 false when tickets.is_test is missing", async () => {
+    vi.stubGlobal("fetch", async (input: string | URL) => {
+      const url = new URL(String(input));
+      return url.searchParams.get("select") === "is_test" ? pgError("42703") : ok([]);
+    });
+    expect(await repos.probeSchema()).toEqual({ database: true, migration0003: false });
+  });
+
+  it("reports both false, without throwing, when the database is unreachable", async () => {
+    vi.stubGlobal("fetch", async () => {
+      throw new TypeError(`fetch failed ${RAW_DESCRIPTION}`);
+    });
+    expect(await repos.probeSchema()).toEqual({ database: false, migration0003: false });
+  });
+
+  it("reports both false on a Supabase error for the tickets probe", async () => {
+    vi.stubGlobal("fetch", async () => pgError("28000", 401));
+    expect(await repos.probeSchema()).toEqual({ database: false, migration0003: false });
+  });
+
+  it("times out a hanging probe and counts it as false", async () => {
+    vi.stubGlobal("fetch", () => new Promise(() => {}));
+    const started = Date.now();
+    expect(await repos.probeSchema(50)).toEqual({ database: false, migration0003: false });
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+});
