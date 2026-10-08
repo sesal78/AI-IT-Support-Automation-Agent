@@ -27,6 +27,7 @@ function ticket(title: string, description: string): Ticket {
     servicenow_sys_id: null,
     servicenow_number: null,
     idempotency_key: "key-1",
+    is_test: false,
     created_at: now,
   };
 }

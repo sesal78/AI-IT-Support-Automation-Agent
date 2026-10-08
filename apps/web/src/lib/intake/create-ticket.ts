@@ -41,6 +41,14 @@ export async function createAndEnqueueTicket(
   db: Pick<Repositories, "createTicket" | "addEvent">,
   input: NewIntakeTicket,
 ): Promise<CreateAndEnqueueResult> {
+  // Validated before any write, so a bad switch cannot leave an orphan ticket.
+  // Switches travel only on a test ticket and only when non-empty.
+  let overrides: TestOverrides | undefined;
+  if (input.isTest && input.testOverrides) {
+    const parsed = testOverridesSchema.parse(input.testOverrides);
+    if (Object.keys(parsed).length > 0) overrides = parsed;
+  }
+
   let ticketId: string;
   let created: boolean;
   try {
@@ -65,12 +73,8 @@ export async function createAndEnqueueTicket(
   // A repeated idempotency key returns the existing ticket; its task was already triggered.
   if (!created) return { outcome: "duplicate", ticketId };
 
-  // Switches travel only on a test ticket and only when non-empty.
   const payload: IntakeTicketPayload = { ticketId };
-  if (input.isTest && input.testOverrides) {
-    const overrides = testOverridesSchema.parse(input.testOverrides);
-    if (Object.keys(overrides).length > 0) payload.testOverrides = overrides;
-  }
+  if (overrides) payload.testOverrides = overrides;
 
   try {
     await tasks.trigger<IntakeTicketTask>(INTAKE_TICKET_TASK_ID, payload);

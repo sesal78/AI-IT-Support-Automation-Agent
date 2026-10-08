@@ -74,10 +74,12 @@ describe("createAndEnqueueTicket", () => {
     expect(trigger).not.toHaveBeenCalled();
   });
 
-  it("rejects an invalid switch before triggering", async () => {
+  it("rejects an invalid switch before any database call or trigger", async () => {
     await expect(
       createAndEnqueueTicket(db, { ...input, isTest: true, testOverrides: { llmCallCap: -1 } }),
     ).rejects.toThrow();
+    expect(createTicket).not.toHaveBeenCalled();
+    expect(addEvent).not.toHaveBeenCalled();
     expect(trigger).not.toHaveBeenCalled();
   });
 });
