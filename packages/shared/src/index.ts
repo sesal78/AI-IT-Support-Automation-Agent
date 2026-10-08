@@ -34,3 +34,22 @@ export {
   type IntakeTicketPayload,
   type TicketSubmission,
 } from "./ticket.js";
+export {
+  ASSIGNMENT_GROUPS,
+  CATEGORIES,
+  DEFAULT_GROUP_FOR_CATEGORY,
+  MAX_KB_ARTICLES,
+  PRIORITIES,
+  ROUTES,
+  SECURITY_INCIDENT_GROUP,
+  TRIAGE_FLAGS,
+  triageResultSchema,
+  URGENCIES,
+  type AssignmentGroup,
+  type Category,
+  type Priority,
+  type Route,
+  type TriageFlag,
+  type TriageResult,
+  type Urgency,
+} from "./triage.js";
