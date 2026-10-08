@@ -1,0 +1,212 @@
+[
+  {
+    "slug": "unlock-a-locked-account",
+    "title": "Unlock a locked user account",
+    "content": "Your account locks after several wrong password attempts. The lock clears by itself after a short wait, or the service desk can clear it sooner.\n\n1. Stop trying to sign in. Every new wrong attempt restarts the lock timer.\n2. Wait fifteen minutes, then try once more, typing the password slowly.\n3. Check that caps lock is off and the keyboard language is correct.\n4. If the account is still locked, open a ticket and say that your account is locked and which application shows the error.\n5. The service desk checks your identity and unlocks the account. Sign in again and change your password if asked.\n\nDo not share your password with anyone, including support staff.",
+    "category": "password_reset",
+    "assignment_group": "Service Desk"
+  },
+  {
+    "slug": "reset-a-forgotten-password",
+    "title": "Reset a forgotten password",
+    "content": "If you forgot your password you can set a new one yourself with the self service reset page, as long as your recovery method is up to date.\n\n1. Open the company sign in page and choose the link named forgot password.\n2. Enter your work email address and confirm the security check.\n3. Pick a recovery method: a code sent to your phone or a code from the authenticator app.\n4. Type the code, then choose a new password of at least twelve characters.\n5. Sign in with the new password on every device and update any saved password on your phone or mail app.\n\nIf no recovery method works, open a ticket so the service desk can verify you and reset the password by hand.",
+    "category": "password_reset",
+    "assignment_group": "Service Desk"
+  },
+  {
+    "slug": "change-your-password-before-it-expires",
+    "title": "Change your password before it expires",
+    "content": "Passwords expire on a schedule. You get a warning a few days before. Changing it early avoids a locked account on a busy morning.\n\n1. On a company laptop press control, alt and delete, then choose change a password.\n2. Type your current password once and the new password twice.\n3. Use a long phrase of several unrelated words rather than one word with a number at the end.\n4. Lock the screen and sign in again to confirm the new password works.\n5. Update the password stored on your phone, tablet and mail app, or those devices will keep sending the old one and may lock your account.\n\nNever reuse a work password on a personal website.",
+    "category": "password_reset",
+    "assignment_group": "Service Desk"
+  },
+  {
+    "slug": "reset-multi-factor-authentication-on-a-new-phone",
+    "title": "Set up multi factor sign in on a new phone",
+    "content": "When you get a new phone the authenticator app does not move over by itself. Move it before you wipe the old phone if you can.\n\n1. If you still have the old phone, open the authenticator app and use its transfer or backup option.\n2. Install the authenticator app on the new phone and sign in to the same backup account.\n3. Open the security settings page of your work account and check that the new phone is listed.\n4. If the old phone is lost or already wiped, open a ticket and ask for a multi factor reset.\n5. The service desk verifies your identity, removes the old device and sends you a link to enrol the new phone.\n\nKeep one backup method, such as printed recovery codes, in a safe place.",
+    "category": "password_reset",
+    "assignment_group": "Service Desk"
+  },
+  {
+    "slug": "password-rules-and-tips",
+    "title": "Password rules and tips for strong passwords",
+    "content": "Strong passwords protect your account and company data. This article lists the rules and some habits that make them easy to live with.\n\n1. Use at least twelve characters. Longer is better than complicated.\n2. Use a phrase of several random words, for example four unrelated words joined together.\n3. Do not use your name, your team name, the season or the company name.\n4. Use a password manager approved by the company to store and fill your passwords.\n5. Turn on multi factor sign in for every account that offers it.\n\nIf you think a password was seen by someone else, change it at once and tell the service desk.",
+    "category": "password_reset",
+    "assignment_group": "Service Desk"
+  },
+  {
+    "slug": "vpn-will-not-connect",
+    "title": "Fix a VPN that will not connect",
+    "content": "A VPN connection can fail because of weak internet, an old client or an expired sign in. Work through these steps in order.\n\n1. Check that the internet works: open any public website in a browser.\n2. Close the VPN client completely and open it again.\n3. Sign out of the VPN client, then sign in again with your work account and multi factor code.\n4. Restart the laptop and try a different network, for example your phone hotspot.\n5. If it still fails, open a ticket with the exact error text, the time, and whether you are at home or in the office.\n\nDo not install a different VPN program on your own.",
+    "category": "network",
+    "assignment_group": "Network"
+  },
+  {
+    "slug": "wifi-keeps-dropping",
+    "title": "Wifi keeps dropping or is very slow",
+    "content": "A wifi connection that drops often is usually caused by distance, interference or a bad network profile on the laptop.\n\n1. Move closer to the access point and away from microwaves or thick walls.\n2. Turn wifi off and on again with the switch in the system tray.\n3. Forget the wifi network in the settings and join it again with your work sign in.\n4. Restart the laptop to reload the network driver.\n5. If other people near you also lose wifi, open a ticket and name the floor and room, so the network team can check the access point.\n\nRun a speed test only if asked; it does not fix the problem.",
+    "category": "network",
+    "assignment_group": "Network"
+  },
+  {
+    "slug": "office-network-outage",
+    "title": "Office network is down for many people",
+    "content": "If several people lose the network at the same moment, the cause is probably in the building and not on your laptop.\n\n1. Ask a colleague next to you if their internet and wifi are also down.\n2. Check the status page or the team chat for a known outage notice.\n3. Do not unplug or move network cables, switches or the router.\n4. Open one ticket for the whole group and list the floor, the affected people and the start time.\n5. Switch to your phone hotspot for urgent work if the policy allows it.\n\nThe network team treats an outage ticket as high priority and sends updates until service returns.",
+    "category": "network",
+    "assignment_group": "Network"
+  },
+  {
+    "slug": "cannot-reach-a-shared-drive",
+    "title": "Cannot reach a shared drive or file server",
+    "content": "A shared drive can disappear from your laptop when the VPN is off, the network changed or the connection timed out.\n\n1. Check that you are in the office network or connected to the VPN.\n2. Open the file explorer and look for the drive letter or network folder.\n3. Press the refresh key, then open the drive again.\n4. Sign out of the laptop and sign in again to renew your access ticket.\n5. If the drive is still missing, open a ticket with the folder name and the exact message you see.\n\nDo not save work only on the desktop while the drive is missing; copy it to the drive once access returns.",
+    "category": "network",
+    "assignment_group": "Network"
+  },
+  {
+    "slug": "printer-not-reachable-on-the-network",
+    "title": "Network printer not found or not printing",
+    "content": "A printer that worked yesterday can vanish if it was restarted or moved to another network port.\n\n1. Check the printer screen for paper, toner and error messages.\n2. Confirm that the printer is on and shows a network symbol.\n3. On your laptop remove the printer and add it again from the company printer list.\n4. Print a test page and look at the print queue for stuck jobs; cancel any that are stuck.\n5. If the printer still fails for everyone, open a ticket with the printer name and the room.\n\nDo not connect a printer to the network without approval.",
+    "category": "network",
+    "assignment_group": "Network"
+  },
+  {
+    "slug": "laptop-will-not-turn-on",
+    "title": "Laptop will not turn on",
+    "content": "A laptop that shows no sign of life is often just out of power or stuck in a bad state.\n\n1. Plug in the charger and wait ten minutes. Check that the charger light is on and the wall socket works.\n2. Remove all cables, docks and usb sticks from the laptop.\n3. Hold the power button for fifteen seconds, release it, then press it once.\n4. Look for any light, sound or screen message and write it down.\n5. If nothing happens, open a ticket with the laptop asset tag and what you saw.\n\nDo not open the laptop case or try a charger from another brand.",
+    "category": "hardware",
+    "assignment_group": "Hardware"
+  },
+  {
+    "slug": "monitor-has-no-signal",
+    "title": "Monitor shows no signal or a black screen",
+    "content": "An external monitor with no picture is usually a cable, input or display setting problem.\n\n1. Check that the monitor is on and its power light is lit.\n2. Press the input button on the monitor and select the port you are using.\n3. Reseat the video cable at both ends, or try another cable.\n4. On the laptop press the windows key with the letter p and choose extend or duplicate.\n5. If the screen is still black, open a ticket with the monitor model and cable type.\n\nA flickering screen after a dock change is often cured by restarting the laptop with the dock attached.",
+    "category": "hardware",
+    "assignment_group": "Hardware"
+  },
+  {
+    "slug": "laptop-battery-drains-fast",
+    "title": "Laptop battery drains too fast",
+    "content": "A battery loses capacity over time, but heavy programs and bright screens can make it worse.\n\n1. Open the battery settings and see which programs use the most power.\n2. Lower the screen brightness and turn on battery saver mode.\n3. Close programs and browser tabs you do not need.\n4. Restart the laptop, as an update may be running in the background.\n5. If the battery lasts under two hours on a full charge, open a ticket and ask for a battery check.\n\nSwollen or hot batteries are a safety risk: stop using the laptop and tell the service desk at once.",
+    "category": "hardware",
+    "assignment_group": "Hardware"
+  },
+  {
+    "slug": "keyboard-or-mouse-not-working",
+    "title": "Keyboard or mouse stopped working",
+    "content": "When a keyboard or mouse stops, check the simple causes before asking for a new one.\n\n1. For a wireless device, replace the battery and check the switch on the underside.\n2. Unplug the receiver or cable and plug it into another port.\n3. Restart the laptop.\n4. Try the device on a different computer to see if the device itself is broken.\n5. If it is broken, open a ticket and ask for a replacement; say the model and where you work.\n\nSpilled drinks can damage a laptop; switch it off at once and report it.",
+    "category": "hardware",
+    "assignment_group": "Hardware"
+  },
+  {
+    "slug": "docking-station-not-detected",
+    "title": "Docking station not detected",
+    "content": "A dock may connect power but not screens or network when the connection or the driver misbehaves.\n\n1. Unplug the dock from the laptop and from the wall for thirty seconds.\n2. Plug the power in first, then connect the laptop cable.\n3. Try a different port on the laptop if there is one.\n4. Restart the laptop with the dock attached.\n5. If the screens and network are still missing, open a ticket with the dock model and asset tag.\n\nDo not use a dock charger from another model.",
+    "category": "hardware",
+    "assignment_group": "Hardware"
+  },
+  {
+    "slug": "application-crashes-on-start",
+    "title": "Application crashes when it starts",
+    "content": "An app that closes right after opening may have a damaged setting, a pending update or too little memory.\n\n1. Restart the laptop and open only that application.\n2. Check for updates in the company software portal and install any you see.\n3. Repair the application from the installed apps list in settings.\n4. Clear the app cache if the app offers that option.\n5. If it still crashes, open a ticket with the app name, version and the exact error text.\n\nPlease do not download the app from other websites.",
+    "category": "software",
+    "assignment_group": "Software"
+  },
+  {
+    "slug": "request-new-software",
+    "title": "Request new software to be installed",
+    "content": "New software needs approval for licence cost and security checks. The request goes through the service desk.\n\n1. Search the company software portal first; many programs can be installed from there at once.\n2. If the program is not listed, write down its name, what you need it for and which team pays for it.\n3. Open a ticket in the software category with that information.\n4. Your manager is asked to approve the request.\n5. After approval the software team installs it or tells you why it cannot be used.\n\nUse of unapproved software can be a security problem, so wait for the approval.",
+    "category": "software",
+    "assignment_group": "Software"
+  },
+  {
+    "slug": "email-not-syncing",
+    "title": "Email or calendar is not syncing",
+    "content": "If new mail does not show or meetings are missing, the mail app may have lost its connection to the server.\n\n1. Check that you are online and that the VPN is connected if required.\n2. Open the web version of your mail and see whether the new mail is there.\n3. Close and reopen the mail app, then use the send and receive button.\n4. Sign out of the mail account in the app and sign in again.\n5. If the web version works but the app does not, open a ticket and name the app and device.\n\nA full mailbox also stops mail; delete or archive old items if the app warns you.",
+    "category": "software",
+    "assignment_group": "Software"
+  },
+  {
+    "slug": "software-update-failed",
+    "title": "Software update failed or keeps asking to restart",
+    "content": "Updates need a restart to finish. A failed update often works on the second try.\n\n1. Save your work and restart the laptop when asked.\n2. After the restart open the update settings and check for updates again.\n3. Free some disk space by emptying the recycle bin and old downloads.\n4. Run the update again and keep the laptop plugged in.\n5. If it still fails, open a ticket with the update name and error code.\n\nDo not turn the laptop off while it says it is installing updates.",
+    "category": "software",
+    "assignment_group": "Software"
+  },
+  {
+    "slug": "browser-is-slow-or-pages-do-not-load",
+    "title": "Browser is slow or business web pages do not load",
+    "content": "Web based tools can fail because of a full cache, a broken extension or an out of date browser.\n\n1. Try the page in a private window to see if an extension is causing the issue.\n2. Clear the cache and cookies for that site only.\n3. Disable extensions you do not need.\n4. Update the browser and restart it.\n5. If only one company site fails for you, open a ticket with the site name and a screenshot of the error.\n\nDo not send screenshots that show passwords or customer data.",
+    "category": "software",
+    "assignment_group": "Software"
+  },
+  {
+    "slug": "report-is-slow-or-times-out",
+    "title": "A report or query is slow or times out",
+    "content": "Reports can be slow when many people run them at once or when the date range is very wide.\n\n1. Narrow the date range or filters and run the report again.\n2. Run it outside the busiest hours, for example early morning.\n3. Do not click run several times; each click adds a new job.\n4. Note the report name, the filters you used and the time of the error.\n5. If it still times out, open a ticket so the database team can look at the query.\n\nLarge exports are better scheduled than run by hand.",
+    "category": "database",
+    "assignment_group": "Database"
+  },
+  {
+    "slug": "request-database-access",
+    "title": "Request access to a database or data tool",
+    "content": "Database access follows the rule of least privilege. You get only what your role needs, for a stated time.\n\n1. Write down the name of the database or data tool and the exact access you need, read only or read and write.\n2. Say why you need it and for how long.\n3. Open a ticket in the database category.\n4. Your manager and the data owner approve the request.\n5. The database team grants access and tells you how to sign in.\n\nAccess is reviewed regularly and removed when it is no longer needed.",
+    "category": "database",
+    "assignment_group": "Database"
+  },
+  {
+    "slug": "data-looks-wrong-or-is-missing",
+    "title": "Data in an application looks wrong or is missing",
+    "content": "If numbers look wrong or records are missing, stop editing and report it before more changes make it harder to trace.\n\n1. Write down which record, field and screen show the problem.\n2. Note what you expected to see and when you last saw it correct.\n3. Do not delete or re enter the data yourself.\n4. Take a screenshot with no personal details in it.\n5. Open a ticket so the database team can check the logs and restore the data if needed.\n\nA quick report helps the team find the cause before older copies expire.",
+    "category": "database",
+    "assignment_group": "Database"
+  },
+  {
+    "slug": "database-connection-error",
+    "title": "Application shows a database connection error",
+    "content": "A message that the application cannot connect to its database may be a short outage or a problem with your session.\n\n1. Wait two minutes and reload the page once.\n2. Sign out of the application and sign in again.\n3. Ask a colleague whether they see the same error.\n4. If several people see it, open one ticket marked as an outage with the application name and time.\n5. Do not retry many times in a row because it adds load to the server.\n\nThe database team monitors the service and will update the ticket.",
+    "category": "database",
+    "assignment_group": "Database"
+  },
+  {
+    "slug": "request-a-data-export-or-restore",
+    "title": "Request a data export or a restore from backup",
+    "content": "Export and restore requests need the data owner to approve them, because they move or replace business data.\n\n1. Describe what data you need, from which system and from which date.\n2. Say whether you need a copy or a restore of lost data.\n3. Open a ticket in the database category and add your manager.\n4. The data owner approves, and the database team schedules the work.\n5. You receive the export through an approved channel, never by personal email.\n\nRestores replace current data, so they are done only after approval.",
+    "category": "database",
+    "assignment_group": "Database"
+  },
+  {
+    "slug": "how-to-contact-the-service-desk",
+    "title": "How to contact the service desk and what to include",
+    "content": "A clear ticket gets a faster answer. Send what the team needs the first time.\n\n1. Use the ticket form or the support chat; avoid private messages to individual staff.\n2. Describe the problem in one or two plain sentences.\n3. Add the device name or asset tag, and the application involved.\n4. Say how urgent it is and how many people are affected.\n5. Do not include passwords, card numbers or other personal data in the ticket.\n\nYou get a ticket number; quote it in every follow up.",
+    "category": "inquiry",
+    "assignment_group": "Service Desk"
+  },
+  {
+    "slug": "check-the-status-of-my-ticket",
+    "title": "Check the status of your ticket",
+    "content": "You can see where your request is without contacting the service desk.\n\n1. Open the ticket portal and sign in with your work account.\n2. Choose the list of your open tickets.\n3. Open the ticket and read the latest comment and the status.\n4. If the status is waiting for you, answer the question the team asked.\n5. If there is no update after the target time shown, add a comment to the ticket rather than opening a new one.\n\nA new ticket for the same problem can slow things down.",
+    "category": "inquiry",
+    "assignment_group": "Service Desk"
+  },
+  {
+    "slug": "hr-or-sensitive-request",
+    "title": "Sensitive or HR related requests",
+    "content": "Some requests are not IT problems: pay, leave, complaints, health matters or a worry about another person. IT support cannot handle these and a person must take them.\n\n1. Do not describe the personal details in the IT ticket.\n2. Contact the HR team or your manager directly through the HR page.\n3. If you already raised an IT ticket with such details, tell the service desk and ask that it be passed to a human.\n4. For an urgent safety matter contact the emergency number for your site first.\n5. The service desk routes the ticket to a person and does not answer it with an automatic reply.\n\nThese requests are always handled by a human.",
+    "category": "inquiry",
+    "assignment_group": "Service Desk"
+  },
+  {
+    "slug": "onboarding-checklist-for-new-starters",
+    "title": "IT checklist for a new starter",
+    "content": "New starters should get a laptop, an account and access to the main tools on the first day. This checklist helps managers prepare.\n\n1. The manager opens an onboarding ticket at least five working days before the start date.\n2. The ticket lists the role, team, location and tools needed.\n3. The hardware team prepares a laptop and phone, and the service desk creates the account.\n4. On day one the new starter picks up the laptop and signs in with the temporary password.\n5. The new starter sets a new password, enrols multi factor sign in and checks mail and chat.\n\nLate requests may mean the new starter has to wait for equipment.",
+    "category": "inquiry",
+    "assignment_group": "Service Desk"
+  },
+  {
+    "slug": "report-a-phishing-email",
+    "title": "Report a phishing or suspicious email",
+    "content": "A phishing email tries to trick you into giving a password or clicking a bad link. Report it quickly. This is a security incident.\n\n1. Do not click links or open attachments in the message.\n2. Do not reply, and do not forward it to colleagues.\n3. Use the report phishing button in the mail app, or open a ticket and attach the message as a file.\n4. If you already clicked a link or typed your password, say so in the ticket and change your password from a safe device.\n5. The security team checks the message, blocks the sender and tells you what to do next.\n\nReport even if you are not sure; no one is blamed for a quick report.",
+    "category": "inquiry",
+    "assignment_group": "IT Securities"
+  }
+]
