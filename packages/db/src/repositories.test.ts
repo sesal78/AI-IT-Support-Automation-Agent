@@ -273,6 +273,132 @@ describe("recordSecurityEvent", () => {
   });
 });
 
+describe("reserveAiCall", () => {
+  const callId = randomUUID();
+  const input = {
+    provider: "llm",
+    kind: "triage",
+    calls: 3,
+    capCalls: 2000,
+    environment: "test",
+    ticketId: ticketId,
+  } as const;
+
+  it("calls the ai_budget_reserve RPC with every argument and maps the row", async () => {
+    const calls = respond(ok([{ allowed: true, used_calls: 1603, call_id: callId }]));
+    expect(await repos.reserveAiCall(input)).toEqual({
+      allowed: true,
+      usedCalls: 1603,
+      callId,
+    });
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[0]?.url.pathname).toBe("/rest/v1/rpc/ai_budget_reserve");
+    expect(calls[0]?.body).toEqual({
+      p_provider: "llm",
+      p_est_cost: null,
+      p_est_calls: 3,
+      p_cap_calls: 2000,
+      p_environment: "test",
+      p_kind: "triage",
+      p_ticket_id: ticketId,
+    });
+  });
+
+  it("sends a null ticket id and the estimated cost when given", async () => {
+    const calls = respond(ok([{ allowed: true, used_calls: 1, call_id: callId }]));
+    await repos.reserveAiCall({ ...input, ticketId: undefined, calls: 1, estCost: 0.5 });
+    expect(calls[0]?.body).toMatchObject({ p_ticket_id: null, p_est_cost: 0.5 });
+  });
+
+  it("returns a refusal with a null call id", async () => {
+    respond(ok([{ allowed: false, used_calls: 2000, call_id: null }]));
+    expect(await repos.reserveAiCall(input)).toEqual({
+      allowed: false,
+      usedCalls: 2000,
+      callId: null,
+    });
+  });
+
+  it("throws DbError naming the operation and the code", async () => {
+    respond(pgError("25001"));
+    const error = await expectDbError(repos.reserveAiCall(input), "reserveAiCall");
+    expect(error.code).toBe("25001");
+  });
+
+  it.each([
+    ["no row", []],
+    [
+      "two rows",
+      [
+        { allowed: false, used_calls: 1, call_id: null },
+        { allowed: false, used_calls: 1, call_id: null },
+      ],
+    ],
+    ["allowed without a call id", [{ allowed: true, used_calls: 1, call_id: null }]],
+    ["refused with a call id", [{ allowed: false, used_calls: 1, call_id: callId }]],
+  ])("throws DbError on a bad response: %s", async (_name, body) => {
+    respond(ok(body));
+    await expectDbError(repos.reserveAiCall(input), "reserveAiCall");
+  });
+
+  it.each([
+    ["calls 0", { calls: 0 }],
+    ["calls 1.5", { calls: 1.5 }],
+    ["calls NaN", { calls: Number.NaN }],
+    ["calls above int32", { calls: 2 ** 31 }],
+    ["cap -1", { capCalls: -1 }],
+    ["cap 1.5", { capCalls: 1.5 }],
+    ["cap above int32", { capCalls: 2 ** 31 }],
+    ["provider other", { provider: "other" }],
+  ])("rejects %s before any request", async (_name, patch) => {
+    const calls = respond();
+    await expect(repos.reserveAiCall({ ...input, ...patch } as never)).rejects.toThrow(RangeError);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("completeAiCall", () => {
+  const callId = randomUUID();
+
+  it("updates the tokens of the row with this id", async () => {
+    const calls = respond(ok([{ id: callId }]));
+    await repos.completeAiCall(callId, { tokensIn: 120, tokensOut: 30 });
+    expect(calls[0]?.method).toBe("PATCH");
+    expect(calls[0]?.url.pathname).toBe("/rest/v1/ai_calls");
+    expect(calls[0]?.url.searchParams.get("id")).toBe(`eq.${callId}`);
+    expect(calls[0]?.body).toEqual({ tokens_in: 120, tokens_out: 30 });
+  });
+
+  it("throws DbError when no row has this id", async () => {
+    respond(ok([]));
+    await expectDbError(
+      repos.completeAiCall(callId, { tokensIn: 1, tokensOut: 1 }),
+      "completeAiCall",
+    );
+  });
+
+  it("throws DbError naming the operation and the code on a Supabase error", async () => {
+    respond(pgError("22P02"));
+    const error = await expectDbError(
+      repos.completeAiCall("not-a-uuid", { tokensIn: 1, tokensOut: 1 }),
+      "completeAiCall",
+    );
+    expect(error.code).toBe("22P02");
+  });
+
+  it.each([
+    ["negative", -1, 0],
+    ["NaN", 0, Number.NaN],
+    ["fractional", 1.5, 0],
+    ["Infinity", Number.POSITIVE_INFINITY, 0],
+    ["above int32", 0, 2 ** 31],
+  ])("rejects %s token counts before any request", async (_name, tokensIn, tokensOut) => {
+    const calls = respond();
+    await expect(repos.completeAiCall(callId, { tokensIn, tokensOut })).rejects.toThrow(RangeError);
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe("probeSchema", () => {
   const tableOf = (call: Captured | undefined) => call?.url.pathname.split("/").pop();
 

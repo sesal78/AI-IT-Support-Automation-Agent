@@ -11,6 +11,7 @@ export {
   type CanaryType,
 } from "./canaries.js";
 export {
+  aiBudgetEnvShape,
   e2eEnvShape,
   formatEnvIssues,
   intakeEnvShape,

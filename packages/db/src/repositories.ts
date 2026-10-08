@@ -54,6 +54,12 @@ export const kbSearchResultSchema = z.object({
   rank: z.number(),
 });
 
+export const aiReservationSchema = z.object({
+  allowed: z.boolean(),
+  used_calls: z.number().int(),
+  call_id: z.uuid().nullable(),
+});
+
 export type Ticket = z.infer<typeof ticketSchema>;
 export type TicketEvent = z.infer<typeof ticketEventSchema>;
 export type Redaction = z.infer<typeof redactionSchema>;
@@ -136,6 +142,36 @@ export interface AiUsageMonth {
   llm: AiUsage;
   typesafe: AiUsage;
 }
+
+export type AiProvider = "llm" | "typesafe";
+
+export interface AiReservationInput {
+  provider: AiProvider;
+  kind: string;
+  /** Calls to reserve (an LLM request or a TypeSafe question is 1). Integer, 1..INT32_MAX. */
+  calls: number;
+  /** Monthly cap for the provider. Integer, 0..INT32_MAX. 0 refuses every call. */
+  capCalls: number;
+  environment: string;
+  ticketId?: string | undefined;
+  estCost?: number | undefined;
+}
+
+export interface AiReservation {
+  allowed: boolean;
+  /** Calls used this UTC month: including this reservation when allowed, before it when refused. */
+  usedCalls: number;
+  /** The reserved ai_calls row; null exactly when the reservation was refused. */
+  callId: string | null;
+}
+
+export interface AiTokenUsage {
+  tokensIn: number;
+  tokensOut: number;
+}
+
+const INT32_MAX = 2_147_483_647;
+const AI_PROVIDERS: readonly string[] = ["llm", "typesafe"];
 
 interface SupabaseResult {
   data: unknown;
@@ -229,6 +265,60 @@ export function createRepositories(client: DbClient) {
         p_sample: sample,
       });
       if (result.error) throw supabaseError("recordSecurityEvent", result.error);
+    },
+
+    /**
+     * Reserves AI calls against the monthly cap (RPC `ai_budget_reserve`).
+     * Returns `allowed: false` with no row when the cap would be exceeded.
+     *
+     * ISOLATION: this must stay a plain RPC call at the default READ COMMITTED
+     * level. The function's post-lock sum is only correct under READ COMMITTED;
+     * under REPEATABLE READ or SERIALIZABLE the cap can be overspent (the
+     * function raises 25001 then). Never wrap this call in a stricter transaction.
+     */
+    async reserveAiCall(input: AiReservationInput): Promise<AiReservation> {
+      const op = "reserveAiCall";
+      if (!AI_PROVIDERS.includes(input.provider)) throw new RangeError(`${op}: unknown provider`);
+      if (!Number.isInteger(input.calls) || input.calls < 1 || input.calls > INT32_MAX) {
+        throw new RangeError(`${op}: calls must be an integer from 1 to ${INT32_MAX}`);
+      }
+      if (!Number.isInteger(input.capCalls) || input.capCalls < 0 || input.capCalls > INT32_MAX) {
+        throw new RangeError(`${op}: capCalls must be an integer from 0 to ${INT32_MAX}`);
+      }
+      const result = await client.rpc("ai_budget_reserve", {
+        p_provider: input.provider,
+        p_est_cost: input.estCost ?? null,
+        p_est_calls: input.calls,
+        p_cap_calls: input.capCalls,
+        p_environment: input.environment,
+        p_kind: input.kind,
+        p_ticket_id: input.ticketId ?? null,
+      });
+      const [row] = parseRow(op, z.array(aiReservationSchema).length(1), result);
+      if (!row || row.allowed !== (row.call_id !== null)) {
+        throw new DbError(op, "unexpected response shape at call_id");
+      }
+      return { allowed: row.allowed, usedCalls: row.used_calls, callId: row.call_id };
+    },
+
+    /**
+     * Writes the token counts onto a reserved ai_calls row. An unknown call id
+     * throws DbError. Counts must be integers from 0 to INT32_MAX (RangeError).
+     */
+    async completeAiCall(callId: string, usage: AiTokenUsage): Promise<void> {
+      const op = "completeAiCall";
+      for (const count of [usage.tokensIn, usage.tokensOut]) {
+        if (!Number.isInteger(count) || count < 0 || count > INT32_MAX) {
+          throw new RangeError(`${op}: token counts must be integers from 0 to ${INT32_MAX}`);
+        }
+      }
+      const result = await client
+        .from("ai_calls")
+        .update({ tokens_in: usage.tokensIn, tokens_out: usage.tokensOut })
+        .eq("id", callId)
+        .select("id");
+      const rows = parseRow(op, z.array(z.object({ id: z.uuid() })), result);
+      if (rows.length !== 1) throw new DbError(op, "no ai_calls row with this id");
     },
 
     /** Saves the triage result; upserts by ticket_id (one row per ticket). */

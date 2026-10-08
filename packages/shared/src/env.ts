@@ -53,6 +53,26 @@ export const sensitiveCheckEnvShape = {
 };
 
 /**
+ * A monthly AI call cap: plain decimal digits only, 0 to 1,000,000,000. A
+ * typo such as `abc`, `-1`, `1e3`, `1.5` or ` 5` fails at boot rather than
+ * becoming a wrong cap (spend control fails closed). `0` is valid and refuses
+ * every call. An unset or empty variable takes the default.
+ */
+const callCap = (fallback: number) =>
+  z
+    .string()
+    .regex(/^[0-9]{1,10}$/, "must be a whole number of calls, digits only")
+    .transform(Number)
+    .pipe(z.number().max(1_000_000_000, "must be at most 1000000000"))
+    .default(fallback);
+
+/** Monthly AI call caps for the metered wrapper (packages/ai meter, services/pipeline). */
+export const aiBudgetEnvShape = {
+  LLM_MONTHLY_CALL_CAP: callCap(2000),
+  TYPESAFE_MONTHLY_CALL_CAP: callCap(20000),
+};
+
+/**
  * Deploy-time variable for services/pipeline: the Trigger.dev project that
  * `trigger.config.ts` targets. Optional; unset means the main project.
  * `services/pipeline/src/project-ref.ts` applies the same rule without zod.

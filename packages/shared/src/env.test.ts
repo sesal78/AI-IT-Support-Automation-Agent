@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  aiBudgetEnvShape,
   e2eEnvShape,
   formatEnvIssues,
   intakeEnvShape,
@@ -169,4 +170,46 @@ describe("e2eEnvShape", () => {
       expect(() => parse(value)).toThrow(/E2E_MODE/);
     },
   );
+});
+
+describe("aiBudgetEnvShape", () => {
+  it("defaults the caps to 2000 and 20000 when unset or empty", () => {
+    expect(parseEnv(aiBudgetEnvShape, {})).toEqual({
+      LLM_MONTHLY_CALL_CAP: 2000,
+      TYPESAFE_MONTHLY_CALL_CAP: 20000,
+    });
+    expect(
+      parseEnv(aiBudgetEnvShape, { LLM_MONTHLY_CALL_CAP: "", TYPESAFE_MONTHLY_CALL_CAP: "" }),
+    ).toEqual({ LLM_MONTHLY_CALL_CAP: 2000, TYPESAFE_MONTHLY_CALL_CAP: 20000 });
+  });
+
+  it.each(["0", "1", "250", "1000000000"])(
+    "accepts LLM_MONTHLY_CALL_CAP=%s as a number",
+    (value) => {
+      expect(parseEnv(aiBudgetEnvShape, { LLM_MONTHLY_CALL_CAP: value }).LLM_MONTHLY_CALL_CAP).toBe(
+        Number(value),
+      );
+    },
+  );
+
+  it.each(["abc", "-1", "1e3", "1.5", " 5", "5 ", "0x10", "Infinity", "1000000001", "99999999999"])(
+    "rejects LLM_MONTHLY_CALL_CAP=%j, naming the variable",
+    (value) => {
+      expect(() => parseEnv(aiBudgetEnvShape, { LLM_MONTHLY_CALL_CAP: value })).toThrow(
+        /LLM_MONTHLY_CALL_CAP/,
+      );
+    },
+  );
+
+  it("rejects a bad TYPESAFE_MONTHLY_CALL_CAP, naming it and not echoing the value", () => {
+    const bad = "x".repeat(3);
+    let message = "";
+    try {
+      parseEnv(aiBudgetEnvShape, { TYPESAFE_MONTHLY_CALL_CAP: bad });
+    } catch (error) {
+      message = String((error as Error).message);
+    }
+    expect(message).toContain("TYPESAFE_MONTHLY_CALL_CAP");
+    expect(message).not.toContain(bad);
+  });
 });
