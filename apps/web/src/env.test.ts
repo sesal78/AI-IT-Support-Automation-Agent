@@ -38,6 +38,22 @@ describe("web env module", () => {
     await expect(import("./env")).rejects.toThrow(/SUPABASE_URL/);
   });
 
+  it.each([
+    ["missing", undefined],
+    ["31 characters", "a".repeat(31)],
+    ["a hyphen", `${"a".repeat(31)}-`],
+    ["an underscore", `${"a".repeat(31)}_`],
+  ])("throws naming INTERNAL_API_TOKEN when it is %s", async (_label, value) => {
+    stubAll({ INTERNAL_API_TOKEN: value });
+    await expect(import("./env")).rejects.toThrow(/INTERNAL_API_TOKEN/);
+  });
+
+  it("accepts an INTERNAL_API_TOKEN of exactly 32 letters and digits", async () => {
+    stubAll({ INTERNAL_API_TOKEN: "a1".repeat(16) });
+    const { env } = await import("./env");
+    expect(env.INTERNAL_API_TOKEN).toHaveLength(32);
+  });
+
   it("throws naming SHADOW_MODE when it is not true/false", async () => {
     stubAll({ SHADOW_MODE: "maybe" });
     await expect(import("./env")).rejects.toThrow(/SHADOW_MODE/);

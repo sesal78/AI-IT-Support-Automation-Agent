@@ -127,6 +127,20 @@ export function createRepositories(client: DbClient) {
       return parseRow("saveRedaction", redactionSchema, result);
     },
 
+    /** Counts one security event (RPC security_event_record; one row per source/kind/minute). */
+    async recordSecurityEvent(
+      source: string,
+      kind: string,
+      sample: Record<string, unknown>,
+    ): Promise<void> {
+      const result = await client.rpc("security_event_record", {
+        p_source: source,
+        p_kind: kind,
+        p_sample: sample,
+      });
+      if (result.error) throw supabaseError("recordSecurityEvent", result.error);
+    },
+
     /** Saves the triage result; upserts by ticket_id (one row per ticket). */
     async saveTriage(input: NewTriage): Promise<Triage> {
       const result = await client

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatEnvIssues,
   intakeEnvShape,
+  internalEnvShape,
   parseEnv,
   phase1EnvShape,
   sensitiveCheckEnvShape,
@@ -66,6 +67,29 @@ describe("intakeEnvShape", () => {
 
   it.each(["TURNSTILE_SECRET_KEY", "TURNSTILE_SITE_KEY"])("names %s when it is unset", (key) => {
     expect(() => parseEnv(intakeEnvShape, { ...turnstile, [key]: "" })).toThrow(key);
+  });
+});
+
+describe("internalEnvShape", () => {
+  const parse = (value: string | undefined) =>
+    parseEnv(internalEnvShape, { INTERNAL_API_TOKEN: value });
+
+  it("accepts exactly 32 letters and digits", () => {
+    expect(parse("aB3".repeat(10) + "xy").INTERNAL_API_TOKEN).toHaveLength(32);
+  });
+
+  it.each([
+    ["unset", undefined],
+    ["31 characters", "a".repeat(31)],
+    ["a hyphen", `${"a".repeat(31)}-`],
+    ["an underscore", `${"a".repeat(31)}_`],
+    [
+      "a trailing newline",
+      `${"a".repeat(32)}
+`,
+    ],
+  ])("names INTERNAL_API_TOKEN when it is %s", (_label, value) => {
+    expect(() => parse(value)).toThrow(/INTERNAL_API_TOKEN/);
   });
 });
 

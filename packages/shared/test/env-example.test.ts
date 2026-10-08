@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   intakeEnvShape,
+  internalEnvShape,
   parseEnv,
   phase1EnvShape,
   sensitiveCheckEnvShape,
@@ -14,6 +15,7 @@ import {
 const allEnvShapes = {
   ...phase1EnvShape,
   ...intakeEnvShape,
+  ...internalEnvShape,
   ...sensitiveCheckEnvShape,
   ...triggerProjectEnvShape,
 };

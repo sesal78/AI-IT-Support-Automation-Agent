@@ -22,6 +22,16 @@ export const intakeEnvShape = {
 };
 
 /**
+ * Internal API bearer token (apps/web only). Letters and digits only, 32 or
+ * more: a generated app token must survive env files and URL-free headers.
+ */
+export const internalEnvShape = {
+  INTERNAL_API_TOKEN: z
+    .string()
+    .regex(/^[A-Za-z0-9]{32,}$/, "must be at least 32 letters or digits"),
+};
+
+/**
  * Sensitive-topic check env for the intake-ticket task (services/pipeline).
  * SENSITIVE_THRESHOLD is the TypeSafe Noul probability at or above which a
  * topic is flagged; phase 3 evals tune the 0.5 starting value.

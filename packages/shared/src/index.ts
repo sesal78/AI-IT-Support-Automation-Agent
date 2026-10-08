@@ -13,6 +13,7 @@ export {
 export {
   formatEnvIssues,
   intakeEnvShape,
+  internalEnvShape,
   parseEnv,
   phase1EnvShape,
   sensitiveCheckEnvShape,
