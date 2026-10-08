@@ -17,6 +17,7 @@ export const ticketSchema = z.object({
   servicenow_sys_id: z.string().nullable(),
   servicenow_number: z.string().nullable(),
   idempotency_key: z.string(),
+  is_test: z.boolean(),
   created_at: timestamp,
 });
 
@@ -65,7 +66,7 @@ export type NewTicket = Pick<
   Ticket,
   "source" | "raw_title" | "raw_description" | "requester_email" | "idempotency_key"
 > &
-  Partial<Pick<Ticket, "requester_name" | "department">>;
+  Partial<Pick<Ticket, "requester_name" | "department" | "is_test">>;
 export type NewRedaction = Omit<Redaction, "created_at">;
 export type NewTriage = Omit<Triage, "created_at">;
 

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { TestOverrides } from "./test-overrides.js";
 
 const text = (min: number, max: number) => z.string().trim().min(min).max(max);
 
@@ -22,4 +23,6 @@ export const INTAKE_TICKET_TASK_ID = "intake-ticket";
 
 export interface IntakeTicketPayload {
   ticketId: string;
+  /** Test switches from the E2E test route only; the pipeline ignores them until P3-T10c. */
+  testOverrides?: TestOverrides;
 }
