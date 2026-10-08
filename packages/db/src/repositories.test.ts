@@ -392,3 +392,236 @@ describe("searchKb", () => {
     expect(error.message).toContain("unexpected response shape");
   });
 });
+
+describe("getTicketView", () => {
+  const RAW = {
+    raw_title: "t".repeat(20),
+    raw_description: "d".repeat(20),
+    requester_email: "e".repeat(20),
+    requester_name: "n".repeat(20),
+    department: "p".repeat(20),
+  };
+  const viewTicket = {
+    id: ticketId,
+    status: "triaged",
+    is_test: false,
+    source: "web",
+    created_at: now,
+  };
+  const viewTriage = {
+    sensitive: false,
+    sensitive_flags: [],
+    category: "network",
+    subcategory: null,
+    priority: "P3",
+    urgency: "medium",
+    assignment_group: "Network",
+    route: "auto",
+    flags: null,
+    probabilities: { network: 0.9 },
+    grounding_score: 0.8,
+    kb_article_ids: [ticketId],
+    suggested_fix: null,
+    model_versions: { llm: "v1" },
+    triaged_at: now,
+  };
+
+  /** Routes each PostgREST request to a body by table name. */
+  function database(bodies: Record<string, Response | (() => Response)>): Captured[] {
+    const calls: Captured[] = [];
+    vi.stubGlobal("fetch", async (input: string | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input));
+      calls.push({
+        method: init.method ?? "GET",
+        url,
+        headers: new Headers(init.headers),
+        body: undefined,
+      });
+      const body = bodies[url.pathname.split("/").pop() ?? ""];
+      if (!body) throw new Error("unexpected request");
+      return typeof body === "function" ? body() : body.clone();
+    });
+    return calls;
+  }
+  const full = () => ({
+    tickets: ok({ ...viewTicket, ...RAW }),
+    ticket_redactions: ok({ redacted_title: "VPN down", redacted_description: "gone", ...RAW }),
+    triage_results: ok(viewTriage),
+    ai_calls: new Response(null, { status: 200, headers: { "content-range": "*/3" } }),
+    ticket_events: ok([
+      { type: "received", at: now, payload: { m: "x".repeat(20) } },
+      { type: "redacted", at: "2026-09-29T10:01:00+00:00" },
+    ]),
+  });
+
+  it("selects named columns only, never a raw column", async () => {
+    const calls = database(full());
+    await repos.getTicketView(ticketId);
+    expect(calls.length).toBe(5);
+    for (const call of calls) {
+      const columns = (call.url.searchParams.get("select") ?? "").split(",");
+      for (const raw of Object.keys(RAW)) expect(columns).not.toContain(raw);
+      expect(columns).not.toContain("payload");
+      expect(call.url.searchParams.get("select")).not.toBe("*");
+      expect(call.url.searchParams.get("select")).not.toBe(null);
+    }
+    const tickets = calls.find((c) => c.url.pathname.endsWith("/tickets"));
+    expect(tickets?.url.searchParams.get("select")).toBe("id,status,is_test,source,created_at");
+  });
+
+  it("maps the rows and drops any column the database returns beyond the ones asked for", async () => {
+    database(full());
+    const view = await repos.getTicketView(ticketId);
+    expect(view).toMatchObject({
+      id: ticketId,
+      status: "triaged",
+      isTest: false,
+      redacted: { title: "VPN down", description: "gone" },
+      aiCallCount: 3,
+      events: [
+        { type: "received", at: now },
+        { type: "redacted", at: "2026-09-29T10:01:00+00:00" },
+      ],
+      reviews: [],
+      notifications: [],
+      autofix: [],
+    });
+    expect(view?.triage).toMatchObject({
+      assignmentGroup: "Network",
+      flags: [],
+      groundingScore: 0.8,
+    });
+    const text = JSON.stringify(view);
+    for (const marker of [...Object.values(RAW), "x".repeat(20)])
+      expect(text).not.toContain(marker);
+    for (const event of view?.events ?? [])
+      expect(Object.keys(event).sort()).toEqual(["at", "type"]);
+  });
+
+  it("returns null redaction and triage, zero calls and no events for a bare ticket", async () => {
+    database({
+      ...full(),
+      ticket_redactions: ok(null, 200),
+      triage_results: ok(null, 200),
+      ai_calls: new Response(null, { status: 200, headers: { "content-range": "*/0" } }),
+      ticket_events: ok([]),
+    });
+    expect(await repos.getTicketView(ticketId)).toMatchObject({
+      redacted: null,
+      triage: null,
+      aiCallCount: 0,
+      events: [],
+    });
+  });
+
+  it("returns null for an unknown ticket and reads nothing else", async () => {
+    const calls = database({ tickets: ok(null, 200) });
+    expect(await repos.getTicketView(ticketId)).toBeNull();
+    expect(calls.length).toBe(1);
+  });
+
+  it("asks for events oldest first", async () => {
+    const calls = database(full());
+    await repos.getTicketView(ticketId);
+    const events = calls.find((c) => c.url.pathname.endsWith("/ticket_events"));
+    expect(events?.url.searchParams.get("order")).toBe("at.asc,id.asc");
+  });
+
+  it("throws DbError without row values when a query fails", async () => {
+    database({ ...full(), triage_results: pgError("42P01", 404) });
+    await expectDbError(repos.getTicketView(ticketId), "getTicketView");
+  });
+
+  it("throws DbError when the ai_calls count fails", async () => {
+    database({ ...full(), ai_calls: pgError("42501", 403) });
+    await expectDbError(repos.getTicketView(ticketId), "getTicketView");
+  });
+});
+
+describe("getAiUsage", () => {
+  it("calls the RPC with the month start and maps both providers", async () => {
+    const calls = respond(
+      ok([
+        { provider: "llm", calls: 12, tokens_in: 1200, tokens_out: 600, cost_usd: null },
+        { provider: "typesafe", calls: "340", tokens_in: null, tokens_out: 5, cost_usd: 1.5 },
+      ]),
+    );
+    expect(await repos.getAiUsage("2026-10-01")).toEqual({
+      llm: { calls: 12, tokensIn: 1200, tokensOut: 600, costUsd: null },
+      typesafe: { calls: 340, tokensIn: 0, tokensOut: 5, costUsd: 1.5 },
+    });
+    expect(calls[0]?.url.pathname.endsWith("/rpc/ai_usage_month")).toBe(true);
+    expect(calls[0]?.body).toEqual({ p_month_start: "2026-10-01" });
+  });
+
+  it("returns zeros and a null cost for a month without rows", async () => {
+    respond(ok([]));
+    const zero = { calls: 0, tokensIn: 0, tokensOut: 0, costUsd: null };
+    expect(await repos.getAiUsage("2026-10-01")).toEqual({ llm: zero, typesafe: zero });
+  });
+
+  it("throws DbError on a Supabase error and on a malformed month, without a request", async () => {
+    respond(pgError("42883", 404));
+    await expectDbError(repos.getAiUsage("2026-10-01"), "getAiUsage");
+    const calls = respond();
+    await expectDbError(repos.getAiUsage("2026-10"), "getAiUsage");
+    expect(calls.length).toBe(0);
+  });
+});
+
+describe("listSecurityEvents", () => {
+  const row = (id: number) => ({
+    source: "internal_api",
+    kind: "bad_token",
+    window_start: `2026-10-0${id}T10:00:00+00:00`,
+    count: id,
+    sample: { path: "m".repeat(20) },
+  });
+  const since = new Date("2026-10-01T00:00:00.000Z");
+
+  it("selects named columns, filters, orders newest first and maps the rows", async () => {
+    const calls = respond(ok([row(3), row(2)]));
+    const events = await repos.listSecurityEvents(since, 50);
+    const params = calls[0]?.url.searchParams;
+    expect(params?.get("select")).toBe("source,kind,window_start,count");
+    expect(params?.get("window_start")).toBe("gte.2026-10-01T00:00:00.000Z");
+    expect(params?.get("order")).toBe("window_start.desc,id.desc");
+    expect(params?.get("limit")).toBe("50");
+    expect(events).toEqual([
+      {
+        source: "internal_api",
+        kind: "bad_token",
+        windowStart: "2026-10-03T10:00:00.000Z",
+        count: 3,
+      },
+      {
+        source: "internal_api",
+        kind: "bad_token",
+        windowStart: "2026-10-02T10:00:00.000Z",
+        count: 2,
+      },
+    ]);
+    expect(JSON.stringify(events)).not.toContain("m".repeat(20));
+  });
+
+  it.each([
+    [0, "1"],
+    [-5, "1"],
+    [600, "500"],
+    [7.9, "7"],
+    [Number.NaN, "500"],
+    [Infinity, "500"],
+  ])("clamps limit %s to %s", async (limit, expected) => {
+    const calls = respond(ok([]));
+    await repos.listSecurityEvents(since, limit);
+    expect(calls[0]?.url.searchParams.get("limit")).toBe(expected);
+  });
+
+  it("defaults the limit to 500 and throws DbError on a Supabase error", async () => {
+    const calls = respond(ok([]));
+    await repos.listSecurityEvents(since);
+    expect(calls[0]?.url.searchParams.get("limit")).toBe("500");
+    respond(pgError("42P01", 404));
+    await expectDbError(repos.listSecurityEvents(since), "listSecurityEvents");
+  });
+});
