@@ -56,3 +56,13 @@ export {
   type LangfuseEnv,
   type LangfuseSinkOptions,
 } from "./langfuse-sink.js";
+export {
+  TriageParseError,
+  createTriageJudge,
+  parseTriageResponse,
+  type ChoiceJudgment,
+  type TriageJudgeDeps,
+  type TriageJudgeInput,
+  type TriageJudgments,
+} from "./judgments.js";
+export { TYPESAFE_MODEL } from "./typesafe-model.js";
