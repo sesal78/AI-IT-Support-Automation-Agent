@@ -150,6 +150,10 @@ importers:
       zod:
         specifier: ^4.6.5
         version: 4.6.5
+    devDependencies:
+      msw:
+        specifier: 2.15.0
+        version: 2.15.0(@types/node@24.19.0)(typescript@6.0.3)
 
   packages/db:
     dependencies:
