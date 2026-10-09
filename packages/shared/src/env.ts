@@ -52,7 +52,14 @@ export const sensitiveCheckEnvShape = {
   SENSITIVE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
 };
 
-const unitThreshold = (fallback: number) => z.coerce.number().min(0).max(1).default(fallback);
+// A plain decimal from 0 to 1. z.coerce.number() would turn " " into 0 and accept
+// "0x1", "0b1" and "1e-1"; a policy threshold must fail closed instead.
+const unitThreshold = (fallback: number) =>
+  z
+    .string()
+    .regex(/^(?:0(?:\.\d+)?|1(?:\.0+)?)$/, "must be a decimal number from 0 to 1")
+    .transform(Number)
+    .default(fallback);
 
 /**
  * Policy engine thresholds (services/pipeline). Each is a number from 0 to 1.

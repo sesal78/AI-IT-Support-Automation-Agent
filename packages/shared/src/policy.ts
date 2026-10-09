@@ -87,11 +87,24 @@ function rejectUnknownKeys(record: Record<string, unknown>, known: readonly stri
   }
 }
 
+// Reads one own property, once. An inherited value (a polluted Object.prototype)
+// counts as missing.
+function ownValue(record: Record<string, unknown>, field: string): unknown {
+  if (!Object.hasOwn(record, field)) throw new PolicyInputError(field, "is missing");
+  return record[field];
+}
+
 function unitNumber(record: Record<string, unknown>, field: string): number {
-  const value = record[field];
+  const value = ownValue(record, field);
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
     throw new PolicyInputError(field, "must be a number from 0 to 1");
   }
+  return value;
+}
+
+function boolean(record: Record<string, unknown>, field: string): boolean {
+  const value = ownValue(record, field);
+  if (typeof value !== "boolean") throw new PolicyInputError(field, "must be a boolean");
   return value;
 }
 
@@ -106,20 +119,23 @@ export function decideRoute(input: PolicyInput, thresholds: PolicyThresholds): P
 
   const i = asRecord(input, "input");
   rejectUnknownKeys(i, INPUT_FIELDS);
-  for (const field of BOOLEAN_FIELDS) {
-    if (typeof i[field] !== "boolean") throw new PolicyInputError(field, "must be a boolean");
-  }
+  // Every value is read exactly once into a local; the rules below use only the copies.
+  const sensitive = boolean(i, "sensitive");
+  const ungroundedFix = boolean(i, "ungroundedFix");
+  const capReached = boolean(i, "capReached");
+  const llmUnavailable = boolean(i, "llmUnavailable");
   const categoryProbability = unitNumber(i, "categoryProbability");
   const injection = unitNumber(i, "injection");
   const needsInfo = unitNumber(i, "needsInfo");
   const outageOrDuplicate = unitNumber(i, "outageOrDuplicate");
-  if (!(PRIORITIES as readonly unknown[]).includes(i["priority"])) {
+  const priority = ownValue(i, "priority");
+  if (!(PRIORITIES as readonly unknown[]).includes(priority)) {
     throw new PolicyInputError("priority", `must be one of ${PRIORITIES.join(", ")}`);
   }
 
   const reasons: PolicyReason[] = [];
   const flags: TriageFlag[] = [];
-  if (i["sensitive"] === true) reasons.push("sensitive");
+  if (sensitive) reasons.push("sensitive");
   if (injection >= injectionAt) {
     reasons.push("injection_suspected");
     flags.push("injection_suspected");
@@ -129,17 +145,17 @@ export function decideRoute(input: PolicyInput, thresholds: PolicyThresholds): P
     flags.push("needs_info");
   }
   if (categoryProbability < confidenceMin) reasons.push("low_confidence");
-  if (i["priority"] === "P1") reasons.push("p1");
+  if (priority === "P1") reasons.push("p1");
   if (outageOrDuplicate >= outageAt) {
     reasons.push("outage_or_duplicate");
     flags.push("outage_or_duplicate");
   }
-  if (i["ungroundedFix"] === true) {
+  if (ungroundedFix) {
     reasons.push("ungrounded_fix");
     flags.push("ungrounded_fix");
   }
-  if (i["capReached"] === true) reasons.push("cap_reached");
-  if (i["llmUnavailable"] === true) reasons.push("llm_unavailable");
+  if (capReached) reasons.push("cap_reached");
+  if (llmUnavailable) reasons.push("llm_unavailable");
 
   return { route: reasons.length > 0 ? "review" : "auto", reasons, flags };
 }

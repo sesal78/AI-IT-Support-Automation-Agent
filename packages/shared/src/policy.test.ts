@@ -254,6 +254,97 @@ describe("decideRoute input validation", () => {
   });
 });
 
+describe("decideRoute hostile objects", () => {
+  const unitFields = ["categoryProbability", "injection", "needsInfo", "outageOrDuplicate"];
+
+  it("does not take a missing field or threshold from a polluted prototype", () => {
+    const proto = Object.prototype as Record<string, unknown>;
+    const names = [...Object.keys(clean), ...Object.keys(thresholds)];
+    try {
+      for (const name of names) proto[name] = 0;
+      proto["sensitive"] = false;
+      proto["ungroundedFix"] = false;
+      proto["capReached"] = false;
+      proto["llmUnavailable"] = false;
+      proto["priority"] = "P3";
+      for (const key of Object.keys(clean)) {
+        const rest: Record<string, unknown> = { ...clean };
+        delete rest[key];
+        expect(() => decideRoute(rest as unknown as PolicyInput, thresholds), key).toThrow(
+          new RegExp(key),
+        );
+      }
+      for (const key of Object.keys(thresholds)) {
+        const rest: Record<string, unknown> = { ...thresholds };
+        delete rest[key];
+        expect(() => decideRoute(clean, rest as unknown as PolicyThresholds), key).toThrow(
+          new RegExp(key),
+        );
+      }
+    } finally {
+      for (const name of names) delete proto[name];
+    }
+  });
+
+  it("reads each value once, so a getter that flips cannot slip past validation", () => {
+    for (const key of ["sensitive", "ungroundedFix", "capReached", "llmUnavailable"]) {
+      let reads = 0;
+      const input = { ...clean };
+      Object.defineProperty(input, key, { enumerable: true, get: () => reads++ === 0 });
+      expect(decideRoute(input, thresholds).route, key).toBe("review");
+      expect(reads, key).toBe(1);
+    }
+    for (const key of Object.keys(thresholds)) {
+      let reads = 0;
+      const flipping = { ...thresholds };
+      Object.defineProperty(flipping, key, {
+        enumerable: true,
+        get: () => (reads++ === 0 ? 0.5 : 2),
+      });
+      expect(() => decideRoute(clean, flipping), key).not.toThrow();
+      expect(reads, key).toBe(1);
+    }
+    for (const key of unitFields) {
+      let reads = 0;
+      const input = { ...clean };
+      Object.defineProperty(input, key, {
+        enumerable: true,
+        get: () => (reads++ === 0 ? 0.5 : 2),
+      });
+      expect(() => decideRoute(input, thresholds), key).not.toThrow();
+      expect(reads, key).toBe(1);
+    }
+    let reads = 0;
+    const input = { ...clean };
+    Object.defineProperty(input, "priority", {
+      enumerable: true,
+      get: () => (reads++ === 0 ? "P1" : "P3"),
+    });
+    expect(decideRoute(input, thresholds).reasons).toEqual(["p1"]);
+    expect(reads).toBe(1);
+  });
+});
+
+describe("policyEnvShape spellings", () => {
+  it.each(Object.keys(thresholds))("rejects odd number spellings for %s, naming it", (key) => {
+    for (const bad of [" ", "\t", "0x1", "0b1", "1e-1", "-0", ".5", "1.5", " 0.5", "0.5 "]) {
+      expect(() => parseEnv(policyEnvShape, { [key]: bad }), JSON.stringify(bad)).toThrow(
+        new RegExp(key),
+      );
+    }
+  });
+
+  it.each(Object.keys(thresholds))("takes plain decimals and the default for %s", (key) => {
+    const name = key as keyof PolicyThresholds;
+    expect(parseEnv(policyEnvShape, {})[name]).toBe(thresholds[name]);
+    expect(parseEnv(policyEnvShape, { [key]: "" })[name]).toBe(thresholds[name]);
+    expect(parseEnv(policyEnvShape, { [key]: "0" })[name]).toBe(0);
+    expect(parseEnv(policyEnvShape, { [key]: "0.25" })[name]).toBe(0.25);
+    expect(parseEnv(policyEnvShape, { [key]: "1" })[name]).toBe(1);
+    expect(parseEnv(policyEnvShape, { [key]: "1.0" })[name]).toBe(1);
+  });
+});
+
 describe("policyEnvShape", () => {
   it("gives the four defaults", () => {
     expect(parseEnv(policyEnvShape, {})).toEqual(thresholds);
