@@ -1,4 +1,4 @@
-import type { AiUsage, InternalTicketView } from "@ai-it-support/shared";
+import { type AiUsage, type InternalTicketView, type KbArticle } from "@ai-it-support/shared";
 import { z } from "zod";
 import type { DbClient } from "./client.js";
 import { DbError } from "./errors.js";
@@ -55,6 +55,17 @@ export const kbSearchResultSchema = z.object({
   rank: z.number(),
 });
 
+// Stored rows are not held to the seed-quality bounds of kbArticleSchema: the
+// database has no length limits, so a short or long row must still be readable.
+export const kbArticleRowSchema = z.object({
+  id: z.uuid(),
+  slug: z.string(),
+  title: z.string(),
+  content: z.string(),
+  category: z.string(),
+  assignment_group: z.string(),
+});
+
 export const aiReservationSchema = z.object({
   allowed: z.boolean(),
   used_calls: z.number().int(),
@@ -67,6 +78,7 @@ export type Redaction = z.infer<typeof redactionSchema>;
 export type Triage = z.infer<typeof triageSchema>;
 
 export type KbSearchResult = z.infer<typeof kbSearchResultSchema>;
+export type KbArticleRow = z.infer<typeof kbArticleRowSchema>;
 
 export type NewTicket = Pick<
   Ticket,
@@ -85,6 +97,7 @@ const VIEW_TRIAGE_COLUMNS =
   "flags,probabilities,grounding_score,kb_article_ids,suggested_fix,model_versions,triaged_at";
 const VIEW_EVENT_COLUMNS = "type,at";
 const VIEW_EVENT_LIMIT = 500;
+const KB_ARTICLE_COLUMNS = "id,slug,title,content,category,assignment_group";
 const SECURITY_EVENT_COLUMNS = "source,kind,window_start,count";
 const MAX_SECURITY_EVENTS = 500;
 
@@ -506,6 +519,46 @@ export function createRepositories(client: DbClient) {
         p_limit: Math.min(Math.max(limit, KB_SEARCH_MIN_LIMIT), KB_SEARCH_MAX_LIMIT),
       });
       return parseRow("searchKb", z.array(kbSearchResultSchema), result);
+    },
+
+    /**
+     * All knowledge base articles, ordered by slug. PostgREST caps one response
+     * at its max-rows setting (1000 on Supabase); the kb-ingest task accepts
+     * at most 200 articles per run, so an article beyond the cap is only
+     * written again, never lost.
+     */
+    async listKbArticles(): Promise<KbArticleRow[]> {
+      const result = await client
+        .from("kb_articles")
+        .select(KB_ARTICLE_COLUMNS)
+        .order("slug", { ascending: true });
+      return parseRow("listKbArticles", z.array(kbArticleRowSchema), result);
+    },
+
+    /**
+     * Inserts or updates articles by slug in ONE PostgREST request, so the
+     * write is all-or-nothing. Only the five article columns are sent; the id
+     * of an existing row is kept. Returns the number of rows written. Never
+     * deletes. Slugs must be unique within `articles`.
+     */
+    async upsertKbArticles(articles: readonly KbArticle[]): Promise<number> {
+      const op = "upsertKbArticles";
+      if (articles.length === 0) return 0;
+      const rows = articles.map((a) => ({
+        slug: a.slug,
+        title: a.title,
+        content: a.content,
+        category: a.category,
+        assignment_group: a.assignment_group,
+      }));
+      const result = await client
+        .from("kb_articles")
+        .upsert(rows, { onConflict: "slug" })
+        .select("slug");
+      const written = parseRow(op, z.array(z.object({ slug: z.string() })), result);
+      if (written.length !== rows.length)
+        throw new DbError(op, "unexpected response shape at (rows)");
+      return written.length;
     },
   };
 }

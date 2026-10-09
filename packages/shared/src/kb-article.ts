@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { ASSIGNMENT_GROUPS, CATEGORIES } from "./triage.js";
 
+/** Trigger.dev id of the kb-ingest task (services/pipeline). Triggered by string id. */
+export const KB_INGEST_TASK_ID = "kb-ingest";
+
 export const KB_ARTICLE_CONTENT_MIN = 300;
 export const KB_ARTICLE_CONTENT_MAX = 3000;
 

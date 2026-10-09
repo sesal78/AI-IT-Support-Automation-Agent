@@ -4,6 +4,7 @@ export { DbError } from "./errors.js";
 export {
   aiReservationSchema,
   createRepositories,
+  kbArticleRowSchema,
   kbSearchResultSchema,
   redactionSchema,
   ticketEventSchema,
@@ -13,6 +14,7 @@ export {
   type AiReservation,
   type AiReservationInput,
   type AiTokenUsage,
+  type KbArticleRow,
   type KbSearchResult,
   type AiUsageMonth,
   type NewRedaction,
