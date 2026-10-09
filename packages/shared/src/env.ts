@@ -52,6 +52,20 @@ export const sensitiveCheckEnvShape = {
   SENSITIVE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
 };
 
+const unitThreshold = (fallback: number) => z.coerce.number().min(0).max(1).default(fallback);
+
+/**
+ * Policy engine thresholds (services/pipeline). Each is a number from 0 to 1.
+ * Injection, needs-info and outage rules fire at or above their threshold;
+ * low confidence fires below TRIAGE_CONFIDENCE_MIN. Phase 3 evals tune these.
+ */
+export const policyEnvShape = {
+  TRIAGE_CONFIDENCE_MIN: unitThreshold(0.7),
+  INJECTION_THRESHOLD: unitThreshold(0.5),
+  NEEDS_INFO_THRESHOLD: unitThreshold(0.5),
+  OUTAGE_THRESHOLD: unitThreshold(0.5),
+};
+
 /**
  * A monthly AI call cap: plain decimal digits only, 0 to 1,000,000,000. A
  * typo such as `abc`, `-1`, `1e3`, `1.5` or ` 5` fails at boot rather than

@@ -6,5 +6,6 @@
     "mutation": 80,
     "tests": ["apps/web/src/app/api/tickets/route.test.ts"]
   },
-  { "path": "apps/web/src/lib/internal/auth.ts", "statements": 90, "mutation": 80 }
+  { "path": "apps/web/src/lib/internal/auth.ts", "statements": 90, "mutation": 80 },
+  { "path": "packages/shared/src/policy.ts", "statements": 90, "mutation": 80 }
 ]

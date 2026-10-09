@@ -10,6 +10,7 @@ import {
   langfuseEnvShape,
   parseEnv,
   phase1EnvShape,
+  policyEnvShape,
   sensitiveCheckEnvShape,
   triggerProjectEnvShape,
 } from "../src/env.js";
@@ -24,6 +25,7 @@ const allEnvShapes = {
   ...sensitiveCheckEnvShape,
   ...triggerProjectEnvShape,
   ...langfuseEnvShape,
+  ...policyEnvShape,
 };
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
