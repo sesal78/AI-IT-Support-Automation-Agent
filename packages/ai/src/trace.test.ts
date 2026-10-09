@@ -163,11 +163,13 @@ describe("createAiRuntime.call", () => {
     const inputs = [1, 2, 3, 4, 5].map((n) => ({ n }));
     await Promise.all(
       inputs.map((input, i) =>
-        runtime.call({ ...meta, input } as never, async () => {
-          await new Promise((r) => setTimeout(r, 5 - i));
-          if (i === 2) throw new Error("x");
-          return usage;
-        }).catch(() => undefined),
+        runtime
+          .call({ ...meta, input } as never, async () => {
+            await new Promise((r) => setTimeout(r, 5 - i));
+            if (i === 2) throw new Error("x");
+            return usage;
+          })
+          .catch(() => undefined),
       ),
     );
     expect(spans).toHaveLength(5);
