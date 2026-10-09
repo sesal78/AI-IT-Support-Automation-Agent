@@ -1,7 +1,15 @@
-import { type AiUsage, type InternalTicketView, type KbArticle } from "@ai-it-support/shared";
+import {
+  assertTransition,
+  triageResultSchema,
+  type AiUsage,
+  type InternalTicketView,
+  type KbArticle,
+  type TicketStatus,
+  type TriageResult,
+} from "@ai-it-support/shared";
 import { z } from "zod";
 import type { DbClient } from "./client.js";
-import { DbError } from "./errors.js";
+import { DbError, StatusConflictError } from "./errors.js";
 
 const timestamp = z.iso.datetime({ offset: true });
 
@@ -43,6 +51,29 @@ export const triageSchema = z.object({
   sensitive_flags: z.array(z.string()),
   checker: z.string(),
   created_at: timestamp,
+  // Phase-3 triage columns (migration 0003): all null on a phase-2 row.
+  category: z.string().nullable(),
+  subcategory: z.string().nullable(),
+  priority: z.string().nullable(),
+  urgency: z.string().nullable(),
+  assignment_group: z.string().nullable(),
+  route: z.string().nullable(),
+  probabilities: z.record(z.string(), z.number()).nullable(),
+  flags: z.array(z.string()).nullable(),
+  grounding_score: z.number().nullable(),
+  kb_article_ids: z.array(z.string()).nullable(),
+  suggested_fix: z.record(z.string(), z.json()).nullable(),
+  model_versions: z.record(z.string(), z.string()).nullable(),
+  triaged_at: timestamp.nullable(),
+});
+
+// The sensitive-check columns that saveTriage writes and returns (phase 2).
+const sensitiveCheckSchema = triageSchema.pick({
+  ticket_id: true,
+  sensitive: true,
+  sensitive_flags: true,
+  checker: true,
+  created_at: true,
 });
 
 export const kbSearchResultSchema = z.object({
@@ -86,7 +117,8 @@ export type NewTicket = Pick<
 > &
   Partial<Pick<Ticket, "requester_name" | "department" | "is_test">>;
 export type NewRedaction = Omit<Redaction, "created_at">;
-export type NewTriage = Omit<Triage, "created_at">;
+export type NewTriage = Pick<Triage, "ticket_id" | "sensitive" | "sensitive_flags" | "checker">;
+export type SensitiveCheck = z.infer<typeof sensitiveCheckSchema>;
 
 // Named columns for the internal ticket view. The raw title, raw description,
 // requester name, requester email and department are never in these lists.
@@ -336,13 +368,115 @@ export function createRepositories(client: DbClient) {
     },
 
     /** Saves the triage result; upserts by ticket_id (one row per ticket). */
-    async saveTriage(input: NewTriage): Promise<Triage> {
+    async saveTriage(input: NewTriage): Promise<SensitiveCheck> {
       const result = await client
         .from("triage_results")
         .upsert(input, { onConflict: "ticket_id" })
         .select()
         .single();
-      return parseRow("saveTriage", triageSchema, result);
+      return parseRow("saveTriage", sensitiveCheckSchema, result);
+    },
+
+    /**
+     * Moves a ticket to `to` with a compare-and-set: one UPDATE that matches
+     * the id AND the status read just before it. Returns `changed: false`
+     * without an update when the ticket is already in `to`, so a retried task
+     * attempt does not fail. An illegal move throws IllegalTransitionError and
+     * an unknown ticket throws DbError. When the status changed between the
+     * read and the write, the ticket is read again: if it now holds `to` (a
+     * parallel caller made the same move) the result is `changed: false`,
+     * otherwise StatusConflictError.
+     */
+    async setTicketStatus(id: string, to: TicketStatus): Promise<{ changed: boolean }> {
+      const op = "setTicketStatus";
+      const readStatus = async (): Promise<string> => {
+        const result = await client.from("tickets").select("status").eq("id", id).maybeSingle();
+        const row = parseRow(op, z.object({ status: z.string() }).nullable(), result);
+        if (!row) throw new DbError(op, "no ticket with this id");
+        return row.status;
+      };
+
+      const current = await readStatus();
+      if (current === to) return { changed: false };
+      assertTransition(current as TicketStatus, to);
+
+      const result = await client
+        .from("tickets")
+        .update({ status: to })
+        .eq("id", id)
+        .eq("status", current)
+        .select("id");
+      const rows = parseRow(op, z.array(z.object({ id: z.uuid() })), result);
+      if (rows.length === 1) return { changed: true };
+      if (rows.length > 1) throw new DbError(op, "unexpected response shape at (rows)");
+
+      if ((await readStatus()) === to) return { changed: false };
+      throw new StatusConflictError(op);
+    },
+
+    /**
+     * Writes the phase-3 triage columns onto the ticket's existing
+     * triage_results row and sets triaged_at. The result is validated with
+     * triageResultSchema before any database call (TypeError naming field
+     * paths only). sensitive, sensitive_flags and checker are never sent.
+     * No triage row for the ticket throws DbError.
+     */
+    async saveTriageResult(ticketId: string, result: TriageResult): Promise<Triage> {
+      const op = "saveTriageResult";
+      const parsed = triageResultSchema.safeParse(result);
+      if (!parsed.success) {
+        // Paths only: issue messages can quote the offending values.
+        const paths = parsed.error.issues.map((issue) => issue.path.join(".") || "(root)");
+        throw new TypeError(`${op}: invalid triage result at ${paths.join(", ")}`);
+      }
+      const r = parsed.data;
+      // Field by field, never a spread, so no other column can be written.
+      const columns = {
+        category: r.category,
+        subcategory: r.subcategory,
+        priority: r.priority,
+        urgency: r.urgency,
+        assignment_group: r.assignmentGroup,
+        route: r.route,
+        probabilities: r.probabilities,
+        flags: r.flags,
+        grounding_score: r.groundingScore,
+        kb_article_ids: r.kbArticleIds,
+        suggested_fix: r.suggestedFix,
+        model_versions: r.modelVersions,
+        triaged_at: new Date().toISOString(),
+      };
+      const updated = await client
+        .from("triage_results")
+        .update(columns)
+        .eq("ticket_id", ticketId)
+        .select();
+      const rows = parseRow(op, z.array(triageSchema), updated);
+      const [saved] = rows;
+      if (rows.length !== 1 || !saved) {
+        throw new DbError(op, "no triage_results row for this ticket");
+      }
+      return saved;
+    },
+
+    /** Returns the ticket's redaction, or null when it has none. */
+    async getRedaction(ticketId: string): Promise<Redaction | null> {
+      const result = await client
+        .from("ticket_redactions")
+        .select()
+        .eq("ticket_id", ticketId)
+        .maybeSingle();
+      return parseRow("getRedaction", redactionSchema.nullable(), result);
+    },
+
+    /** Returns the ticket's triage row, or null when it has none. */
+    async getTriage(ticketId: string): Promise<Triage | null> {
+      const result = await client
+        .from("triage_results")
+        .select()
+        .eq("ticket_id", ticketId)
+        .maybeSingle();
+      return parseRow("getTriage", triageSchema.nullable(), result);
     },
 
     /**

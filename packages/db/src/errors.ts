@@ -15,3 +15,14 @@ export class DbError extends Error {
     this.code = code;
   }
 }
+
+/**
+ * Thrown by setTicketStatus when the ticket's status changed between the read
+ * and the conditional update, and the new status is not the target status.
+ */
+export class StatusConflictError extends DbError {
+  constructor(operation: string) {
+    super(operation, "status changed concurrently");
+    this.name = "StatusConflictError";
+  }
+}
