@@ -1,4 +1,3 @@
-import type pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildCanaries, canaryTicketText } from "../../../packages/shared/src/canaries.js";
 import { clientFor } from "../../../packages/db/integration/pg-container.js";
@@ -25,8 +24,8 @@ const MARKER_EMAIL = "marker.zq7731@example.test";
 const MARKER_TITLE = "Marker-Title-Zq7731";
 
 let full: RestStack | undefined;
-let db: pg.Client | undefined;
-const sql = (): pg.Client => {
+let db: ReturnType<typeof clientFor> | undefined;
+const sql = (): NonNullable<typeof db> => {
   if (!db) throw new Error("database client not connected");
   return db;
 };
