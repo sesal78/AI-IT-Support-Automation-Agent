@@ -19,6 +19,7 @@ export {
   internalEnvShape,
   parseEnv,
   phase1EnvShape,
+  policyEnvShape,
   sensitiveCheckEnvShape,
   triggerProjectEnvShape,
   type EnvIssue,
@@ -39,6 +40,13 @@ export {
   type InternalSecurityEvents,
   type InternalUsage,
 } from "./internal-usage.js";
+export {
+  decideRoute,
+  PolicyInputError,
+  type PolicyDecision,
+  type PolicyInput,
+  type PolicyThresholds,
+} from "./policy.js";
 export { redact, type RedactionResult, type RedactionType } from "./redact.js";
 export {
   assertTransition,
@@ -64,6 +72,7 @@ export {
   CATEGORIES,
   DEFAULT_GROUP_FOR_CATEGORY,
   MAX_KB_ARTICLES,
+  POLICY_REASONS,
   PRIORITIES,
   ROUTES,
   SECURITY_INCIDENT_GROUP,
@@ -72,6 +81,7 @@ export {
   URGENCIES,
   type AssignmentGroup,
   type Category,
+  type PolicyReason,
   type Priority,
   type Route,
   type TriageFlag,

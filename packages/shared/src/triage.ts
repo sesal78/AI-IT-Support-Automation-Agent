@@ -19,6 +19,19 @@ export const TRIAGE_FLAGS = [
   "outage_or_duplicate",
 ] as const;
 
+/** Every reason the policy engine can give for sending a ticket to review (plan §3, P3-T9). */
+export const POLICY_REASONS = [
+  "sensitive",
+  "injection_suspected",
+  "needs_info",
+  "low_confidence",
+  "p1",
+  "outage_or_duplicate",
+  "ungrounded_fix",
+  "cap_reached",
+  "llm_unavailable",
+] as const;
+
 /** Exact `sys_user_group.name` values read from dev420188 on 2026-10-04. */
 export const ASSIGNMENT_GROUPS = [
   "Service Desk",
@@ -33,6 +46,7 @@ export type Category = (typeof CATEGORIES)[number];
 export type Priority = (typeof PRIORITIES)[number];
 export type Urgency = (typeof URGENCIES)[number];
 export type Route = (typeof ROUTES)[number];
+export type PolicyReason = (typeof POLICY_REASONS)[number];
 export type TriageFlag = (typeof TRIAGE_FLAGS)[number];
 export type AssignmentGroup = (typeof ASSIGNMENT_GROUPS)[number];
 
