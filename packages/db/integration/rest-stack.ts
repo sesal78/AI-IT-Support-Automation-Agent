@@ -20,7 +20,7 @@ import {
 export const POSTGREST_IMAGE = "postgrest/postgrest:v16.4";
 
 const SCHEMA = "itsupport";
-const MIGRATIONS = [
+export const MIGRATIONS = [
   "0001_itsupport_foundation.sql",
   "0002_itsupport_intake.sql",
   "0003_itsupport_triage_kb.sql",
@@ -110,8 +110,14 @@ async function waitForRest(url: string, key: string, timeoutMs: number): Promise
   throw new Error(`PostgREST not ready after ${timeoutMs} ms: ${last}`);
 }
 
-/** Starts Postgres 17 with migrations 0001 to 0003 applied, then PostgREST exposing `itsupport`. */
-export async function startRestStack(timeoutMs = 180_000): Promise<RestStack> {
+/**
+ * Starts Postgres 17 with migrations 0001 to 0003 applied, then PostgREST exposing `itsupport`.
+ * `migrations` (file names in order) lets a test start an older shape, e.g. 0001 and 0002 only.
+ */
+export async function startRestStack(
+  timeoutMs = 180_000,
+  migrations: readonly string[] = MIGRATIONS,
+): Promise<RestStack> {
   const suffix = randomBytes(4).toString("hex");
   const network = `${CONTAINER_PREFIX}net-${suffix}`;
   const restContainer = `${CONTAINER_PREFIX}rest-${suffix}`;
@@ -129,7 +135,7 @@ export async function startRestStack(timeoutMs = 180_000): Promise<RestStack> {
     docker(["network", "create", "--label", LABEL, network]);
     stack.pg = await startPgContainer(timeoutMs, network);
 
-    for (const file of MIGRATIONS) {
+    for (const file of migrations) {
       const run = runSql(stack.pg, readFileSync(resolve(migrationsDir, file), "utf8"));
       if (run.status !== 0) throw new Error(`${file} failed:\n${run.stderr}`);
     }
