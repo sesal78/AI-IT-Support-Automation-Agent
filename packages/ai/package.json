@@ -18,6 +18,7 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
+    "@ai-it-support/shared": "workspace:*",
     "@typesafe-ai/sdk": "0.6.0",
     "zod": "^4.6.5"
   },

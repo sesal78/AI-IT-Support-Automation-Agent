@@ -144,6 +144,9 @@ importers:
 
   packages/ai:
     dependencies:
+      '@ai-it-support/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@typesafe-ai/sdk':
         specifier: 0.6.0
         version: 0.6.0
