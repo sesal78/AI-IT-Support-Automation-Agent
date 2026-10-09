@@ -520,6 +520,75 @@ describe("searchKb", () => {
   });
 });
 
+describe("listKbArticles and upsertKbArticles", () => {
+  const article = {
+    slug: "vpn-reset",
+    title: "Reset the VPN client",
+    content: "Steps to reset the VPN client.",
+    category: "network" as const,
+    assignment_group: "Network" as const,
+  };
+  const row = { id: randomUUID(), ...article };
+
+  it("lists the articles ordered by slug, with named columns", async () => {
+    const calls = respond(ok([row]));
+    expect(await repos.listKbArticles()).toEqual([row]);
+    expect(calls[0]?.method).toBe("GET");
+    expect(calls[0]?.url.pathname).toBe("/rest/v1/kb_articles");
+    expect(calls[0]?.url.searchParams.get("select")).toBe(
+      "id,slug,title,content,category,assignment_group",
+    );
+    expect(calls[0]?.url.searchParams.get("order")).toBe("slug.asc");
+  });
+
+  it("reads a stored row outside the seed length bounds", async () => {
+    const short = { ...row, title: "x", content: "y" };
+    respond(ok([short]));
+    expect(await repos.listKbArticles()).toEqual([short]);
+  });
+
+  it("throws DbError on a read error, without row text", async () => {
+    respond(pgError("XX000", 500));
+    const error = await expectDbError(repos.listKbArticles(), "listKbArticles");
+    expect(error.code).toBe("XX000");
+  });
+
+  it("upserts by slug in one request and returns the count", async () => {
+    const calls = respond(ok([{ slug: article.slug }]));
+    expect(await repos.upsertKbArticles([article])).toBe(1);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[0]?.url.searchParams.get("on_conflict")).toBe("slug");
+    expect(calls[0]?.headers.get("prefer")).toContain("resolution=merge-duplicates");
+    expect(calls[0]?.body).toEqual([article]);
+  });
+
+  it("sends only the five article columns", async () => {
+    const calls = respond(ok([{ slug: article.slug }]));
+    await repos.upsertKbArticles([{ ...article, id: randomUUID() } as never]);
+    expect(calls[0]?.body).toEqual([article]);
+  });
+
+  it("makes no request for an empty list", async () => {
+    const calls = respond();
+    expect(await repos.upsertKbArticles([])).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("throws DbError on a write error, without row text", async () => {
+    respond(pgError("23514", 400));
+    const error = await expectDbError(repos.upsertKbArticles([article]), "upsertKbArticles");
+    expect(error.code).toBe("23514");
+    expect(error.message).not.toContain(RAW_DESCRIPTION);
+  });
+
+  it("throws DbError when fewer rows come back than were sent", async () => {
+    respond(ok([]));
+    const error = await expectDbError(repos.upsertKbArticles([article]), "upsertKbArticles");
+    expect(error.message).toContain("unexpected response shape");
+  });
+});
+
 describe("getTicketView", () => {
   const RAW = {
     raw_title: "t".repeat(20),

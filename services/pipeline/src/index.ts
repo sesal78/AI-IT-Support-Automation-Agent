@@ -10,3 +10,4 @@ export {
   type IntakeTicketPayload,
   type IntakeTicketResult,
 } from "./trigger/intake-ticket.js";
+export { kbIngest, type KbIngestPayload, type KbIngestResult } from "./trigger/kb-ingest.js";

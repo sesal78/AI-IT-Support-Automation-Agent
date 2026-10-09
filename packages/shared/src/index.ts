@@ -80,6 +80,7 @@ export {
 export {
   KB_ARTICLE_CONTENT_MAX,
   KB_ARTICLE_CONTENT_MIN,
+  KB_INGEST_TASK_ID,
   kbArticleSchema,
   type KbArticle,
 } from "./kb-article.js";
