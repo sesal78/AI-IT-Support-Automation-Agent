@@ -17,8 +17,17 @@ export interface LangfuseSinkOptions {
 
 export const LANGFUSE_TIMEOUT_MS = 4000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
-// Langfuse public ingestion API (batch of events, Basic auth public:secret).
-const INGESTION_PATH = "/api/public/ingestion";
+// Langfuse OTLP/HTTP trace endpoint (JSON encoding, Basic auth public:secret).
+// It replaces `/api/public/ingestion`, which Langfuse Cloud stops accepting for
+// traces on 2026-11-16. Docs: https://langfuse.com/integrations/native/opentelemetry
+const OTLP_TRACES_PATH = "/api/public/otel/v1/traces";
+// Selects Langfuse's v4 ingestion path, so spans show in real time.
+const INGESTION_VERSION = "4";
+const SCOPE_NAME = "ai-it-support-agent";
+// OTLP enums are integers in JSON: SpanKind CLIENT, StatusCode OK and ERROR.
+const SPAN_KIND_CLIENT = 3;
+const STATUS_OK = 1;
+const STATUS_ERROR = 2;
 
 /** Reads at most `limit` bytes; null when the body is larger. */
 async function readLimited(response: Response, limit: number): Promise<string | null> {
@@ -40,7 +49,7 @@ async function readLimited(response: Response, limit: number): Promise<string | 
   return Buffer.concat(chunks).toString("utf8");
 }
 
-function ingestionUrl(baseUrl: string): string {
+function tracesUrl(baseUrl: string): string {
   let url: URL;
   try {
     url = new URL(baseUrl);
@@ -50,57 +59,104 @@ function ingestionUrl(baseUrl: string): string {
   if (url.protocol !== "https:" || url.username !== "" || url.password !== "") {
     throw new TypeError("LANGFUSE_BASE_URL must be an https URL without credentials");
   }
-  return new URL(INGESTION_PATH, url.origin).toString();
+  return new URL(OTLP_TRACES_PATH, url.origin).toString();
 }
 
-function buildBatch(span: TraceSpan) {
-  const traceId = crypto.randomUUID();
-  const timestamp = span.startTime.toISOString();
+type AnyValue = { stringValue: string };
+type KeyValue = { key: string; value: AnyValue };
+
+function hexId(bytes: number): string {
+  return Buffer.from(crypto.getRandomValues(new Uint8Array(bytes))).toString("hex");
+}
+
+function unixNano(date: Date): string {
+  // OTLP/JSON encodes 64-bit integers as decimal strings.
+  return (BigInt(date.getTime()) * 1_000_000n).toString();
+}
+
+function asText(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+/** One OTLP `ExportTraceServiceRequest` holding one generation span. */
+function buildExport(span: TraceSpan) {
   const failed = span.error !== undefined;
-  return [
-    {
-      id: crypto.randomUUID(),
-      type: "trace-create",
-      timestamp,
-      body: {
-        id: traceId,
-        timestamp,
-        name: span.kind,
-        // One filter lists all spans of a ticket.
-        ...(span.ticketId === undefined ? {} : { sessionId: span.ticketId }),
-        environment: span.environment,
-        input: span.input,
-        ...(span.output === undefined ? {} : { output: span.output }),
+  const attributes: KeyValue[] = [];
+  const add = (key: string, value: string) =>
+    attributes.push({ key, value: { stringValue: value } });
+  add("langfuse.observation.type", "generation");
+  add("langfuse.trace.name", span.kind);
+  // One filter lists all spans of a ticket.
+  if (span.ticketId !== undefined) add("langfuse.session.id", span.ticketId);
+  add("langfuse.environment", span.environment);
+  add("langfuse.observation.model.name", span.model);
+  add("langfuse.observation.input", asText(span.input));
+  if (span.output !== undefined) add("langfuse.observation.output", asText(span.output));
+  if (span.tokensIn !== null && span.tokensOut !== null) {
+    add(
+      "langfuse.observation.usage_details",
+      JSON.stringify({ input: span.tokensIn, output: span.tokensOut }),
+    );
+  }
+  add("langfuse.observation.metadata.provider", span.provider);
+  add("langfuse.observation.metadata.kind", span.kind);
+  if (failed) {
+    add("langfuse.observation.level", "ERROR");
+    add("langfuse.observation.status_message", span.error ?? "");
+  }
+  return {
+    resourceSpans: [
+      {
+        resource: { attributes: [] },
+        scopeSpans: [
+          {
+            scope: { name: SCOPE_NAME },
+            spans: [
+              {
+                traceId: hexId(16),
+                spanId: hexId(8),
+                name: span.kind,
+                kind: SPAN_KIND_CLIENT,
+                startTimeUnixNano: unixNano(span.startTime),
+                endTimeUnixNano: unixNano(span.endTime),
+                attributes,
+                status: failed
+                  ? { code: STATUS_ERROR, message: span.error ?? "" }
+                  : { code: STATUS_OK },
+              },
+            ],
+          },
+        ],
       },
-    },
-    {
-      id: crypto.randomUUID(),
-      type: "generation-create",
-      timestamp,
-      body: {
-        id: crypto.randomUUID(),
-        traceId,
-        name: span.kind,
-        model: span.model,
-        environment: span.environment,
-        startTime: timestamp,
-        endTime: span.endTime.toISOString(),
-        input: span.input,
-        ...(span.output === undefined ? {} : { output: span.output }),
-        ...(span.tokensIn === null || span.tokensOut === null
-          ? {}
-          : { usageDetails: { input: span.tokensIn, output: span.tokensOut } }),
-        metadata: { provider: span.provider, kind: span.kind },
-        ...(failed ? { level: "ERROR", statusMessage: span.error } : {}),
-      },
-    },
-  ];
+    ],
+  };
+}
+
+/** Rejected span count from an `ExportTraceServiceResponse`; throws when unreadable. */
+function rejectedSpans(text: string): number {
+  // An empty ExportTraceServiceResponse is a full success.
+  if (text.trim() === "") return 0;
+  const parsed: unknown = JSON.parse(text);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new SyntaxError("not an object");
+  }
+  const partial = (parsed as { partialSuccess?: unknown }).partialSuccess;
+  if (partial === undefined || partial === null) return 0;
+  if (typeof partial !== "object") throw new SyntaxError("bad partialSuccess");
+  const rejected = (partial as { rejectedSpans?: unknown }).rejectedSpans;
+  if (rejected === undefined || rejected === null) return 0;
+  // int64 arrives as a decimal string or a number.
+  const count =
+    typeof rejected === "number" || typeof rejected === "string" ? Number(rejected) : Number.NaN;
+  if (!Number.isFinite(count)) throw new SyntaxError("bad rejectedSpans");
+  return count;
 }
 
 /**
- * Sends each span to Langfuse Cloud with one POST to the public ingestion API
- * (no SDK: the OpenTelemetry exporter cannot report a failed export to the
- * caller). No retries; one try, then `TraceExportError`.
+ * Sends each span to Langfuse Cloud as one OTLP/HTTP JSON export request with
+ * one span (no SDK: the OpenTelemetry exporter cannot report a failed export
+ * to the caller). No retries; one try, then `TraceExportError`. A partial
+ * success (`partialSuccess.rejectedSpans > 0`) fails the export.
  *
  * Privacy: the body holds exactly what the span holds (redacted text). The
  * secret key goes only into the Authorization header and never into an error
@@ -109,7 +165,7 @@ function buildBatch(span: TraceSpan) {
  * response body.
  */
 export function createLangfuseSink(env: LangfuseEnv, options: LangfuseSinkOptions = {}): TraceSink {
-  const url = ingestionUrl(env.LANGFUSE_BASE_URL);
+  const url = tracesUrl(env.LANGFUSE_BASE_URL);
   if (env.LANGFUSE_PUBLIC_KEY === "" || env.LANGFUSE_SECRET_KEY === "") {
     throw new TypeError("Langfuse keys must not be empty");
   }
@@ -126,8 +182,12 @@ export function createLangfuseSink(env: LangfuseEnv, options: LangfuseSinkOption
       try {
         response = await doFetch(url, {
           method: "POST",
-          headers: { authorization, "content-type": "application/json" },
-          body: JSON.stringify({ batch: buildBatch(span) }),
+          headers: {
+            authorization,
+            "content-type": "application/json",
+            "x-langfuse-ingestion-version": INGESTION_VERSION,
+          },
+          body: JSON.stringify(buildExport(span)),
           redirect: "error",
           signal: AbortSignal.timeout(timeoutMs),
         });
@@ -147,17 +207,13 @@ export function createLangfuseSink(env: LangfuseEnv, options: LangfuseSinkOption
         throw new TraceExportError(timedOut ? "timeout" : "network error");
       }
       if (text === null) throw new TraceExportError("response too large");
-      // 207 Multi-Status lists per-event errors; any error fails the export.
+      let rejected: number;
       try {
-        const parsed: unknown = JSON.parse(text);
-        const errors = (parsed as { errors?: unknown } | null)?.errors;
-        if (Array.isArray(errors) && errors.length > 0) {
-          throw new TraceExportError("rejected events");
-        }
-      } catch (error) {
-        if (error instanceof TraceExportError) throw error;
+        rejected = rejectedSpans(text);
+      } catch {
         throw new TraceExportError("unreadable response");
       }
+      if (rejected > 0) throw new TraceExportError("rejected spans");
     },
   };
 }
