@@ -39,3 +39,20 @@ export {
   type MeterRunOptions,
   type TokenUsage,
 } from "./meter.js";
+export {
+  TraceExportError,
+  createAiRuntime,
+  errorClassName,
+  type AiCallMeta,
+  type AiRuntimeDeps,
+  type AiRuntimeLogger,
+  type AiRuntimeMeter,
+  type TraceSink,
+  type TraceSpan,
+} from "./trace.js";
+export {
+  LANGFUSE_TIMEOUT_MS,
+  createLangfuseSink,
+  type LangfuseEnv,
+  type LangfuseSinkOptions,
+} from "./langfuse-sink.js";

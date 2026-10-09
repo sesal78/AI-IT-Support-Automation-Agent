@@ -84,7 +84,20 @@ export const triggerProjectEnvShape = {
     .optional(),
 };
 
-type PathSegment = PropertyKey | { key: PropertyKey };
+/**
+ * Langfuse Cloud trace export (services/pipeline). The base URL must be https
+ * and carry no credentials; `parseEnv` never echoes the secret key.
+ */
+export const langfuseEnvShape = {
+  LANGFUSE_PUBLIC_KEY: z.string().min(1),
+  LANGFUSE_SECRET_KEY: z.string().min(1),
+  LANGFUSE_BASE_URL: z.url().refine((value) => {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.username === "" && url.password === "";
+  }, "must be an https URL without credentials"),
+};
+
+type PathSegment =PropertyKey | { key: PropertyKey };
 
 export interface EnvIssue {
   readonly path?: ReadonlyArray<PathSegment> | undefined;

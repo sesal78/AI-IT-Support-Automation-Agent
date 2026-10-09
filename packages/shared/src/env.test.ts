@@ -5,6 +5,7 @@ import {
   formatEnvIssues,
   intakeEnvShape,
   internalEnvShape,
+  langfuseEnvShape,
   parseEnv,
   phase1EnvShape,
   sensitiveCheckEnvShape,
@@ -212,4 +213,36 @@ describe("aiBudgetEnvShape", () => {
     expect(message).toContain("TYPESAFE_MONTHLY_CALL_CAP");
     expect(message).not.toContain(bad);
   });
+});
+
+describe("langfuseEnvShape", () => {
+  const ok = {
+    LANGFUSE_PUBLIC_KEY: "pk-".concat("a".repeat(8)),
+    LANGFUSE_SECRET_KEY: "sk-".concat("b".repeat(8)),
+    LANGFUSE_BASE_URL: "https://cloud.langfuse.com",
+  };
+
+  it("parses a complete environment", () => {
+    expect(parseEnv(langfuseEnvShape, ok)).toEqual(ok);
+  });
+
+  it("names a missing LANGFUSE_SECRET_KEY", () => {
+    expect(() => parseEnv(langfuseEnvShape, { ...ok, LANGFUSE_SECRET_KEY: undefined })).toThrow(
+      /LANGFUSE_SECRET_KEY/,
+    );
+  });
+
+  it.each(["not-a-url", "http://cloud.langfuse.com", "https://user:pw@cloud.langfuse.com"])(
+    "rejects LANGFUSE_BASE_URL %s, naming the variable and not echoing it",
+    (value) => {
+      let message = "";
+      try {
+        parseEnv(langfuseEnvShape, { ...ok, LANGFUSE_BASE_URL: value });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toContain("LANGFUSE_BASE_URL");
+      expect(message).not.toContain(value);
+    },
+  );
 });
