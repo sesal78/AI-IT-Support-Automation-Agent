@@ -32,8 +32,36 @@ beforeAll(() => egress.start());
 afterAll(() => egress.stop());
 beforeEach(() => {
   egress.reset();
-  egress.mock(HOST, () => HttpResponse.json({ successes: [{}, {}], errors: [] }, { status: 207 }));
+  egress.mock(HOST, () => HttpResponse.json({}));
 });
+
+const TRACES_PATH = "/api/public/otel/v1/traces";
+
+type OtlpSpan = {
+  traceId: string;
+  spanId: string;
+  name: string;
+  kind: number;
+  startTimeUnixNano: string;
+  endTimeUnixNano: string;
+  attributes: { key: string; value: { stringValue: string } }[];
+  status: { code: number; message?: string };
+};
+
+/** The single span of the request at `index`, plus its attributes as a map. */
+function sentSpan(index = 0): { span: OtlpSpan; attrs: Record<string, string> } {
+  const body = JSON.parse(egress.requests()[index]?.body ?? "") as {
+    resourceSpans: { scopeSpans: { spans: OtlpSpan[] }[] }[];
+  };
+  expect(body.resourceSpans).toHaveLength(1);
+  expect(body.resourceSpans[0]?.scopeSpans).toHaveLength(1);
+  const spans = body.resourceSpans[0]?.scopeSpans[0]?.spans ?? [];
+  expect(spans).toHaveLength(1);
+  const span = spans[0] as OtlpSpan;
+  const attrs: Record<string, string> = {};
+  for (const { key, value } of span.attributes) attrs[key] = value.stringValue;
+  return { span, attrs };
+}
 
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
   try {
@@ -45,13 +73,13 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
 }
 
 describe("createLangfuseSink", () => {
-  it("posts to the ingestion API with the ticket, model, tokens and environment", async () => {
+  it("posts to the OTLP traces endpoint with the ticket, model, tokens and environment", async () => {
     await createLangfuseSink(env).record(span);
     const requests = egress.requests();
     expect(requests.length).toBeGreaterThanOrEqual(1);
-    expect(requests[0]).toMatchObject({ method: "POST", path: "/api/public/ingestion" });
+    expect(requests[0]).toMatchObject({ method: "POST", path: TRACES_PATH });
     const bodies = requests.map((r) => r.body).join("\n");
-    for (const part of [TICKET, "model-a", "1234", "567", "e2e", "sessionId"]) {
+    for (const part of [TICKET, "model-a", "1234", "567", "e2e", "langfuse.session.id"]) {
       expect(bodies).toContain(part);
     }
     egress.assertClean();
@@ -61,7 +89,7 @@ describe("createLangfuseSink", () => {
     let auth: string | null = null;
     egress.mock(HOST, ({ request }) => {
       auth = request.headers.get("authorization");
-      return HttpResponse.json({ successes: [], errors: [] }, { status: 207 });
+      return HttpResponse.json({});
     });
     await createLangfuseSink(env).record(span);
     expect(auth).toBe(`Basic ${Buffer.from(`${PUBLIC_KEY}:${SECRET_KEY}`).toString("base64")}`);
@@ -84,13 +112,60 @@ describe("createLangfuseSink", () => {
       .requests()
       .map((r) => r.body)
       .join("\n");
-    expect(body).toContain('"level":"ERROR"');
+    expect(body).toContain('{"key":"langfuse.observation.level","value":{"stringValue":"ERROR"}}');
     expect(body).toContain("ProviderDown");
+    const { span: sent, attrs } = sentSpan();
+    expect(attrs["langfuse.observation.level"]).toBe("ERROR");
+    expect(attrs["langfuse.observation.status_message"]).toBe("ProviderDown");
+    expect(sent.status).toEqual({ code: 2, message: "ProviderDown" });
+    expect(attrs).not.toHaveProperty("langfuse.observation.usage_details");
   });
 
-  it("omits sessionId when there is no ticket", async () => {
+  it("omits the session id when there is no ticket", async () => {
     await createLangfuseSink(env).record({ ...span, ticketId: undefined });
-    expect(egress.requests()[0]?.body).not.toContain("sessionId");
+    expect(egress.requests()[0]?.body).not.toContain("langfuse.session.id");
+    expect(egress.requests()[0]?.body).not.toContain("session.id");
+  });
+
+  it("sends one OTLP JSON span with the Langfuse attribute names", async () => {
+    await createLangfuseSink(env).record(span);
+    expect(egress.requests()).toHaveLength(1);
+    const request = egress.requests()[0];
+    expect(request?.headers["content-type"]).toBe("application/json");
+    expect(request?.headers["x-langfuse-ingestion-version"]).toBe("4");
+    const { span: sent, attrs } = sentSpan();
+    expect(sent.traceId).toMatch(/^[0-9a-f]{32}$/);
+    expect(sent.spanId).toMatch(/^[0-9a-f]{16}$/);
+    expect(sent.traceId).not.toBe("0".repeat(32));
+    expect(sent.name).toBe("triage");
+    expect(sent.startTimeUnixNano).toBe(String(span.startTime.getTime()).concat("000000"));
+    expect(sent.endTimeUnixNano).toBe(String(span.endTime.getTime()).concat("000000"));
+    expect(sent.status).toEqual({ code: 1 });
+    expect(attrs).toEqual({
+      "langfuse.observation.type": "generation",
+      "langfuse.trace.name": "triage",
+      "langfuse.session.id": TICKET,
+      "langfuse.environment": "e2e",
+      "langfuse.observation.model.name": "model-a",
+      "langfuse.observation.input": JSON.stringify(span.input),
+      "langfuse.observation.output": "answer",
+      "langfuse.observation.usage_details": '{"input":1234,"output":567}',
+      "langfuse.observation.metadata.provider": "llm",
+      "langfuse.observation.metadata.kind": "triage",
+    });
+  });
+
+  it("gives each export its own trace and span id", async () => {
+    const sink = createLangfuseSink(env);
+    await sink.record(span);
+    await sink.record(span);
+    expect(sentSpan(0).span.traceId).not.toBe(sentSpan(1).span.traceId);
+    expect(sentSpan(0).span.spanId).not.toBe(sentSpan(1).span.spanId);
+  });
+
+  it("carries the staging environment", async () => {
+    await createLangfuseSink(env).record({ ...span, environment: "staging" });
+    expect(sentSpan().attrs["langfuse.environment"]).toBe("staging");
   });
 
   it.each([401, 403, 503])(
@@ -143,7 +218,7 @@ describe("createLangfuseSink", () => {
   });
 
   it("rejects when a 2xx response body is huge", async () => {
-    egress.mock(HOST, () => new HttpResponse("x".repeat(5 * 1024 * 1024), { status: 207 }));
+    egress.mock(HOST, () => new HttpResponse("x".repeat(5 * 1024 * 1024), { status: 200 }));
     const error = await rejection(createLangfuseSink(env).record(span));
     expect(error).toBeInstanceOf(TraceExportError);
     expect((error as Error).message).toContain("too large");
@@ -155,11 +230,43 @@ describe("createLangfuseSink", () => {
     expect(error).toBeInstanceOf(TraceExportError);
   });
 
-  it("rejects when Langfuse reports per-event errors in a 207", async () => {
+  it.each([["1"], [1]])(
+    "rejects when Langfuse reports a partial success with rejectedSpans %j",
+    async (rejectedSpans) => {
+      egress.mock(HOST, () =>
+        HttpResponse.json({
+          partialSuccess: { rejectedSpans, errorMessage: `echo ${SECRET_KEY}` },
+        }),
+      );
+      const error = await rejection(createLangfuseSink(env).record(span));
+      expect(error).toBeInstanceOf(TraceExportError);
+      expect((error as Error).message).toContain("rejected spans");
+      expect((error as Error).message).not.toContain(SECRET_KEY);
+    },
+  );
+
+  it("accepts a partial success that only carries a warning", async () => {
     egress.mock(HOST, () =>
-      HttpResponse.json({ successes: [], errors: [{ id: "x", status: 400 }] }, { status: 207 }),
+      HttpResponse.json({ partialSuccess: { rejectedSpans: "0", errorMessage: "warning" } }),
     );
-    expect(await rejection(createLangfuseSink(env).record(span))).toBeInstanceOf(TraceExportError);
+    await expect(createLangfuseSink(env).record(span)).resolves.toBeUndefined();
+  });
+
+  it("accepts an empty export response", async () => {
+    egress.mock(HOST, () => new HttpResponse("", { status: 200 }));
+    await expect(createLangfuseSink(env).record(span)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ['{"partialSuccess":{"rejectedSpans":"many"}}'],
+    ['{"partialSuccess":"x"}'],
+    ["[]"],
+    ["null"],
+  ])("rejects on a malformed export response %s", async (text) => {
+    egress.mock(HOST, () => new HttpResponse(text, { status: 200 }));
+    const error = await rejection(createLangfuseSink(env).record(span));
+    expect(error).toBeInstanceOf(TraceExportError);
+    expect((error as Error).message).toContain("unreadable response");
   });
 
   it("rejects on an unreadable 2xx body", async () => {
