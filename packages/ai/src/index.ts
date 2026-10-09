@@ -66,3 +66,13 @@ export {
   type TriageJudgments,
 } from "./judgments.js";
 export { TYPESAFE_MODEL } from "./typesafe-model.js";
+export {
+  KB_RERANK_CONTENT_MAX_CHARS,
+  KB_RERANK_MAX_CANDIDATES,
+  KB_RERANK_TOP,
+  createKbReranker,
+  type KbCandidate,
+  type KbRerankDeps,
+  type KbRerankInput,
+  type KbRerankResult,
+} from "./kb-rerank.js";
