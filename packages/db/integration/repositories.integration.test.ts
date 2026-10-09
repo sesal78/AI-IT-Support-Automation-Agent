@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { buildKbQuery } from "@ai-it-support/shared";
+import { buildKbQuery, IllegalTransitionError } from "@ai-it-support/shared";
 import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDbClient, type DbClient } from "../src/client.js";
@@ -299,5 +299,137 @@ describe("reserveAiCall and completeAiCall over supabase-js + PostgREST", () => 
     await expect(
       repos.completeAiCall("not-a-uuid", { tokensIn: 1, tokensOut: 1 }),
     ).rejects.toBeInstanceOf(DbError);
+  });
+});
+
+describe("pipeline repositories over supabase-js + PostgREST", () => {
+  const status = async (id: string): Promise<string> => {
+    const { rows } = await sql().query("select status from itsupport.tickets where id = $1", [id]);
+    return (rows[0] as { status: string }).status;
+  };
+
+  it("setTicketStatus moves new -> redacted once, then is a no-op", async () => {
+    const { ticket: created } = await repos.createTicket(ticket(`it-${randomUUID()}`));
+    expect(await repos.setTicketStatus(created.id, "redacted")).toEqual({ changed: true });
+    expect(await repos.setTicketStatus(created.id, "redacted")).toEqual({ changed: false });
+    expect(await status(created.id)).toBe("redacted");
+  });
+
+  it("setTicketStatus rejects new -> triaged and leaves the row unchanged", async () => {
+    const { ticket: created } = await repos.createTicket(ticket(`it-${randomUUID()}`));
+    await expect(repos.setTicketStatus(created.id, "triaged")).rejects.toBeInstanceOf(
+      IllegalTransitionError,
+    );
+    expect(await status(created.id)).toBe("new");
+  });
+
+  it("setTicketStatus throws DbError for an unknown ticket", async () => {
+    await expect(repos.setTicketStatus(randomUUID(), "redacted")).rejects.toBeInstanceOf(DbError);
+  });
+
+  it("two parallel redacted -> triaged calls end triaged with exactly one changed: true", async () => {
+    for (let round = 0; round < 5; round++) {
+      const { ticket: created } = await repos.createTicket(ticket(`it-${randomUUID()}`));
+      await sql().query("update itsupport.tickets set status = 'redacted' where id = $1", [
+        created.id,
+      ]);
+      const results = await Promise.all([
+        repos.setTicketStatus(created.id, "triaged"),
+        repos.setTicketStatus(created.id, "triaged"),
+      ]);
+      expect(results.filter((r) => r.changed)).toHaveLength(1);
+      expect(await status(created.id)).toBe("triaged");
+    }
+  });
+
+  it("saveTriageResult writes the 13 columns and keeps the sensitive-check columns", async () => {
+    const { ticket: created } = await repos.createTicket(ticket(`it-${randomUUID()}`));
+    await repos.saveTriage({
+      ticket_id: created.id,
+      sensitive: true,
+      sensitive_flags: ["termination"],
+      checker: "keywords",
+    });
+    const before = await repos.getTriage(created.id);
+    expect(before).toMatchObject({ category: null, triaged_at: null, kb_article_ids: null });
+
+    const kbId = randomUUID();
+    const saved = await repos.saveTriageResult(created.id, {
+      category: "network",
+      subcategory: "vpn",
+      priority: "P3",
+      urgency: "medium",
+      assignmentGroup: "Network",
+      route: "review",
+      probabilities: { network: 0.75 },
+      flags: ["needs_info"],
+      groundingScore: 0.5,
+      kbArticleIds: [kbId],
+      suggestedFix: { steps: ["restart"] },
+      modelVersions: { llm: "m1" },
+    });
+    expect(saved.triaged_at).not.toBeNull();
+
+    const { rows } = await sql().query(
+      `select sensitive, sensitive_flags, checker, category, subcategory, priority, urgency,
+              assignment_group, route, probabilities, flags, grounding_score::float8 as grounding_score,
+              kb_article_ids, suggested_fix, model_versions, triaged_at is not null as triaged
+       from itsupport.triage_results where ticket_id = $1`,
+      [created.id],
+    );
+    expect(rows).toEqual([
+      {
+        sensitive: true,
+        sensitive_flags: ["termination"],
+        checker: "keywords",
+        category: "network",
+        subcategory: "vpn",
+        priority: "P3",
+        urgency: "medium",
+        assignment_group: "Network",
+        route: "review",
+        probabilities: { network: 0.75 },
+        flags: ["needs_info"],
+        grounding_score: 0.5,
+        kb_article_ids: [kbId],
+        suggested_fix: { steps: ["restart"] },
+        model_versions: { llm: "m1" },
+        triaged: true,
+      },
+    ]);
+    expect(await repos.getTriage(created.id)).toEqual(saved);
+  });
+
+  it("saveTriageResult throws DbError when the ticket has no triage row", async () => {
+    const { ticket: created } = await repos.createTicket(ticket(`it-${randomUUID()}`));
+    await expect(
+      repos.saveTriageResult(created.id, {
+        category: "inquiry",
+        subcategory: null,
+        priority: "P4",
+        urgency: "low",
+        assignmentGroup: "Service Desk",
+        route: "auto",
+        probabilities: {},
+        flags: [],
+        groundingScore: null,
+        kbArticleIds: [],
+        suggestedFix: null,
+        modelVersions: {},
+      }),
+    ).rejects.toBeInstanceOf(DbError);
+  });
+
+  it("getRedaction returns null without a redaction and the row with one", async () => {
+    const { ticket: created } = await repos.createTicket(ticket(`it-${randomUUID()}`));
+    expect(await repos.getRedaction(created.id)).toBeNull();
+    const saved = await repos.saveRedaction({
+      ticket_id: created.id,
+      redacted_title: "VPN down",
+      redacted_description: "no access",
+      redaction_log: [],
+    });
+    expect(await repos.getRedaction(created.id)).toEqual(saved);
+    expect(await repos.getTriage(created.id)).toBeNull();
   });
 });

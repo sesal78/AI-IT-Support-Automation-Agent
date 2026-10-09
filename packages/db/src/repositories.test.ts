@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { IllegalTransitionError, type TriageResult } from "@ai-it-support/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDbClient } from "./client.js";
-import { DbError } from "./errors.js";
+import { DbError, StatusConflictError } from "./errors.js";
 import { createRepositories, type NewTicket } from "./repositories.js";
 
 const SECRET_KEY = "test-service-role-key";
@@ -819,5 +820,173 @@ describe("listSecurityEvents", () => {
     expect(calls[0]?.url.searchParams.get("limit")).toBe("500");
     respond(pgError("42P01", 404));
     await expectDbError(repos.listSecurityEvents(since), "listSecurityEvents");
+  });
+});
+
+describe("setTicketStatus", () => {
+  it("moves new -> redacted with one conditional update and returns changed: true", async () => {
+    const calls = respond(ok({ status: "new" }), ok([{ id: ticketId }]));
+    expect(await repos.setTicketStatus(ticketId, "redacted")).toEqual({ changed: true });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.method).toBe("PATCH");
+    expect(calls[1]?.url.pathname).toBe("/rest/v1/tickets");
+    expect(calls[1]?.url.searchParams.get("id")).toBe(`eq.${ticketId}`);
+    expect(calls[1]?.url.searchParams.get("status")).toBe("eq.new");
+    expect(calls[1]?.body).toEqual({ status: "redacted" });
+  });
+
+  it("returns changed: false with no update when the ticket is already in the target status", async () => {
+    const calls = respond(ok({ status: "redacted" }));
+    expect(await repos.setTicketStatus(ticketId, "redacted")).toEqual({ changed: false });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("GET");
+  });
+
+  it("throws IllegalTransitionError for new -> triaged before any update", async () => {
+    const calls = respond(ok({ status: "new" }));
+    await expect(repos.setTicketStatus(ticketId, "triaged")).rejects.toBeInstanceOf(
+      IllegalTransitionError,
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it("throws DbError for an unknown ticket", async () => {
+    const calls = respond(ok(null));
+    const error = await expectDbError(
+      repos.setTicketStatus(ticketId, "redacted"),
+      "setTicketStatus",
+    );
+    expect(error).not.toBeInstanceOf(StatusConflictError);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("throws StatusConflictError when the status changed to another one in between", async () => {
+    respond(ok({ status: "new" }), ok([]), ok({ status: "failed" }));
+    const error = await repos
+      .setTicketStatus(ticketId, "redacted")
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(StatusConflictError);
+    expect(error).toBeInstanceOf(DbError);
+    expect(error).toMatchObject({ name: "StatusConflictError", operation: "setTicketStatus" });
+  });
+
+  it("returns changed: false when a parallel caller already made the same move", async () => {
+    respond(ok({ status: "redacted" }), ok([]), ok({ status: "triaged" }));
+    expect(await repos.setTicketStatus(ticketId, "triaged")).toEqual({ changed: false });
+  });
+
+  it("throws DbError naming the code on a Supabase error", async () => {
+    respond(ok({ status: "new" }), pgError("XX000", 500));
+    const error = await expectDbError(
+      repos.setTicketStatus(ticketId, "redacted"),
+      "setTicketStatus",
+    );
+    expect(error.code).toBe("XX000");
+  });
+});
+
+describe("saveTriageResult", () => {
+  const kbId = randomUUID();
+  const result: TriageResult = {
+    category: "network",
+    subcategory: "vpn",
+    priority: "P3",
+    urgency: "medium",
+    assignmentGroup: "Network",
+    route: "auto",
+    probabilities: { network: 0.9 },
+    flags: ["needs_info"],
+    groundingScore: 0.5,
+    kbArticleIds: [kbId],
+    suggestedFix: { steps: ["restart"] },
+    modelVersions: { llm: "m1" },
+  };
+  const columns = {
+    category: "network",
+    subcategory: "vpn",
+    priority: "P3",
+    urgency: "medium",
+    assignment_group: "Network",
+    route: "auto",
+    probabilities: { network: 0.9 },
+    flags: ["needs_info"],
+    grounding_score: 0.5,
+    kb_article_ids: [kbId],
+    suggested_fix: { steps: ["restart"] },
+    model_versions: { llm: "m1" },
+  };
+  const savedRow = { ...triageRow, ...columns, triaged_at: now };
+
+  it("updates the 13 columns of the ticket's row and nothing else", async () => {
+    const calls = respond(ok([savedRow]));
+    expect(await repos.saveTriageResult(ticketId, result)).toEqual(savedRow);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("PATCH");
+    expect(calls[0]?.url.pathname).toBe("/rest/v1/triage_results");
+    expect(calls[0]?.url.searchParams.get("ticket_id")).toBe(`eq.${ticketId}`);
+    const body = calls[0]?.body as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual([...Object.keys(columns), "triaged_at"].sort());
+    expect(body).toMatchObject(columns);
+    expect(Number.isNaN(Date.parse(String(body.triaged_at)))).toBe(false);
+  });
+
+  it("rejects an invalid result before any request, naming only the field path", async () => {
+    const calls = respond();
+    const bad = { ...result, category: `unknown ${RAW_DESCRIPTION}` } as unknown as TriageResult;
+    const error = await repos.saveTriageResult(ticketId, bad).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(TypeError);
+    expect((error as Error).message).toContain("category");
+    expect((error as Error).message).not.toContain(RAW_DESCRIPTION);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects an extra key before any request", async () => {
+    const calls = respond();
+    const bad = { ...result, sensitive: false } as unknown as TriageResult;
+    await expect(repos.saveTriageResult(ticketId, bad)).rejects.toBeInstanceOf(TypeError);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("throws DbError when the ticket has no triage row", async () => {
+    respond(ok([]));
+    await expectDbError(repos.saveTriageResult(ticketId, result), "saveTriageResult");
+  });
+});
+
+describe("getRedaction and getTriage", () => {
+  it("getRedaction returns the row, and null when there is none", async () => {
+    const calls = respond(ok(redactionRow), ok(null));
+    expect(await repos.getRedaction(ticketId)).toEqual(redactionRow);
+    expect(calls[0]?.url.pathname).toBe("/rest/v1/ticket_redactions");
+    expect(calls[0]?.url.searchParams.get("ticket_id")).toBe(`eq.${ticketId}`);
+    expect(await repos.getRedaction(ticketId)).toBeNull();
+  });
+
+  it("getTriage parses a phase-2 row whose new columns are all null", async () => {
+    const phase2 = {
+      ...triageRow,
+      category: null,
+      subcategory: null,
+      priority: null,
+      urgency: null,
+      assignment_group: null,
+      route: null,
+      probabilities: null,
+      flags: null,
+      grounding_score: null,
+      kb_article_ids: null,
+      suggested_fix: null,
+      model_versions: null,
+      triaged_at: null,
+    };
+    const calls = respond(ok(phase2), ok(null));
+    expect(await repos.getTriage(ticketId)).toEqual(phase2);
+    expect(calls[0]?.url.pathname).toBe("/rest/v1/triage_results");
+    expect(await repos.getTriage(ticketId)).toBeNull();
+  });
+
+  it("getTriage throws DbError on a Supabase error", async () => {
+    respond(pgError("XX000", 500));
+    await expectDbError(repos.getTriage(ticketId), "getTriage");
   });
 });
