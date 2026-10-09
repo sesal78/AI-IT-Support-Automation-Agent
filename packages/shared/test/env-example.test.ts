@@ -8,6 +8,7 @@ import {
   intakeEnvShape,
   internalEnvShape,
   langfuseEnvShape,
+  llmEnvShape,
   parseEnv,
   phase1EnvShape,
   policyEnvShape,
@@ -26,6 +27,7 @@ const allEnvShapes = {
   ...triggerProjectEnvShape,
   ...langfuseEnvShape,
   ...policyEnvShape,
+  ...llmEnvShape,
 };
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");

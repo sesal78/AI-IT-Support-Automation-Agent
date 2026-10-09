@@ -6,6 +6,7 @@ import {
   intakeEnvShape,
   internalEnvShape,
   langfuseEnvShape,
+  llmEnvShape,
   parseEnv,
   phase1EnvShape,
   sensitiveCheckEnvShape,
@@ -242,6 +243,36 @@ describe("langfuseEnvShape", () => {
         message = (error as Error).message;
       }
       expect(message).toContain("LANGFUSE_BASE_URL");
+      expect(message).not.toContain(value);
+    },
+  );
+});
+
+describe("llmEnvShape", () => {
+  const ok = {
+    LLM_API_KEY: "x".repeat(16),
+    LLM_BASE_URL: "https://opencode.ai/zen/go/v1",
+    LLM_MODEL: "deepseek-v4.1-flash",
+  };
+
+  it("parses a complete environment", () => {
+    expect(parseEnv(llmEnvShape, ok)).toEqual(ok);
+  });
+
+  it.each(["LLM_API_KEY", "LLM_MODEL"] as const)("names a missing %s", (name) => {
+    expect(() => parseEnv(llmEnvShape, { ...ok, [name]: undefined })).toThrow(new RegExp(name));
+  });
+
+  it.each(["not-a-url", "http://opencode.ai/zen/go/v1", "https://user:pw@opencode.ai/zen/go/v1"])(
+    "rejects LLM_BASE_URL %s, naming the variable and not echoing it",
+    (value) => {
+      let message = "";
+      try {
+        parseEnv(llmEnvShape, { ...ok, LLM_BASE_URL: value });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toContain("LLM_BASE_URL");
       expect(message).not.toContain(value);
     },
   );

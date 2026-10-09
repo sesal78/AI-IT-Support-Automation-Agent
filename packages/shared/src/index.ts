@@ -17,6 +17,7 @@ export {
   intakeEnvShape,
   langfuseEnvShape,
   internalEnvShape,
+  llmEnvShape,
   parseEnv,
   phase1EnvShape,
   policyEnvShape,
