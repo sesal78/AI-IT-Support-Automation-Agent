@@ -32,6 +32,12 @@ describe("guard-modules.json", () => {
     expect(request?.mutation).toBe(80);
   });
 
+  // T3.S.06 with P3-T3b: the gate proves the redaction floor too.
+  it("switches on the 80 % mutation floor for redaction", () => {
+    const redact = guardModules.find(({ path }) => path === "packages/shared/src/redact.ts");
+    expect(redact?.mutation).toBe(80);
+  });
+
   it("lists only files that exist in the repo", () => {
     expect(missingGuardModules(guardModules, repoRoot)).toEqual([]);
   });

@@ -23,7 +23,7 @@ describe("packages/shared/scripts/mutation-gate.mjs", () => {
       "--changed",
       "README.md",
       "--changed",
-      "packages/shared/src/redact.ts",
+      "packages/shared/src/canaries.ts",
     ]);
     expect(run.stdout.trim()).toBe("mutation: skipped (no guard module changed)");
     expect(run.stderr).not.toContain("Stryker");

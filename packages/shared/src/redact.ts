@@ -7,8 +7,10 @@
 // always terminates: every match contains a digit, a lower-case letter, `@`,
 // `:`, `=` or the upper-case prefix `AKIA`, and placeholders contain none of
 // them (their brackets also stop an `AKIA` forming across an edge), so each
-// changing pass strictly shrinks the count of those (an `sk-` key or Slack
-// token holds lower-case letters in its prefix, a JWT in its `eyJ`). The one
+// changing pass strictly shrinks the count of those outside placeholders (an
+// `sk-` key or Slack token holds lower-case letters in its prefix, a JWT in its
+// `eyJ`, an IPv6 address a digit and a `:`; the digit in `IPV4` or `IPV6`
+// follows a letter, so no match starts there). The one
 // exception, a GitHub token body after an email placeholder, removes one
 // `EMAIL]_` pair and creates none (its placeholder starts with `[`); only an
 // EMAIL match, which shrinks the count above, can create such a pair. A JWT's
@@ -22,6 +24,14 @@
 // joined number, but it may sit right next to other digits across a space
 // (e.g. a card followed by its CVV). A candidate rejected by its checksum does
 // not consume text: scanning resumes one character later.
+// IPv6: `:` joins hex groups into one run, which is judged whole, so a run
+// that is no address (a MAC, a time, 9 groups) is never partly replaced.
+// Trailing dots and a single trailing `:` are punctuation, not the address.
+// A run never starts after a word character, `:` or `.`, except after one
+// `:` that follows a key (`ip:`, `node:`: a word with a non-hex letter) or a
+// non-word character; it never ends right before a word character. A zone ID
+// (`%eth0`) stays. A run is taken atomically and read at most twice (from its
+// start, then after a leading single `:`), so matching stays linear.
 // Every pattern is anchored with lookbehinds so a match can only start at the
 // beginning of a run, and all repetition is bounded or unambiguous, which
 // keeps matching linear on adversarial input.
@@ -75,6 +85,7 @@ const TYPES = [
   "JWT",
   "CARD",
   "SSN",
+  "IPV6",
   "IPV4",
   "PHONE",
   "AU_TFN",
@@ -248,6 +259,32 @@ function splitKeys(run: string, next: string): Array<[RedactionType, number]> {
 }
 
 const OCTET = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
+const IPV4_TAIL = new RegExp(`^(?:${OCTET}\\.){3}${OCTET}$`);
+
+/**
+ * An IPv6 address: 8 groups of 1–4 hex digits, or at most 7 with one `::`.
+ * The last group may be an IPv4 tail, which stands for two.
+ */
+function ipv6Valid(s: string): boolean {
+  const halves = s.split("::");
+  const groups = halves.flatMap((half) => (half === "" ? [] : half.split(":")));
+  if (!s.endsWith(":") && IPV4_TAIL.test(groups[groups.length - 1]!)) {
+    groups.splice(-1, 1, "0", "0");
+  }
+  return (
+    groups.every((group) => /^[\dA-Fa-f]{1,4}$/.test(group)) &&
+    (halves.length === 1 ? groups.length === 8 : halves.length === 2 && groups.length < 8)
+  );
+}
+
+/** The address in a run without its trailing dots and single `:` ("" for none). */
+function ipv6Fit(run: string): string {
+  let end = run.length;
+  while (run[end - 1] === ".") end--;
+  if (run[end - 1] === ":" && run[end - 2] !== ":") end--;
+  const address = run.slice(0, end);
+  return /\d/.test(address) && ipv6Valid(address) ? address : "";
+}
 
 const RULES: Rule[] = [
   {
@@ -282,6 +319,14 @@ const RULES: Rule[] = [
   {
     type: "SSN",
     pattern: /(?<!\w|\d-)\d{3}-\d{2}-\d{4}(?!\w|-\d)/g,
+  },
+  {
+    // A whole run (atomic: lookahead plus back-reference) of hex groups and
+    // dots with a `:`, starting at a run's start or after a key's `:`.
+    type: "IPV6",
+    pattern:
+      /(?:(?<![\w:.])|(?<=(?:(?<![\w:.])|[^\W\dA-Fa-f][\dA-Fa-f]*):)(?=[\dA-Fa-f]))(?=([\dA-Fa-f.]*(?::[\dA-Fa-f.]*)+))\1(?!(?<=[\dA-Fa-f])\w)/g,
+    fit: ipv6Fit,
   },
   {
     type: "IPV4",
@@ -433,7 +478,8 @@ export function redact(text: string): RedactionResult {
 }
 
 /**
- * The rule set as it was before the key rules. Not exported from the package
+ * The rule set without the key rules (IPv6 is not a key rule: it must run
+ * before IPv4 in the first stage). Not exported from the package
  * index: it exists so a test can compare redact() against it.
  */
 export function redactLegacy(text: string): RedactionResult {
