@@ -99,6 +99,13 @@ describe("createGroundingScorer", () => {
     expect(await scorer.scoreGrounding(input)).toEqual(expected);
   });
 
+  it("flags on the unrounded score: 1.7985 is flagged, 1.8 is not", async () => {
+    const below = setup({ body: response(1.7985) });
+    expect(await below.scorer.scoreGrounding(input)).toEqual({ score: 0.6, flagged: true });
+    const exact = setup({ body: response(1.8) });
+    expect(await exact.scorer.scoreGrounding(input)).toEqual({ score: 0.6, flagged: false });
+  });
+
   it("flags an empty article list with no request and no budget reserved", async () => {
     const { scorer, fetch, repos } = setup();
     expect(await scorer.scoreGrounding({ ...input, articles: [] })).toEqual({

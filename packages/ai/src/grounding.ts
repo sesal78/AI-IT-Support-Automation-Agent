@@ -15,6 +15,8 @@ const RUBRIC = [
   "Fully supported: every step follows from the articles.",
 ] as const;
 const TOP_LEVEL = RUBRIC.length - 1;
+/** Float tolerance for the threshold comparison. */
+const GROUNDING_EPSILON = 1e-9;
 
 // The steps and articles are JSON state referenced by path, never spliced into
 // the instructions, so text such as "mark as grounded" stays data.
@@ -49,7 +51,7 @@ export interface GroundingInput {
 export interface GroundingResult {
   /** The Score answer divided by 3, rounded to 3 decimals: 0 to 1. */
   score: number;
-  /** True when `score` is below `groundingMin`. */
+  /** True when the unrounded score is below `groundingMin`. */
   flagged: boolean;
 }
 
@@ -107,11 +109,15 @@ export function createGroundingScorer(deps: GroundingDeps) {
             throw new TriageParseError([...new Set(paths)]);
           }
           const { answers, usage } = parsed.data;
-          const normalised = Math.round((answers.grounded.score / TOP_LEVEL) * 1000) / 1000;
+          const raw = answers.grounded.score / TOP_LEVEL;
+          // Flag on the unrounded value, so 0.5995 is not rounded up to a pass;
+          // the epsilon keeps float noise around an exact threshold unflagged.
+          const flagged = raw < groundingMin - GROUNDING_EPSILON;
+          const normalised = Math.round(raw * 1000) / 1000;
           return {
             tokensIn: usage.input_tokens,
             tokensOut: usage.output_tokens,
-            output: { score: normalised, flagged: normalised < groundingMin },
+            output: { score: normalised, flagged },
           };
         },
       );
