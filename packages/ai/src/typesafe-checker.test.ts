@@ -1,8 +1,27 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { BudgetExceededError } from "./meter.js";
 import { SENSITIVE_TOPICS } from "./sensitive.js";
-import { createTypeSafeChecker } from "./typesafe-checker.js";
+import type { AiCallMeta, createAiRuntime } from "./trace.js";
+import { SENSITIVE_CHECK_CALLS, createTypeSafeChecker } from "./typesafe-checker.js";
+import { TYPESAFE_MODEL } from "./typesafe-model.js";
 
 const FAKE_KEY = "test-typesafe-key";
+
+/** A runtime that runs `fn` directly and records each call's meta. */
+function passthroughRuntime() {
+  const metas: AiCallMeta[] = [];
+  const runtime: Pick<ReturnType<typeof createAiRuntime>, "call"> = {
+    call: async (meta, fn) => {
+      metas.push(meta);
+      return fn();
+    },
+  };
+  return { runtime, call: vi.spyOn(runtime, "call"), metas };
+}
+
+function checkerFor(fake: ReturnType<typeof passthroughRuntime> = passthroughRuntime()) {
+  return createTypeSafeChecker({ apiKey: FAKE_KEY, runtime: fake.runtime });
+}
 
 function nouls(values: Record<string, number>) {
   return Object.fromEntries(Object.entries(values).map(([k, noul]) => [k, { type: "noul", noul }]));
@@ -51,7 +70,7 @@ describe("createTypeSafeChecker", () => {
       answers: nouls({ ...allScores, security_incident: 0.8 }),
       usage: { input_tokens: 10, output_tokens: 5 },
     });
-    const checker = createTypeSafeChecker({ apiKey: FAKE_KEY });
+    const checker = checkerFor();
 
     const result = await checker.check({ title: "Odd email", description: "[REDACTED_EMAIL]" });
 
@@ -78,30 +97,85 @@ describe("createTypeSafeChecker", () => {
     const rest: Record<string, number> = { ...allScores };
     delete rest.legal;
     stubFetch(200, { model: "jev-1", answers: nouls(rest), usage: {} });
-    const checker = createTypeSafeChecker({ apiKey: FAKE_KEY });
+    const checker = checkerFor();
     await expect(checker.check({ title: "t", description: "d" })).rejects.toThrow(/legal/);
   });
 
   it("throws when a probability is out of range", async () => {
     stubFetch(200, { model: "jev-1", answers: nouls({ ...allScores, hr: 1.5 }), usage: {} });
-    const checker = createTypeSafeChecker({ apiKey: FAKE_KEY });
+    const checker = checkerFor();
     await expect(checker.check({ title: "t", description: "d" })).rejects.toThrow(/hr/);
   });
 
   it("does not echo ticket text in a shape error", async () => {
     stubFetch(200, { model: "jev-1", answers: nouls({ ...allScores, hr: -1 }), usage: {} });
-    const checker = createTypeSafeChecker({ apiKey: FAKE_KEY });
+    const checker = checkerFor();
     const error = await checker.check({ title: "t", description: "secret words" }).catch((e) => e);
     expect(String(error)).not.toContain("secret words");
   });
 
   it("propagates an API error", async () => {
     stubFetch(400, { detail: "bad request" });
-    const checker = createTypeSafeChecker({ apiKey: FAKE_KEY });
+    const checker = checkerFor();
     await expect(checker.check({ title: "t", description: "d" })).rejects.toThrow();
   });
 
   it("rejects an empty API key", () => {
-    expect(() => createTypeSafeChecker({ apiKey: "" })).toThrow(/apiKey/);
+    expect(() =>
+      createTypeSafeChecker({ apiKey: "", runtime: passthroughRuntime().runtime }),
+    ).toThrow(/apiKey/);
+  });
+
+  it("runs one metered call: typesafe, sensitive_check, 5 calls, the ticket ID and the sent request", async () => {
+    const captured = stubFetch(200, {
+      model: "jev-1.13.0",
+      answers: nouls(allScores),
+      usage: { input_tokens: 42, output_tokens: 7 },
+    });
+    const runtime = passthroughRuntime();
+    const checker = checkerFor(runtime);
+
+    await checker.check({ title: "t", description: "[REDACTED_PHONE]", ticketId: "ticket-1" });
+
+    expect(SENSITIVE_CHECK_CALLS).toBe(5);
+    expect(runtime.call).toHaveBeenCalledTimes(1);
+    const meta = runtime.metas[0]!;
+    expect(meta).toMatchObject({
+      provider: "typesafe",
+      kind: "sensitive_check",
+      calls: 5,
+      ticketId: "ticket-1",
+      model: TYPESAFE_MODEL,
+    });
+    // The span input is exactly what was sent: the redacted ticket and the questions.
+    expect(JSON.parse(JSON.stringify(meta.input))).toEqual(captured[0]!.body);
+    expect(captured[0]!.body.model).toBe(TYPESAFE_MODEL);
+    expect(captured[0]!.body.state).toEqual({
+      ticket: { title: "t", description: "[REDACTED_PHONE]" },
+    });
+    const result = await runtime.call.mock.results[0]!.value;
+    expect(result).toMatchObject({ tokensIn: 42, tokensOut: 7 });
+  });
+
+  it("sends no request when the runtime refuses the budget", async () => {
+    const captured = stubFetch(200, { model: "jev-1", answers: nouls(allScores), usage: {} });
+    const checker = createTypeSafeChecker({
+      apiKey: FAKE_KEY,
+      runtime: {
+        call: async () => {
+          throw new BudgetExceededError("typesafe");
+        },
+      },
+    });
+
+    await expect(checker.check({ title: "t", description: "d" })).rejects.toBeInstanceOf(
+      BudgetExceededError,
+    );
+    expect(captured).toHaveLength(0);
+  });
+
+  it("throws, naming usage, when the token usage is missing", async () => {
+    stubFetch(200, { model: "jev-1", answers: nouls(allScores) });
+    await expect(checkerFor().check({ title: "t", description: "d" })).rejects.toThrow(/usage/);
   });
 });

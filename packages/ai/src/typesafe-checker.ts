@@ -2,6 +2,11 @@ import { TypeSafeClient, noul } from "@typesafe-ai/sdk";
 import { z } from "zod";
 import type { SensitiveChecker } from "./sensitive.js";
 import { SENSITIVE_TOPICS, type SensitiveTopic } from "./topics.js";
+import type { createAiRuntime } from "./trace.js";
+import { TYPESAFE_MODEL } from "./typesafe-model.js";
+
+/** One TypeSafe call per topic question, metered as one request of kind `sensitive_check`. */
+export const SENSITIVE_CHECK_CALLS = SENSITIVE_TOPICS.length;
 
 // One Noul per topic (TypeSafe docs, checked 2026-09-28: `type: "noul"`,
 // `instructions`, optional `criteria`; the answer's `noul` is P(yes), 0-1).
@@ -52,37 +57,69 @@ const answersSchema = z.object(
     z.ZodObject<{ noul: typeof probability }>
   >,
 );
+const tokenCount = z.number().int().min(0);
+const responseSchema = z.object({
+  model: z.string(),
+  answers: answersSchema,
+  usage: z.object({ input_tokens: tokenCount, output_tokens: tokenCount }),
+});
 
 /** The SDK surface the checker uses. */
 type SystemOneClient = Pick<TypeSafeClient, "systemOne">;
 
 /**
  * Creates a SensitiveChecker backed by TypeSafe System One. Server-side only:
- * `apiKey` is the TypeSafe account key. Every failure (network, API error,
- * unexpected answer shape) throws, so the calling task fails and retries.
+ * `apiKey` is the TypeSafe account key. Each check runs through
+ * `runtime.call` (provider `typesafe`, kind `sensitive_check`, 5 calls), so a
+ * refused budget throws `BudgetExceededError` before any request is sent.
+ * Every failure (budget, network, API error, unexpected answer shape) throws.
  */
-export function createTypeSafeChecker(options: { apiKey: string }): SensitiveChecker {
+export function createTypeSafeChecker(options: {
+  apiKey: string;
+  runtime: Pick<ReturnType<typeof createAiRuntime>, "call">;
+}): SensitiveChecker {
   if (options.apiKey.trim() === "") throw new Error("createTypeSafeChecker: apiKey is required");
+  const { runtime } = options;
   // logLevel is pinned: the SDK logs request bodies (ticket text) at "debug",
   // and TYPESAFE_LOG_LEVEL must not be able to turn that on.
   const client: SystemOneClient = new TypeSafeClient({ apiKey: options.apiKey, logLevel: "warn" });
 
   return {
     async check(input) {
-      const result = await client.systemOne({
+      // Built from the (redacted) title and description only; the span records it as is.
+      const request = {
+        model: TYPESAFE_MODEL,
         state: { ticket: { title: input.title, description: input.description } },
         questions: QUESTIONS,
-      });
-      const parsed = answersSchema.safeParse(result.answers);
-      if (!parsed.success) {
-        // Paths only: issue messages can quote the offending values.
-        const paths = parsed.error.issues.map((issue) => issue.path.join(".") || "(root)");
-        throw new Error(`TypeSafe returned an unexpected answer shape at ${paths.join(", ")}`);
-      }
-      const scores = Object.fromEntries(
-        SENSITIVE_TOPICS.map((t) => [t, parsed.data[t].noul]),
-      ) as Record<SensitiveTopic, number>;
-      return { scores, checker: `typesafe:${result.model}` };
+      };
+      const { output } = await runtime.call(
+        {
+          provider: "typesafe",
+          kind: "sensitive_check",
+          calls: SENSITIVE_CHECK_CALLS,
+          ticketId: input.ticketId,
+          model: TYPESAFE_MODEL,
+          input: request,
+        },
+        async () => {
+          const parsed = responseSchema.safeParse(await client.systemOne(request));
+          if (!parsed.success) {
+            // Paths only: issue messages can quote the offending values.
+            const paths = parsed.error.issues.map((issue) => issue.path.join(".") || "(root)");
+            throw new Error(`TypeSafe returned an unexpected answer shape at ${paths.join(", ")}`);
+          }
+          const { model, answers, usage } = parsed.data;
+          const scores = Object.fromEntries(
+            SENSITIVE_TOPICS.map((t) => [t, answers[t].noul]),
+          ) as Record<SensitiveTopic, number>;
+          return {
+            tokensIn: usage.input_tokens,
+            tokensOut: usage.output_tokens,
+            output: { scores, checker: `typesafe:${model}` },
+          };
+        },
+      );
+      return output;
     },
   };
 }
