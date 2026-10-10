@@ -137,6 +137,21 @@ export const llmEnvShape = {
   LLM_MODEL: z.string().min(1),
 };
 
+// Header-safe: visible ASCII only, so `fetch` never builds an error that quotes the value.
+const headerValue = z.string().regex(/^[!-~]+$/, "must be visible ASCII characters with no spaces");
+
+/**
+ * Live-suite variables (tests/live only). The base URL rule and the staging
+ * refusal live in `loadLiveConfig`, which also reads INTERNAL_API_TOKEN and the
+ * Langfuse keys. STAGING_BASE_URL is optional.
+ */
+export const liveEnvShape = {
+  E2E_BASE_URL: z.url(),
+  CF_ACCESS_CLIENT_ID: headerValue,
+  CF_ACCESS_CLIENT_SECRET: headerValue,
+  STAGING_BASE_URL: z.url().optional(),
+};
+
 type PathSegment = PropertyKey | { key: PropertyKey };
 
 export interface EnvIssue {

@@ -224,6 +224,15 @@ importers:
         specifier: 4.6.4
         version: 4.6.4(typescript@6.0.3)
 
+  tests/live:
+    dependencies:
+      '@ai-it-support/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+
 packages:
 
   '@ai-sdk/gateway@4.0.92':

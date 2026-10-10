@@ -2,6 +2,7 @@ packages:
   - apps/*
   - services/*
   - packages/*
+  - tests/*
 
 # Native install scripts are not needed: Next.js ships prebuilt binaries and
 # the lint resolver works without its postinstall step. The trigger.dev CLI's

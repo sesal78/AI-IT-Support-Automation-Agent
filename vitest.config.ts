@@ -14,7 +14,7 @@ const guardModules = parseGuardModules(
 
 export default defineConfig({
   test: {
-    projects: ["apps/*", "services/*", "packages/*"],
+    projects: ["apps/*", "services/*", "packages/*", "tests/*"],
     exclude: localOnly,
     coverage: {
       enabled: true,
