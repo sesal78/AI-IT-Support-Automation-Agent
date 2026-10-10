@@ -105,6 +105,17 @@ export const triggerProjectEnvShape = {
     .optional(),
 };
 
+/** An https URL that carries no credentials (`parseEnv` never echoes it). */
+const httpsUrl = () =>
+  z.url().refine((value) => {
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" && url.username === "" && url.password === "";
+    } catch {
+      return false;
+    }
+  }, "must be an https URL without credentials");
+
 /**
  * Langfuse Cloud trace export (services/pipeline). The base URL must be https
  * and carry no credentials; `parseEnv` never echoes the secret key.
@@ -112,14 +123,18 @@ export const triggerProjectEnvShape = {
 export const langfuseEnvShape = {
   LANGFUSE_PUBLIC_KEY: z.string().min(1),
   LANGFUSE_SECRET_KEY: z.string().min(1),
-  LANGFUSE_BASE_URL: z.url().refine((value) => {
-    try {
-      const url = new URL(value);
-      return url.protocol === "https:" && url.username === "" && url.password === "";
-    } catch {
-      return false;
-    }
-  }, "must be an https URL without credentials"),
+  LANGFUSE_BASE_URL: httpsUrl(),
+};
+
+/**
+ * Fix-step LLM on OpenCode Go (services/pipeline, packages/ai `createFixDrafter`).
+ * LLM_BASE_URL is the OpenAI-compatible base, e.g. `https://opencode.ai/zen/go/v1`;
+ * the client appends `/chat/completions`. `parseEnv` never echoes the key.
+ */
+export const llmEnvShape = {
+  LLM_API_KEY: z.string().min(1),
+  LLM_BASE_URL: httpsUrl(),
+  LLM_MODEL: z.string().min(1),
 };
 
 type PathSegment = PropertyKey | { key: PropertyKey };

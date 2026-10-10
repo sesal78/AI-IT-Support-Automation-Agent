@@ -77,3 +77,13 @@ export {
   type KbRerankInput,
   type KbRerankResult,
 } from "./kb-rerank.js";
+export {
+  LLM_TIMEOUT_MS,
+  LlmError,
+  LlmUnavailableError,
+  createFixDrafter,
+  type FixDraft,
+  type FixDraftInput,
+  type FixDrafterDeps,
+  type LlmErrorKind,
+} from "./llm-client.js";
