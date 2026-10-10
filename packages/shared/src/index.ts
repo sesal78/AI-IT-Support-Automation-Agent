@@ -24,6 +24,14 @@ export {
   triggerProjectEnvShape,
   type EnvIssue,
 } from "./env.js";
+export {
+  EVAL_SENSITIVE_TOPICS,
+  EVAL_SETS,
+  evalTicketSchema,
+  type EvalSensitiveTopic,
+  type EvalSet,
+  type EvalTicket,
+} from "./eval-ticket.js";
 export { healthConfigSchema, type HealthConfig } from "./health.js";
 export {
   buildKbQuery,
