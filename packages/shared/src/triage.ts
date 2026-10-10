@@ -75,25 +75,38 @@ const unitInterval = z.number().min(0).max(1);
  * `checker` belong to the sensitive check, so none of them is in this schema.
  * `suggestedFix`'s inner shape is any JSON object until the drafter task fixes it.
  * Duplicate flags and duplicate KB IDs (compared in lower case) are rejected.
+ * The four judged fields are null only when the TypeSafe cap stopped the
+ * judgments (P3-T10c); a result with any of them null must take the route
+ * `review` (the DB columns are nullable, migration 0003).
  */
-export const triageResultSchema = z.strictObject({
-  category: z.enum(CATEGORIES),
-  subcategory: z.string().trim().min(1).max(100).nullable(),
-  priority: z.enum(PRIORITIES),
-  urgency: z.enum(URGENCIES),
-  assignmentGroup: z.enum(ASSIGNMENT_GROUPS),
-  route: z.enum(ROUTES),
-  probabilities: z.record(z.string(), unitInterval),
-  flags: z
-    .array(z.enum(TRIAGE_FLAGS))
-    .refine((flags) => new Set(flags).size === flags.length, "duplicate flag"),
-  groundingScore: unitInterval.nullable(),
-  kbArticleIds: z
-    .array(z.uuid().transform((id) => id.toLowerCase()))
-    .max(MAX_KB_ARTICLES)
-    .refine((ids) => new Set(ids).size === ids.length, "duplicate KB article id"),
-  suggestedFix: z.record(z.string(), z.json()).nullable(),
-  modelVersions: z.record(z.string(), z.string()),
-});
+export const triageResultSchema = z
+  .strictObject({
+    category: z.enum(CATEGORIES).nullable(),
+    subcategory: z.string().trim().min(1).max(100).nullable(),
+    priority: z.enum(PRIORITIES).nullable(),
+    urgency: z.enum(URGENCIES).nullable(),
+    assignmentGroup: z.enum(ASSIGNMENT_GROUPS).nullable(),
+    route: z.enum(ROUTES),
+    probabilities: z.record(z.string(), unitInterval),
+    flags: z
+      .array(z.enum(TRIAGE_FLAGS))
+      .refine((flags) => new Set(flags).size === flags.length, "duplicate flag"),
+    groundingScore: unitInterval.nullable(),
+    kbArticleIds: z
+      .array(z.uuid().transform((id) => id.toLowerCase()))
+      .max(MAX_KB_ARTICLES)
+      .refine((ids) => new Set(ids).size === ids.length, "duplicate KB article id"),
+    suggestedFix: z.record(z.string(), z.json()).nullable(),
+    modelVersions: z.record(z.string(), z.string()),
+  })
+  .refine(
+    (r) =>
+      r.route === "review" ||
+      (r.category !== null &&
+        r.priority !== null &&
+        r.urgency !== null &&
+        r.assignmentGroup !== null),
+    { path: ["route"], message: "a result without judgments must take the route review" },
+  );
 
 export type TriageResult = z.infer<typeof triageResultSchema>;

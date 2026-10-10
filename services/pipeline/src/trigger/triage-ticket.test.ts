@@ -16,13 +16,25 @@ import {
   triageResultSchema,
   type TriageResult,
 } from "@ai-it-support/shared";
-import { createTriageJudge, type TriageJudgeDeps } from "@ai-it-support/ai";
+import {
+  BudgetExceededError,
+  LlmUnavailableError,
+  createAiRuntime,
+  createLangfuseSink,
+  createTriageJudge,
+  type TraceSpan,
+  type TriageJudgeDeps,
+} from "@ai-it-support/ai";
 import { AbortTaskRunError } from "@trigger.dev/sdk";
 import { describe, expect, it, vi } from "vitest";
 import {
+  createSwitchableSink,
   createTriageDeps,
+  createTriageFailureDeps,
+  onTriageFailure,
   runTriageTicket,
   triageTicket,
+  triageTicketOptions,
   triageTicketPayload,
   type TriageDeps,
 } from "./triage-ticket.js";
@@ -42,7 +54,7 @@ const REDACTED = {
   description: "The VPN client disconnects, call [REDACTED_PHONE]",
 };
 
-function ticket(status = "redacted"): Ticket {
+function ticket(status = "redacted", isTest = false): Ticket {
   return {
     id: ticketId,
     source: "web",
@@ -55,7 +67,7 @@ function ticket(status = "redacted"): Ticket {
     servicenow_sys_id: null,
     servicenow_number: null,
     idempotency_key: "key-1",
-    is_test: false,
+    is_test: isTest,
     created_at: now,
   };
 }
@@ -143,6 +155,13 @@ interface Options {
   fail?: string;
   /** Fail only the first time, so a second attempt can succeed. */
   failOnce?: boolean;
+  /** The ticket's is_test and the env E2E_MODE. */
+  isTest?: boolean;
+  e2eMode?: boolean;
+  /** Thrown by the judge on every call. */
+  judgeError?: () => Error;
+  /** Thrown by the drafter when it returns an error for the input. */
+  draftError?: (input: { capOverride?: number }) => Error | undefined;
 }
 
 const AI_STEPS = ["judge", "searchKb", "rerank", "draft", "grounding"];
@@ -154,6 +173,7 @@ function harness(options: Options = {}) {
   const saved: TriageResult[] = [];
   const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
   const statuses: string[] = [];
+  const alerts: Array<[string, unknown]> = [];
   const candidates = options.candidates ?? [candidate(1), candidate(2), candidate(3)];
   // Stateful fakes: a failed write stores nothing, a successful one is seen by the next attempt.
   let failing = options.fail;
@@ -174,7 +194,7 @@ function harness(options: Options = {}) {
     repos: {
       getTicket: vi.fn(async () => {
         calls.push("getTicket");
-        return options.found === undefined ? ticket(status) : options.found;
+        return options.found === undefined ? ticket(status, options.isTest) : options.found;
       }),
       getRedaction: vi.fn(async () => {
         calls.push("getRedaction");
@@ -231,6 +251,7 @@ function harness(options: Options = {}) {
     judge: {
       judge: vi.fn(async (input) => {
         step("judge", input);
+        if (options.judgeError) throw options.judgeError();
         return judgments;
       }),
     },
@@ -247,6 +268,8 @@ function harness(options: Options = {}) {
     drafter: {
       draft: vi.fn(async (input) => {
         step("draft", input);
+        const error = options.draftError?.(input);
+        if (error) throw error;
         return draft;
       }),
     },
@@ -262,6 +285,11 @@ function harness(options: Options = {}) {
       NEEDS_INFO_THRESHOLD: 0.5,
       OUTAGE_THRESHOLD: 0.5,
     },
+    e2eMode: options.e2eMode ?? false,
+    alert: vi.fn(async (kind: string, alertOptions?: unknown) => {
+      alerts.push([kind, alertOptions]);
+    }),
+    setTraceSinkDown: vi.fn(),
     logger: { info: log, warn: log, error: log },
   };
   const aiCalls = () => calls.filter((c) => AI_STEPS.includes(c)).length;
@@ -269,7 +297,24 @@ function harness(options: Options = {}) {
     calls.filter(
       (c) => c.startsWith("event:") || c.startsWith("status:") || c === "saveTriageResult",
     );
-  return { deps, calls, aiInputs, logs, saved, events, statuses, candidates, writes, aiCalls };
+  const count = (name: string) => calls.filter((c) => c === name).length;
+  const failureDeps = () => ({ repos: deps.repos, alert: deps.alert, logger: deps.logger });
+  return {
+    deps,
+    calls,
+    aiInputs,
+    logs,
+    saved,
+    events,
+    statuses,
+    alerts,
+    candidates,
+    writes,
+    aiCalls,
+    count,
+    failureDeps,
+    triage: () => triageState,
+  };
 }
 
 describe("triage-ticket task", () => {
@@ -286,13 +331,13 @@ describe("triage-ticket task", () => {
       "getTicket",
       "getRedaction",
       "getTriage",
+      "listEventTypes",
       "judge",
       "searchKb",
       "rerank",
       "draft",
       "grounding",
       "saveTriageResult",
-      "listEventTypes",
       "event:kb_matched",
       "event:fix_drafted",
       "event:policy_decided",
@@ -595,6 +640,495 @@ describe("triage-ticket retry after a failed write", () => {
   });
 });
 
+const llmCap = () => new BudgetExceededError("llm");
+const typesafeCap = () => new BudgetExceededError("typesafe");
+const llm429 = () => new LlmUnavailableError();
+const types = (h: ReturnType<typeof harness>) => h.events.map((e) => e.type);
+
+describe("triage-ticket LLM cap (BudgetExceededError from the drafter)", () => {
+  it("ends triaged, route review, reason cap_reached, no fix, no grounding, event llm_cap_reached", async () => {
+    const h = harness({ draftError: llmCap });
+
+    const result = await runTriageTicket({ ticketId }, h.deps);
+
+    expect(result).toEqual({ ticketId, skipped: false, route: "review", reasons: ["cap_reached"] });
+    expect(types(h)).toEqual(["llm_cap_reached", "kb_matched", "policy_decided", "triaged"]);
+    expect(types(h)).not.toContain("fix_drafted");
+    expect(h.events[0]).toEqual({ type: "llm_cap_reached", payload: {} });
+    expect(h.deps.grounding.scoreGrounding).not.toHaveBeenCalled();
+    expect(h.count("draft")).toBe(1);
+    expect(h.saved).toHaveLength(1);
+    expect(h.saved[0]).toMatchObject({
+      route: "review",
+      category: "network",
+      suggestedFix: null,
+      groundingScore: null,
+      modelVersions: { typesafe: "jev-reported-1" },
+    });
+    expect(h.saved[0]!.modelVersions).not.toHaveProperty("llm");
+    expect(h.statuses).toEqual(["triaged"]);
+    // The meter raises the cap alerts; this path adds none.
+    expect(h.alerts).toEqual([]);
+  });
+
+  it("keeps sensitive first and adds cap_reached", async () => {
+    const h = harness({ triage: triageRow(true), draftError: llmCap });
+
+    await expect(runTriageTicket({ ticketId }, h.deps)).resolves.toMatchObject({
+      route: "review",
+      reasons: ["sensitive", "cap_reached"],
+    });
+    expect(h.events.find((e) => e.type === "policy_decided")?.payload).toEqual({
+      route: "review",
+      reasons: ["sensitive", "cap_reached"],
+    });
+  });
+
+  it("a TypeSafe BudgetExceededError from the drafter is not taken for the LLM cap", async () => {
+    const h = harness({ draftError: typesafeCap });
+
+    await expect(runTriageTicket({ ticketId }, h.deps)).rejects.toBeInstanceOf(BudgetExceededError);
+    expect(h.writes()).toEqual([]);
+  });
+});
+
+describe("triage-ticket test switch llmCallCap", () => {
+  // The drafter fake refuses like the real meter when the cap is 0.
+  const refuseAtZero = (input: { capOverride?: number }) =>
+    input.capOverride === 0 ? llmCap() : undefined;
+  const payload = { ticketId, testOverrides: { llmCallCap: 0 } };
+
+  it("E2E_MODE=true and is_test: the drafter gets the cap 0 and the run ends capped", async () => {
+    const h = harness({ e2eMode: true, isTest: true, draftError: refuseAtZero });
+
+    await expect(runTriageTicket(payload, h.deps)).resolves.toMatchObject({
+      route: "review",
+      reasons: ["cap_reached"],
+    });
+    expect(vi.mocked(h.deps.drafter.draft).mock.calls[0]![0].capOverride).toBe(0);
+    expect(types(h)).toContain("llm_cap_reached");
+  });
+
+  it("passes a non-zero cap through unchanged", async () => {
+    const h = harness({ e2eMode: true, isTest: true });
+
+    await runTriageTicket({ ticketId, testOverrides: { llmCallCap: 7 } }, h.deps);
+    expect(vi.mocked(h.deps.drafter.draft).mock.calls[0]![0].capOverride).toBe(7);
+  });
+
+  it.each([
+    ["E2E_MODE=false", { e2eMode: false, isTest: true }],
+    ["is_test = false", { e2eMode: true, isTest: false }],
+    ["neither", { e2eMode: false, isTest: false }],
+  ])("%s: the switch is ignored and the drafter uses the env cap", async (_, flags) => {
+    const h = harness({ ...flags, draftError: refuseAtZero });
+
+    await expect(runTriageTicket(payload, h.deps)).resolves.toMatchObject({ route: "auto" });
+    expect(vi.mocked(h.deps.drafter.draft).mock.calls[0]![0]).not.toHaveProperty("capOverride");
+    expect(types(h)).not.toContain("llm_cap_reached");
+  });
+
+  it.each([
+    ["-1", -1],
+    ["NaN", Number.NaN],
+    ["1.5", 1.5],
+    ["100001", 100_001],
+    ["1e12", 1e12],
+    ["Infinity", Number.POSITIVE_INFINITY],
+  ])("llmCallCap %s is rejected by the payload schema", (_, value) => {
+    expect(
+      triageTicketPayload.safeParse({ ticketId, testOverrides: { llmCallCap: value } }).success,
+    ).toBe(false);
+  });
+
+  it.each([
+    ["-1", { llmCallCap: -1 }],
+    ["NaN", { llmCallCap: Number.NaN }],
+    ["1e12", { llmCallCap: 1e12 }],
+    ["an unknown switch", { asleep: true }],
+  ])(
+    "llmCallCap %s past the schema aborts with no AI call and no write, even outside e2e mode",
+    async (_, testOverrides) => {
+      for (const flags of [
+        { e2eMode: true, isTest: true },
+        { e2eMode: false, isTest: false },
+      ]) {
+        const h = harness(flags);
+        const bad = { ticketId, testOverrides } as unknown as Parameters<typeof runTriageTicket>[0];
+
+        const error: unknown = await runTriageTicket(bad, h.deps).catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(AbortTaskRunError);
+        expect((error as Error).message).toMatch(/invalid test overrides/);
+        expect(h.aiCalls()).toBe(0);
+        expect(h.writes()).toEqual([]);
+      }
+    },
+  );
+});
+
+describe("triage-ticket LLM 429 (LlmUnavailableError)", () => {
+  it("one drafter call, event and one alert llm_unavailable, ends triaged with route review", async () => {
+    const h = harness({ draftError: llm429 });
+
+    await expect(runTriageTicket({ ticketId }, h.deps)).resolves.toEqual({
+      ticketId,
+      skipped: false,
+      route: "review",
+      reasons: ["llm_unavailable"],
+    });
+    expect(h.count("draft")).toBe(1);
+    expect(types(h)).toEqual(["llm_unavailable", "kb_matched", "policy_decided", "triaged"]);
+    expect(h.alerts).toEqual([["llm_unavailable", { ticketId }]]);
+    expect(h.deps.grounding.scoreGrounding).not.toHaveBeenCalled();
+    expect(h.saved[0]).toMatchObject({ route: "review", suggestedFix: null, groundingScore: null });
+    expect(h.statuses).toEqual(["triaged"]);
+  });
+
+  it("any other LLM error still fails the run with no write", async () => {
+    const h = harness({ draftError: () => new Error("boom") });
+
+    await expect(runTriageTicket({ ticketId }, h.deps)).rejects.toThrow("boom");
+    expect(h.writes()).toEqual([]);
+    expect(h.alerts).toEqual([]);
+  });
+});
+
+describe("triage-ticket TypeSafe cap at the judgments", () => {
+  it("event and one alert typesafe_cap_reached, no LLM call, triaged, route review, null category", async () => {
+    const h = harness({ judgeError: typesafeCap });
+
+    await expect(runTriageTicket({ ticketId }, h.deps)).resolves.toEqual({
+      ticketId,
+      skipped: false,
+      route: "review",
+      reasons: ["cap_reached"],
+    });
+    expect(types(h)).toEqual(["typesafe_cap_reached", "policy_decided", "triaged"]);
+    expect(h.alerts).toEqual([["typesafe_cap_reached", { ticketId }]]);
+    expect(h.deps.drafter.draft).not.toHaveBeenCalled();
+    expect(h.deps.repos.searchKb).not.toHaveBeenCalled();
+    expect(h.deps.reranker.rerankKb).not.toHaveBeenCalled();
+    expect(h.deps.grounding.scoreGrounding).not.toHaveBeenCalled();
+    expect(h.saved).toEqual([
+      {
+        category: null,
+        subcategory: null,
+        priority: null,
+        urgency: null,
+        assignmentGroup: null,
+        route: "review",
+        probabilities: {},
+        flags: [],
+        groundingScore: null,
+        kbArticleIds: [],
+        suggestedFix: null,
+        modelVersions: {},
+      },
+    ]);
+    expect(h.statuses).toEqual(["triaged"]);
+  });
+
+  it("a sensitive ticket keeps sensitive first", async () => {
+    const h = harness({ triage: triageRow(true), judgeError: typesafeCap });
+
+    await expect(runTriageTicket({ ticketId }, h.deps)).resolves.toMatchObject({
+      route: "review",
+      reasons: ["sensitive", "cap_reached"],
+    });
+  });
+
+  it("an LLM BudgetExceededError from the judge is not taken for the TypeSafe cap", async () => {
+    const h = harness({ judgeError: llmCap });
+
+    await expect(runTriageTicket({ ticketId }, h.deps)).rejects.toBeInstanceOf(BudgetExceededError);
+    expect(h.writes()).toEqual([]);
+  });
+});
+
+describe("triage-ticket degraded paths across attempts", () => {
+  const cases = [
+    ["llm_cap_reached", { draftError: llmCap }, "draft", false],
+    ["llm_unavailable", { draftError: llm429 }, "draft", true],
+    ["typesafe_cap_reached", { judgeError: typesafeCap }, "judge", true],
+  ] as const;
+
+  for (const [event, failure, stepName, alerted] of cases) {
+    it.each(["saveTriageResult", "event:policy_decided", "event:triaged", "status:triaged"])(
+      `${event}: a failure at %s, then a retry: one ${event} event, ${alerted ? "one alert" : "no alert"}, ${stepName} called once`,
+      async (fail) => {
+        const h = harness({ ...failure, fail, failOnce: true });
+
+        await expect(runTriageTicket({ ticketId }, h.deps, 1)).rejects.toThrow(`${fail} failed`);
+        await expect(runTriageTicket({ ticketId }, h.deps, 2)).resolves.toMatchObject({
+          route: "review",
+        });
+
+        expect(types(h).filter((t) => t === event)).toHaveLength(1);
+        expect(h.alerts).toHaveLength(alerted ? 1 : 0);
+        expect(h.count(stepName)).toBe(1);
+        expect(h.deps.drafter.draft).toHaveBeenCalledTimes(
+          event === "typesafe_cap_reached" ? 0 : 1,
+        );
+        for (const type of new Set(types(h))) {
+          expect(types(h).filter((t) => t === type)).toHaveLength(1);
+        }
+        expect(h.saved).toHaveLength(1);
+        expect(h.statuses).toEqual(["triaged"]);
+        const policy = h.events.find((e) => e.type === "policy_decided")!.payload;
+        expect(policy.route).toBe("review");
+        expect(policy.reasons).toEqual([
+          event === "llm_unavailable" ? "llm_unavailable" : "cap_reached",
+        ]);
+      },
+    );
+  }
+
+  it("a resumed llm-capped result rebuilds the reason cap_reached with no AI call", async () => {
+    const h = harness({ draftError: llmCap, fail: "event:policy_decided", failOnce: true });
+    await runTriageTicket({ ticketId }, h.deps).catch(() => undefined);
+    const aiBefore = h.aiCalls();
+
+    await expect(runTriageTicket({ ticketId }, h.deps, 2)).resolves.toMatchObject({
+      reasons: ["cap_reached"],
+    });
+    expect(h.aiCalls()).toBe(aiBefore);
+    expect(types(h)).not.toContain("fix_drafted");
+  });
+
+  it("a saved auto route next to a typesafe_cap_reached event throws on resume and writes nothing", async () => {
+    const h = harness({
+      triage: { ...triageRow(false), route: "auto", triaged_at: now },
+    });
+    await h.deps.repos.addEvent(ticketId, "typesafe_cap_reached", {});
+    const before = h.writes().length;
+
+    await expect(runTriageTicket({ ticketId }, h.deps)).rejects.toThrow(/must route review/);
+    expect(h.writes()).toHaveLength(before);
+  });
+});
+
+describe("triage-ticket test switch langfuseDown (real runtime and sink)", () => {
+  const langfuseEnv = {
+    LANGFUSE_PUBLIC_KEY: "p".repeat(8),
+    LANGFUSE_SECRET_KEY: "s".repeat(8),
+    LANGFUSE_BASE_URL: "https://langfuse.example.test",
+  };
+
+  function wired(flags: { e2eMode: boolean; isTest: boolean }) {
+    const h = harness(flags);
+    const upSpans: TraceSpan[] = [];
+    const fetchSpy = vi.fn();
+    const switchable = createSwitchableSink(
+      { record: async (span) => void upSpans.push(span) },
+      createLangfuseSink(langfuseEnv, { forceDown: true, fetch: fetchSpy }),
+    );
+    const runtime = createAiRuntime({
+      meter: { run: (_options, fn) => fn() },
+      sink: switchable.sink,
+      addEvent: h.deps.repos.addEvent,
+      environment: "e2e",
+      logger: { error: () => undefined },
+    });
+    h.deps.setTraceSinkDown = vi.fn(switchable.setDown);
+    h.deps.judge = {
+      judge: (input) =>
+        runtime.call(
+          { provider: "typesafe", kind: "triage", ticketId, model: "jev", input: {} },
+          async () => {
+            h.calls.push("judge");
+            void input;
+            return judgments;
+          },
+        ),
+    };
+    return { h, upSpans, fetchSpy };
+  }
+  const payload = { ticketId, testOverrides: { langfuseDown: true } };
+
+  it("a test ticket in e2e mode ends triaged with at least one trace_export_failed event", async () => {
+    const { h, upSpans, fetchSpy } = wired({ e2eMode: true, isTest: true });
+
+    await expect(runTriageTicket(payload, h.deps)).resolves.toMatchObject({ skipped: false });
+    expect(h.statuses).toEqual(["triaged"]);
+    expect(types(h).filter((t) => t === "trace_export_failed").length).toBeGreaterThanOrEqual(1);
+    expect(h.events.find((e) => e.type === "trace_export_failed")!.payload).toEqual({
+      kind: "triage",
+    });
+    expect(upSpans).toEqual([]);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a non-test ticket", { e2eMode: true, isTest: false }],
+    ["E2E_MODE=false", { e2eMode: false, isTest: true }],
+  ])("%s: the switch is ignored", async (_, flags) => {
+    const { h, upSpans } = wired(flags);
+
+    await runTriageTicket(payload, h.deps);
+    expect(h.deps.setTraceSinkDown).not.toHaveBeenCalled();
+    expect(types(h)).not.toContain("trace_export_failed");
+    expect(upSpans).toHaveLength(1);
+    expect(h.statuses).toEqual(["triaged"]);
+  });
+});
+
+describe("triage-ticket degraded paths never log ticket text", () => {
+  it("cap, 429 and TypeSafe-cap runs log IDs and names only", async () => {
+    const runs = [
+      harness({ draftError: llmCap }),
+      harness({ draftError: llm429 }),
+      harness({ judgeError: typesafeCap }),
+    ];
+    for (const h of runs) await runTriageTicket({ ticketId }, h.deps);
+
+    const logged = JSON.stringify([
+      ...runs.flatMap((h) => h.logs),
+      ...runs.flatMap((h) => h.events),
+      ...runs.flatMap((h) => h.alerts),
+    ]);
+    expect(logged).toContain(ticketId);
+    for (const text of [
+      ...Object.values(MARKERS),
+      REDACTED.title,
+      REDACTED.description,
+      "Content of article",
+    ]) {
+      expect(logged).not.toContain(text);
+    }
+  });
+});
+
+class DbDownError extends Error {}
+
+describe("onTriageFailure", () => {
+  it("records triage_failed with the class name, sets failed, raises one alert; triage columns stay null", async () => {
+    const h = harness();
+
+    await onTriageFailure({ payload: { ticketId }, error: new TypeError("x") }, h.failureDeps());
+
+    expect(h.events).toEqual([{ type: "triage_failed", payload: { error: "TypeError" } }]);
+    expect(h.statuses).toEqual(["failed"]);
+    expect(h.alerts).toEqual([["triage_failed", { ticketId }]]);
+    expect(h.saved).toEqual([]);
+    const row = h.triage()!;
+    for (const column of [
+      "category",
+      "priority",
+      "urgency",
+      "assignment_group",
+      "route",
+      "probabilities",
+      "suggested_fix",
+      "triaged_at",
+    ] as const) {
+      expect(row[column]).toBeNull();
+    }
+  });
+
+  it("names a custom error class and never the message (it may hold ticket text)", async () => {
+    const h = harness();
+
+    await onTriageFailure(
+      { payload: { ticketId }, error: new DbDownError(MARKERS.title) },
+      h.failureDeps(),
+    );
+
+    expect(h.events[0]!.payload).toEqual({ error: "DbDownError" });
+    expect(JSON.stringify([h.events, h.logs, h.alerts])).not.toContain(MARKERS.title);
+  });
+
+  it("after a failed AI step: one triage_failed, status failed, no triage write", async () => {
+    const h = harness({ fail: "draft" });
+    const error: unknown = await runTriageTicket({ ticketId }, h.deps).catch((e: unknown) => e);
+
+    await onTriageFailure({ payload: { ticketId }, error }, h.failureDeps());
+
+    expect(types(h)).toEqual(["triage_failed"]);
+    expect(h.statuses).toEqual(["failed"]);
+    expect(h.saved).toEqual([]);
+  });
+
+  it.each(["failed", "triaged", "auto", "review_pending", "new"])(
+    "changes nothing on a ticket with status %s",
+    async (status) => {
+      const h = harness({ found: ticket(status) });
+
+      await onTriageFailure({ payload: { ticketId }, error: new Error("x") }, h.failureDeps());
+
+      expect(h.writes()).toEqual([]);
+      expect(h.alerts).toEqual([]);
+    },
+  );
+
+  it("changes nothing on an unknown ticket", async () => {
+    const h = harness({ found: null });
+
+    await onTriageFailure({ payload: { ticketId }, error: new Error("x") }, h.failureDeps());
+    expect(h.writes()).toEqual([]);
+    expect(h.alerts).toEqual([]);
+  });
+
+  it("does not set failed while a saved triage result exists (left for the resumable retry)", async () => {
+    const h = harness({ fail: "event:kb_matched" });
+    await runTriageTicket({ ticketId }, h.deps).catch(() => undefined);
+    expect(h.triage()!.triaged_at).not.toBeNull();
+    const writesBefore = h.writes().length;
+
+    await onTriageFailure({ payload: { ticketId }, error: new Error("x") }, h.failureDeps());
+
+    expect(h.writes()).toHaveLength(writesBefore);
+    expect(h.statuses).toEqual([]);
+    expect(types(h)).not.toContain("triage_failed");
+    expect(h.alerts).toEqual([]);
+  });
+
+  it.each(["getTicket", "getTriage", "addEvent", "setTicketStatus"] as const)(
+    "the database is down at %s: logs the class names and does not throw",
+    async (method) => {
+      const h = harness();
+      vi.mocked(h.deps.repos[method]).mockRejectedValue(new DbDownError("connection refused"));
+
+      await expect(
+        onTriageFailure({ payload: { ticketId }, error: new TypeError("x") }, h.failureDeps()),
+      ).resolves.toBeUndefined();
+
+      const logged = JSON.stringify(h.logs);
+      expect(logged).toContain("DbDownError");
+      expect(logged).toContain("TypeError");
+      expect(logged).not.toContain("connection refused");
+    },
+  );
+
+  it("does not throw when the logger throws too", async () => {
+    const h = harness();
+    vi.mocked(h.deps.repos.getTicket).mockRejectedValue(new DbDownError());
+    const boom = () => {
+      throw new Error("log down");
+    };
+    const deps = { ...h.failureDeps(), logger: { info: boom, warn: boom, error: boom } };
+
+    await expect(
+      onTriageFailure({ payload: { ticketId }, error: new Error("x") }, deps),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each([{}, { ticketId: "not-a-uuid" }, null, "x"])(
+    "a payload without a valid ticket id touches no database: %j",
+    async (payload) => {
+      const h = harness();
+
+      await onTriageFailure({ payload, error: new Error("x") }, h.failureDeps());
+      expect(h.calls).toEqual([]);
+    },
+  );
+
+  it("is the task's onFailure hook", () => {
+    expect(triageTicketOptions.onFailure).toBe(onTriageFailure);
+    expect(triageTicketOptions.id).toBe("triage-ticket");
+    expect(triageTicketOptions.schema).toBe(triageTicketPayload);
+  });
+});
+
 describe("triage-ticket department privacy (real judge)", () => {
   const DEPT_MARKER = "deptmarker4471@example.test";
 
@@ -713,6 +1247,39 @@ describe("createTriageDeps", () => {
     "LANGFUSE_SECRET_KEY",
   ] as const)("fails naming %s when it is missing", (name) => {
     expect(() => createTriageDeps({ ...env, [name]: undefined })).toThrow(new RegExp(name));
+  });
+
+  it("reads E2E_MODE and exposes the alert and the trace-sink switch", () => {
+    expect(createTriageDeps(env).e2eMode).toBe(false);
+    const deps = createTriageDeps({ ...env, E2E_MODE: "true" });
+    expect(deps.e2eMode).toBe(true);
+    expect(typeof deps.alert).toBe("function");
+    expect(() => deps.setTraceSinkDown(true)).not.toThrow();
+  });
+
+  it("createTriageFailureDeps needs the database variables only", () => {
+    const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_DB_SCHEMA } = env;
+    const deps = createTriageFailureDeps({
+      SUPABASE_URL,
+      SUPABASE_SERVICE_ROLE_KEY,
+      SUPABASE_DB_SCHEMA,
+    });
+    expect(typeof deps.repos.setTicketStatus).toBe("function");
+    expect(typeof deps.alert).toBe("function");
+    expect(() => createTriageFailureDeps({ ...env, SUPABASE_URL: undefined })).toThrow(
+      /SUPABASE_URL/,
+    );
+  });
+
+  it("onTriageFailure with no deps and no database env does not throw", async () => {
+    vi.stubEnv("SUPABASE_URL", "");
+    try {
+      await expect(
+        onTriageFailure({ payload: { ticketId }, error: new Error("x") }),
+      ).resolves.toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("fails naming GROUNDING_MIN and TRIAGE_CONFIDENCE_MIN when invalid, without echoing the key", () => {
