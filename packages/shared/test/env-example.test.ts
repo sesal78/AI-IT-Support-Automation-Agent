@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   aiBudgetEnvShape,
   e2eEnvShape,
+  groundingEnvShape,
   intakeEnvShape,
   internalEnvShape,
   langfuseEnvShape,
@@ -28,6 +29,7 @@ const allEnvShapes = {
   ...triggerProjectEnvShape,
   ...langfuseEnvShape,
   ...policyEnvShape,
+  ...groundingEnvShape,
   ...llmEnvShape,
   ...liveEnvShape,
 };

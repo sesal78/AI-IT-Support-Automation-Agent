@@ -3,6 +3,7 @@ import {
   aiBudgetEnvShape,
   e2eEnvShape,
   formatEnvIssues,
+  groundingEnvShape,
   intakeEnvShape,
   internalEnvShape,
   langfuseEnvShape,
@@ -283,4 +284,16 @@ describe("llmEnvShape", () => {
       expect(message).not.toContain(value);
     },
   );
+});
+
+describe("groundingEnvShape", () => {
+  it("defaults GROUNDING_MIN to 0.6 when unset or empty", () => {
+    expect(parseEnv(groundingEnvShape, {}).GROUNDING_MIN).toBe(0.6);
+    expect(parseEnv(groundingEnvShape, { GROUNDING_MIN: "" }).GROUNDING_MIN).toBe(0.6);
+    expect(parseEnv(groundingEnvShape, { GROUNDING_MIN: "0.75" }).GROUNDING_MIN).toBe(0.75);
+  });
+
+  it.each(["1.5", "-0.1", "abc", " "])("rejects GROUNDING_MIN=%s, naming it", (value) => {
+    expect(() => parseEnv(groundingEnvShape, { GROUNDING_MIN: value })).toThrow(/GROUNDING_MIN/);
+  });
 });
