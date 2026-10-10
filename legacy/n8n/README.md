@@ -1,6 +1,6 @@
 # Legacy n8n workflows (live snapshot)
 
-These are the last live versions from `n8n.topues.com`, exported on 2026-09-27 before the rebuild.
+These are the last live versions from `n8n.example.com`, exported on 2026-09-27 before the rebuild.
 All 3 workflows were **deactivated** in n8n on the same day. Nothing was deleted.
 
 | File | n8n workflow ID | Nodes | Note |
@@ -13,4 +13,5 @@ These files are for reference only. Do not re-activate them. The main workflow s
 
 **Rollback:** in n8n, open the workflow and switch it back to Active. To restore from a file: `n8n import:workflow --input=<file>`, then re-link credentials.
 
-Credential entries hold n8n credential IDs only. They contain no secret values.
+Credential entries hold placeholder IDs only. They contain no secret values.
+Identifiers in these exports are replaced with placeholders; the workflows are archived and must stay inactive.
