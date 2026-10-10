@@ -78,6 +78,12 @@ export {
   type KbRerankResult,
 } from "./kb-rerank.js";
 export {
+  createGroundingScorer,
+  type GroundingDeps,
+  type GroundingInput,
+  type GroundingResult,
+} from "./grounding.js";
+export {
   LLM_TIMEOUT_MS,
   LlmError,
   LlmUnavailableError,

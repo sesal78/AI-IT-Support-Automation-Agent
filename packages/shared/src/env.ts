@@ -74,6 +74,14 @@ export const policyEnvShape = {
 };
 
 /**
+ * Fix-step grounding (services/pipeline, packages/ai `createGroundingScorer`).
+ * Steps whose normalised grounding score is below GROUNDING_MIN are flagged.
+ */
+export const groundingEnvShape = {
+  GROUNDING_MIN: unitThreshold(0.6),
+};
+
+/**
  * A monthly AI call cap: plain decimal digits only, 0 to 1,000,000,000. A
  * typo such as `abc`, `-1`, `1e3`, `1.5` or ` 5` fails at boot rather than
  * becoming a wrong cap (spend control fails closed). `0` is valid and refuses

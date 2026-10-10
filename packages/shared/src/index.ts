@@ -14,6 +14,7 @@ export {
   aiBudgetEnvShape,
   e2eEnvShape,
   formatEnvIssues,
+  groundingEnvShape,
   intakeEnvShape,
   langfuseEnvShape,
   internalEnvShape,
