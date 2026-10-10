@@ -12,15 +12,24 @@ import {
   createTypeSafeChecker,
 } from "@ai-it-support/ai";
 import type { NewRedaction, NewTriage, Ticket } from "@ai-it-support/db";
-import { buildCanaries, findCanaries } from "@ai-it-support/shared";
+import {
+  assertTransition,
+  buildCanaries,
+  findCanaries,
+  type TicketStatus,
+  type TriageTicketPayload,
+} from "@ai-it-support/shared";
+import { AbortTaskRunError, idempotencyKeys, tasks } from "@trigger.dev/sdk";
 import { HttpResponse } from "msw";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEgressRecorder } from "../../../../packages/shared/test-support/egress-recorder.js";
 import {
   createIntakeDeps,
   intakeTicket,
   intakeTicketPayload,
   runIntakeTicket,
+  triageIdempotencyKey,
+  triggerTriageTask,
   type IntakeDeps,
 } from "./intake-ticket.js";
 
@@ -59,6 +68,13 @@ interface Harness {
   check: ReturnType<typeof vi.fn>;
   alerts: Array<{ kind: string; options: unknown }>;
   logs: unknown[][];
+  triggers: Array<{ payload: TriageTicketPayload; options: { idempotencyKey: string } }>;
+  status(): TicketStatus;
+}
+
+/** Thrown by the fake trigger: the run records only its class name. */
+class TriggerApiError extends Error {
+  override readonly name = "TriggerApiError";
 }
 
 function harness(found: Ticket | null, checkerImpl: SensitiveChecker["check"]): Harness {
@@ -68,6 +84,8 @@ function harness(found: Ticket | null, checkerImpl: SensitiveChecker["check"]): 
   const events: Harness["events"] = [];
   const logs: unknown[][] = [];
   const alerts: Harness["alerts"] = [];
+  const triggers: Harness["triggers"] = [];
+  let status = (found?.status ?? "new") as TicketStatus;
   const check = vi.fn(checkerImpl);
   const log = (...args: unknown[]) => {
     logs.push(args);
@@ -93,6 +111,18 @@ function harness(found: Ticket | null, checkerImpl: SensitiveChecker["check"]): 
         events.push({ type, payload });
         return { id: events.length, ticket_id: id, type, payload, at: now };
       }),
+      // Mirrors the repository: same status is `changed: false`, an illegal move throws.
+      setTicketStatus: vi.fn(async (_id: string, to: TicketStatus) => {
+        calls.push(`setTicketStatus:${to}`);
+        if (status === to) return { changed: false };
+        assertTransition(status, to);
+        status = to;
+        return { changed: true };
+      }),
+      listEventTypes: vi.fn(async (_id: string, types: readonly string[]) => {
+        calls.push(`listEventTypes:${types.join(",")}`);
+        return [...new Set(events.map((e) => e.type).filter((type) => types.includes(type)))];
+      }),
     },
     checker: { check },
     threshold: 0.5,
@@ -100,9 +130,25 @@ function harness(found: Ticket | null, checkerImpl: SensitiveChecker["check"]): 
       calls.push(`alert:${kind}`);
       alerts.push({ kind, options });
     }),
+    triggerTriage: vi.fn(async (payload: TriageTicketPayload, options) => {
+      calls.push("triggerTriage");
+      triggers.push({ payload, options });
+      return { id: "run_triage_1" };
+    }),
     logger: { info: log, warn: log, error: log },
   };
-  return { deps, calls, redactions, triages, events, check, alerts, logs };
+  return {
+    deps,
+    calls,
+    redactions,
+    triages,
+    events,
+    check,
+    alerts,
+    logs,
+    triggers,
+    status: () => status,
+  };
 }
 
 const lowScores = async () => ({ scores: scores(0.1), checker: "typesafe:jev-test" });
@@ -137,10 +183,13 @@ describe("intake-ticket task", () => {
       "getTicket",
       "saveRedaction",
       "event:redacted",
+      "setTicketStatus:redacted",
       "saveTriage",
       "event:sensitive_checked",
+      "triggerTriage",
     ]);
     expect(h.events.map((e) => e.type)).toEqual(["redacted", "sensitive_checked"]);
+    expect(h.status()).toBe("redacted");
     expect(result).toEqual({ ticketId, sensitive: false, flags: [] });
   });
 
@@ -248,7 +297,13 @@ describe("intake-ticket task", () => {
     await expect(runIntakeTicket({ ticketId }, h.deps)).rejects.toThrow("typesafe unavailable");
 
     expect(h.triages).toEqual([]);
-    expect(h.calls).toEqual(["getTicket", "saveRedaction", "event:redacted"]);
+    expect(h.calls).toEqual([
+      "getTicket",
+      "saveRedaction",
+      "event:redacted",
+      "setTicketStatus:redacted",
+    ]);
+    expect(h.deps.triggerTriage).not.toHaveBeenCalled();
   });
 
   it("fails with an error naming an unknown ticket id and writes nothing", async () => {
@@ -258,6 +313,134 @@ describe("intake-ticket task", () => {
 
     expect(h.calls).toEqual(["getTicket"]);
     expect(h.check).not.toHaveBeenCalled();
+  });
+});
+
+describe("intake-ticket triage trigger", () => {
+  it("triggers triage once with { ticketId } and a key built from the ticket ID", async () => {
+    const h = harness(ticket("Laptop", "my laptop is slow"), lowScores);
+
+    await runIntakeTicket({ ticketId }, h.deps);
+
+    expect(h.deps.triggerTriage).toHaveBeenCalledTimes(1);
+    expect(h.triggers).toEqual([
+      { payload: { ticketId }, options: { idempotencyKey: triageIdempotencyKey(ticketId) } },
+    ]);
+    expect(triageIdempotencyKey(ticketId)).toContain(ticketId);
+  });
+
+  it("forwards the payload's testOverrides unchanged", async () => {
+    const h = harness(ticket("Laptop", "my laptop is slow"), lowScores);
+    const testOverrides = { llmCallCap: 0, langfuseDown: true };
+
+    await runIntakeTicket({ ticketId, testOverrides }, h.deps);
+
+    expect(h.triggers).toHaveLength(1);
+    expect(h.triggers[0]!.payload).toEqual({ ticketId, testOverrides });
+    expect(h.triggers[0]!.payload.testOverrides).toBe(testOverrides);
+  });
+
+  it("two attempts pass the same key, and the second accepts the status already redacted", async () => {
+    const h = harness(ticket("Laptop", "my laptop is slow"), lowScores);
+
+    await runIntakeTicket({ ticketId }, h.deps, 1);
+    await expect(runIntakeTicket({ ticketId }, h.deps, 2)).resolves.toMatchObject({ ticketId });
+
+    expect(h.triggers.map((t) => t.options.idempotencyKey)).toEqual([
+      triageIdempotencyKey(ticketId),
+      triageIdempotencyKey(ticketId),
+    ]);
+    expect(h.calls.filter((c) => c === "setTicketStatus:redacted")).toHaveLength(2);
+    expect(h.status()).toBe("redacted");
+  });
+
+  it("a retry after a failed sensitive check sets redacted again without failing, then triggers once", async () => {
+    let calls = 0;
+    const h = harness(ticket("Laptop", "my laptop is slow"), async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("typesafe unavailable");
+      return lowScores();
+    });
+
+    await expect(runIntakeTicket({ ticketId }, h.deps, 1)).rejects.toThrow("typesafe unavailable");
+    expect(h.status()).toBe("redacted");
+    await runIntakeTicket({ ticketId }, h.deps, 2);
+
+    expect(h.deps.triggerTriage).toHaveBeenCalledTimes(1);
+    expect(h.status()).toBe("redacted");
+  });
+
+  it("a failed trigger records triage_enqueue_failed, sets failed, alerts once and aborts", async () => {
+    const description = "I clicked a phishing link, my email is jo@x.com";
+    const h = harness(ticket("Phishing help", description), lowScores);
+    h.deps.triggerTriage = vi.fn(async () => {
+      throw new TriggerApiError("trigger api said no: Phishing help");
+    });
+
+    const error = await runIntakeTicket({ ticketId }, h.deps).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(AbortTaskRunError);
+    expect((error as Error).message).toContain(ticketId);
+    expect((error as Error).message).not.toContain("said no");
+    expect(h.events.filter((e) => e.type === "triage_enqueue_failed")).toEqual([
+      { type: "triage_enqueue_failed", payload: { error: "TriggerApiError" } },
+    ]);
+    expect(h.status()).toBe("failed");
+    expect(h.alerts).toEqual([{ kind: "triage_enqueue_failed", options: { ticketId } }]);
+    expect(h.calls.slice(-4)).toEqual([
+      "listEventTypes:triage_enqueue_failed",
+      "event:triage_enqueue_failed",
+      "setTicketStatus:failed",
+      "alert:triage_enqueue_failed",
+    ]);
+    const logged = JSON.stringify(h.logs);
+    for (const text of ["Phishing help", "clicked", "jo@x.com", "said no"]) {
+      expect(logged).not.toContain(text);
+    }
+    expect(logged).toContain("TriggerApiError");
+  });
+
+  it("records the enqueue failure and its alert once when recording it is retried", async () => {
+    const h = harness(ticket("Laptop", "my laptop is slow"), lowScores);
+    h.deps.triggerTriage = vi.fn(async () => {
+      throw new TriggerApiError("down");
+    });
+    const setTicketStatus = h.deps.repos.setTicketStatus;
+    let failedOnce = false;
+    h.deps.repos.setTicketStatus = vi.fn(async (id: string, to: TicketStatus) => {
+      if (to === "failed" && !failedOnce) {
+        failedOnce = true;
+        throw new Error("db down");
+      }
+      return setTicketStatus(id, to);
+    });
+
+    await expect(runIntakeTicket({ ticketId }, h.deps, 1)).rejects.toThrow("db down");
+    await expect(runIntakeTicket({ ticketId }, h.deps, 2)).rejects.toBeInstanceOf(
+      AbortTaskRunError,
+    );
+
+    expect(h.deps.triggerTriage).toHaveBeenCalledTimes(2);
+    expect(h.events.filter((e) => e.type === "triage_enqueue_failed")).toHaveLength(1);
+    expect(h.alerts).toEqual([{ kind: "triage_enqueue_failed", options: { ticketId } }]);
+    expect(h.status()).toBe("failed");
+  });
+
+  it("a failing enqueue alert still aborts with the ticket ID and logs the class name only", async () => {
+    const h = harness(ticket("Laptop", "my laptop is slow"), lowScores);
+    h.deps.triggerTriage = vi.fn(async () => {
+      throw new TriggerApiError("down");
+    });
+    h.deps.alert = vi.fn(async () => {
+      throw new Error("alert down");
+    });
+
+    await expect(runIntakeTicket({ ticketId }, h.deps)).rejects.toThrow(ticketId);
+
+    expect(h.status()).toBe("failed");
+    const logged = JSON.stringify(h.logs);
+    expect(logged).toContain("alert failed");
+    expect(logged).not.toContain("alert down");
   });
 });
 
@@ -404,11 +587,36 @@ describe("intake-ticket metered sensitive check", () => {
       "getTicket",
       "saveRedaction",
       "event:redacted",
+      "setTicketStatus:redacted",
       "saveTriage",
       "event:sensitive_checked",
+      "listEventTypes:typesafe_cap_reached",
       "event:typesafe_cap_reached",
       "alert:typesafe_cap_reached",
+      "triggerTriage",
     ]);
+  });
+
+  it("records the cap event and alert once when a failed enqueue record is retried", async () => {
+    const h = meteredHarness(ticket("Laptop", "my laptop is slow"), false);
+    h.deps.triggerTriage = vi.fn(async () => {
+      throw new TriggerApiError("down");
+    });
+    const setTicketStatus = h.deps.repos.setTicketStatus;
+    let failedOnce = false;
+    h.deps.repos.setTicketStatus = vi.fn(async (id: string, to: TicketStatus) => {
+      if (to === "failed" && !failedOnce) {
+        failedOnce = true;
+        throw new Error("db down");
+      }
+      return setTicketStatus(id, to);
+    });
+
+    await expect(runIntakeTicket({ ticketId }, h.deps, 1)).rejects.toThrow("db down");
+    await expect(runIntakeTicket({ ticketId }, h.deps, 2)).rejects.toThrow(ticketId);
+
+    expect(h.events.filter((e) => e.type === "typesafe_cap_reached")).toHaveLength(1);
+    expect(h.alerts.map((a) => a.kind)).toEqual(["typesafe_cap_reached", "triage_enqueue_failed"]);
   });
 
   it("records the cap event and alert once when a failed attempt is retried", async () => {
@@ -488,6 +696,42 @@ describe("intakeTicketPayload", () => {
   it("accepts a uuid ticketId", () => {
     expect(intakeTicketPayload.parse({ ticketId })).toEqual({ ticketId });
   });
+
+  it("accepts known test switches", () => {
+    const testOverrides = { llmCallCap: 3, langfuseDown: true };
+    expect(intakeTicketPayload.parse({ ticketId, testOverrides })).toEqual({
+      ticketId,
+      testOverrides,
+    });
+  });
+
+  it("rejects an unknown test switch", () => {
+    expect(intakeTicketPayload.safeParse({ ticketId, testOverrides: { x: 1 } }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe("triggerTriageTask", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("triggers triage-ticket with the payload and a global-scope key", async () => {
+    const trigger = vi
+      .spyOn(tasks, "trigger")
+      .mockResolvedValue({ id: "run_1" } as Awaited<ReturnType<typeof tasks.trigger>>);
+    const create = vi.spyOn(idempotencyKeys, "create");
+    const payload = { ticketId, testOverrides: { llmCallCap: 1 } };
+
+    await triggerTriageTask(payload, { idempotencyKey: triageIdempotencyKey(ticketId) });
+
+    expect(create).toHaveBeenCalledWith(triageIdempotencyKey(ticketId), { scope: "global" });
+    const expected = await idempotencyKeys.create(triageIdempotencyKey(ticketId), {
+      scope: "global",
+    });
+    expect(trigger).toHaveBeenCalledWith("triage-ticket", payload, { idempotencyKey: expected });
+  });
 });
 
 describe("createIntakeDeps", () => {
@@ -504,6 +748,7 @@ describe("createIntakeDeps", () => {
   it("builds deps with the default threshold of 0.5", () => {
     const deps = createIntakeDeps(env);
     expect(deps.threshold).toBe(0.5);
+    expect(deps.triggerTriage).toBe(triggerTriageTask);
     expect(typeof deps.repos.getTicket).toBe("function");
     expect(typeof deps.checker.check).toBe("function");
   });
