@@ -74,9 +74,11 @@ export {
 } from "./test-overrides.js";
 export {
   INTAKE_TICKET_TASK_ID,
+  TRIAGE_TICKET_TASK_ID,
   ticketSubmissionSchema,
   type IntakeTicketPayload,
   type TicketSubmission,
+  type TriageTicketPayload,
 } from "./ticket.js";
 export {
   ASSIGNMENT_GROUPS,
