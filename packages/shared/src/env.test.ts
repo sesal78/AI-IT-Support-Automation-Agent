@@ -117,17 +117,24 @@ describe("sensitiveCheckEnvShape", () => {
     ).toBe(0.5);
   });
 
-  it.each(["0", "0.35", "1"])("accepts SENSITIVE_THRESHOLD=%s as a number", (value) => {
-    expect(
-      parseEnv(sensitiveCheckEnvShape, { ...base, SENSITIVE_THRESHOLD: value }).SENSITIVE_THRESHOLD,
-    ).toBe(Number(value));
-  });
+  it.each(["0", "0.25", "0.35", "1", "1.0"])(
+    "accepts SENSITIVE_THRESHOLD=%s as a number",
+    (value) => {
+      expect(
+        parseEnv(sensitiveCheckEnvShape, { ...base, SENSITIVE_THRESHOLD: value })
+          .SENSITIVE_THRESHOLD,
+      ).toBe(Number(value));
+    },
+  );
 
-  it.each(["abc", "-0.1", "1.5"])("rejects SENSITIVE_THRESHOLD=%s, naming it", (value) => {
-    expect(() => parseEnv(sensitiveCheckEnvShape, { ...base, SENSITIVE_THRESHOLD: value })).toThrow(
-      /SENSITIVE_THRESHOLD/,
-    );
-  });
+  it.each([" ", "	", "0x1", "0b1", "1e-1", ".5", "1.5", "-0", "-0.1", "abc"])(
+    "rejects SENSITIVE_THRESHOLD=%s, naming it",
+    (value) => {
+      expect(() =>
+        parseEnv(sensitiveCheckEnvShape, { ...base, SENSITIVE_THRESHOLD: value }),
+      ).toThrow(/SENSITIVE_THRESHOLD/);
+    },
+  );
 
   it("requires TYPESAFE_API_KEY", () => {
     expect(() => parseEnv(sensitiveCheckEnvShape, {})).toThrow(/TYPESAFE_API_KEY/);

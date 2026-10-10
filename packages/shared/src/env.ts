@@ -42,16 +42,6 @@ export const e2eEnvShape = {
     .transform((value) => value === "true"),
 };
 
-/**
- * Sensitive-topic check env for the intake-ticket task (services/pipeline).
- * SENSITIVE_THRESHOLD is the TypeSafe Noul probability at or above which a
- * topic is flagged; phase 3 evals tune the 0.5 starting value.
- */
-export const sensitiveCheckEnvShape = {
-  TYPESAFE_API_KEY: z.string().min(1),
-  SENSITIVE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
-};
-
 // A plain decimal from 0 to 1. z.coerce.number() would turn " " into 0 and accept
 // "0x1", "0b1" and "1e-1"; a policy threshold must fail closed instead.
 const unitThreshold = (fallback: number) =>
@@ -60,6 +50,16 @@ const unitThreshold = (fallback: number) =>
     .regex(/^(?:0(?:\.\d+)?|1(?:\.0+)?)$/, "must be a decimal number from 0 to 1")
     .transform(Number)
     .default(fallback);
+
+/**
+ * Sensitive-topic check env for the intake-ticket task (services/pipeline).
+ * SENSITIVE_THRESHOLD is the TypeSafe Noul probability at or above which a
+ * topic is flagged; phase 3 evals tune the 0.5 starting value.
+ */
+export const sensitiveCheckEnvShape = {
+  TYPESAFE_API_KEY: z.string().min(1),
+  SENSITIVE_THRESHOLD: unitThreshold(0.5),
+};
 
 /**
  * Policy engine thresholds (services/pipeline). Each is a number from 0 to 1.
