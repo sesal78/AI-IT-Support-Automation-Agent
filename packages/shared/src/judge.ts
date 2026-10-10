@@ -41,8 +41,8 @@ const scoreQuestion = z.strictObject({
 export const judgeQuestionSchema = z.discriminatedUnion("type", [noulQuestion, scoreQuestion]);
 export type JudgeQuestion = z.infer<typeof judgeQuestionSchema>;
 
-type JsonState = { [key: string]: JsonValue };
-type JsonValue = string | number | boolean | null | JsonValue[] | JsonState;
+export type JsonState = { [key: string]: JsonValue };
+export type JsonValue = string | number | boolean | null | JsonValue[] | JsonState;
 
 /**
  * Null when `value` is a plain JSON object whose leaves are strings, finite

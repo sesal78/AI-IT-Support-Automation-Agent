@@ -114,6 +114,8 @@ export {
   judgeQuestionSchema,
   judgeTextOutputSchema,
   judgeTextPayloadSchema,
+  type JsonState,
+  type JsonValue,
   type JudgeQuestion,
   type JudgeTextOutput,
   type JudgeTextPayload,
