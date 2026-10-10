@@ -135,18 +135,41 @@ describe("triageResultSchema", () => {
     expect(fields(rest)).toContain(key);
   });
 
-  it.each([
-    "category",
-    "priority",
-    "urgency",
-    "assignmentGroup",
-    "route",
-    "probabilities",
-    "flags",
-    "kbArticleIds",
-    "modelVersions",
-  ])("rejects a null %s", (key) => {
-    expect(fields({ ...valid, [key]: null })).toContain(key);
+  it.each(["route", "probabilities", "flags", "kbArticleIds", "modelVersions"])(
+    "rejects a null %s",
+    (key) => {
+      expect(fields({ ...valid, [key]: null })).toContain(key);
+    },
+  );
+
+  // The TypeSafe cap leaves the judged fields null (P3-T10c); such a result must route review.
+  it.each(["category", "priority", "urgency", "assignmentGroup"])(
+    "accepts a null %s only with the route review",
+    (key) => {
+      expect(triageResultSchema.safeParse({ ...valid, [key]: null, route: "review" }).success).toBe(
+        true,
+      );
+      expect(fields({ ...valid, [key]: null, route: "auto" })).toEqual(["route"]);
+    },
+  );
+
+  it("accepts the TypeSafe-cap result: no judgments, no KB, no fix, route review", () => {
+    const capped = {
+      category: null,
+      subcategory: null,
+      priority: null,
+      urgency: null,
+      assignmentGroup: null,
+      route: "review",
+      probabilities: {},
+      flags: [],
+      groundingScore: null,
+      kbArticleIds: [],
+      suggestedFix: null,
+      modelVersions: {},
+    };
+    expect(triageResultSchema.parse(capped)).toEqual(capped);
+    expect(fields({ ...capped, route: "auto" })).toEqual(["route"]);
   });
 
   it("lowercases upper-case UUIDs", () => {
