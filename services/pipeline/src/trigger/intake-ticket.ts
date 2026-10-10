@@ -1,4 +1,15 @@
-import { classifySensitive, createTypeSafeChecker, type SensitiveChecker } from "@ai-it-support/ai";
+import {
+  CAP_REACHED_CHECKER,
+  classifySensitive,
+  createAiRuntime,
+  createAlertSink,
+  createLangfuseSink,
+  createMeter,
+  createTypeSafeChecker,
+  errorClassName,
+  type AlertFn,
+  type SensitiveChecker,
+} from "@ai-it-support/ai";
 import {
   createDbClient,
   createRepositories,
@@ -7,6 +18,9 @@ import {
 } from "@ai-it-support/db";
 import {
   INTAKE_TICKET_TASK_ID,
+  aiBudgetEnvShape,
+  e2eEnvShape,
+  langfuseEnvShape,
   parseEnv,
   redact,
   sensitiveCheckEnvShape,
@@ -32,20 +46,47 @@ type LogFn = (message: string, data?: Record<string, unknown>) => void;
 
 export interface IntakeDeps {
   repos: Pick<Repositories, "getTicket" | "saveRedaction" | "addEvent" | "saveTriage">;
+  /** Metered and traced (provider `typesafe`, kind `sensitive_check`). */
   checker: SensitiveChecker;
   threshold: number;
+  alert: AlertFn;
   logger: { info: LogFn; warn: LogFn; error: LogFn };
 }
 
-const intakeEnvShape = { ...dbEnvShape, ...sensitiveCheckEnvShape };
+const intakeEnvShape = {
+  ...dbEnvShape,
+  ...sensitiveCheckEnvShape,
+  ...aiBudgetEnvShape,
+  ...langfuseEnvShape,
+  ...e2eEnvShape,
+};
 
 /** Validates env and builds the real deps. Invalid variables throw, naming the variable. */
 export function createIntakeDeps(source: Record<string, string | undefined>): IntakeDeps {
   const env = parseEnv(intakeEnvShape, source);
+  const repos = createRepositories(createDbClient(source));
+  const environment = env.E2E_MODE ? "e2e" : "staging";
+  const alert = createAlertSink({
+    recordSecurityEvent: repos.recordSecurityEvent,
+    logger: { error: (message) => logger.error(message) },
+  });
+  const meter = createMeter({
+    repos,
+    caps: { llm: env.LLM_MONTHLY_CALL_CAP, typesafe: env.TYPESAFE_MONTHLY_CALL_CAP },
+    environment,
+    alert,
+  });
+  const runtime = createAiRuntime({
+    meter,
+    sink: createLangfuseSink(env),
+    addEvent: repos.addEvent,
+    environment,
+  });
   return {
-    repos: createRepositories(createDbClient(source)),
-    checker: createTypeSafeChecker({ apiKey: env.TYPESAFE_API_KEY }),
+    repos,
+    checker: createTypeSafeChecker({ apiKey: env.TYPESAFE_API_KEY, runtime }),
     threshold: env.SENSITIVE_THRESHOLD,
+    alert,
     logger,
   };
 }
@@ -60,6 +101,12 @@ export function createIntakeDeps(source: Record<string, string | undefined>): In
  *
  * Privacy: only redacted text reaches the checker. Logs and event payloads
  * carry ids, counts and flag names, never ticket text.
+ *
+ * Fail closed: when the TypeSafe budget refuses the check, the triage is
+ * saved as sensitive (keyword flags kept, checker `keywords+cap_reached`),
+ * and the event and the alert `typesafe_cap_reached` are raised once, as the
+ * last steps (the alert never fails the run). Any other checker error (API,
+ * network, answer shape, meter) still throws before any triage row is written.
  */
 export async function runIntakeTicket(
   payload: IntakeTicketPayload,
@@ -90,10 +137,11 @@ export async function runIntakeTicket(
   log.info("intake-ticket: redacted", { ticketId, attempt, redactions });
 
   const result = await classifySensitive(
-    { title: title.text, description: description.text },
+    { title: title.text, description: description.text, ticketId },
     deps.checker,
     deps.threshold,
   );
+  const capReached = result.checker === CAP_REACHED_CHECKER;
 
   await repos.saveTriage({
     ticket_id: ticketId,
@@ -111,8 +159,22 @@ export async function runIntakeTicket(
     sensitive: result.sensitive,
     flags: result.flags,
   });
+  if (capReached) {
+    // Last write of the run, so a retry after an earlier failure cannot add it twice.
+    await repos.addEvent(ticketId, "typesafe_cap_reached", { kind: "sensitive_check" });
+    await raiseAlert(deps, ticketId);
+  }
 
   return { ticketId, sensitive: result.sensitive, flags: result.flags };
+}
+
+/** The alert must not fail the run: the triage is already saved as sensitive. */
+async function raiseAlert(deps: IntakeDeps, ticketId: string): Promise<void> {
+  try {
+    await deps.alert("typesafe_cap_reached", { ticketId });
+  } catch (error) {
+    deps.logger.error("intake-ticket: alert failed", { ticketId, error: errorClassName(error) });
+  }
 }
 
 /** Sums per-type counts from the title and description redaction logs. */

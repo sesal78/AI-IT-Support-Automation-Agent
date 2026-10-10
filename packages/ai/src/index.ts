@@ -8,6 +8,7 @@ export {
 } from "./fix-steps.js";
 export { keywordFlags } from "./keywords.js";
 export {
+  CAP_REACHED_CHECKER,
   SENSITIVE_TOPICS,
   classifySensitive,
   type CheckInput,
@@ -16,7 +17,7 @@ export {
   type SensitiveTopic,
   type TopicScores,
 } from "./sensitive.js";
-export { createTypeSafeChecker } from "./typesafe-checker.js";
+export { SENSITIVE_CHECK_CALLS, createTypeSafeChecker } from "./typesafe-checker.js";
 export {
   createAlertSink,
   type AlertFn,
