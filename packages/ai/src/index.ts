@@ -87,3 +87,10 @@ export {
   type FixDrafterDeps,
   type LlmErrorKind,
 } from "./llm-client.js";
+export {
+  JudgeCallError,
+  JudgeInputError,
+  createTextJudge,
+  createTypeSafeClient,
+  type TextJudgeDeps,
+} from "./text-judge.js";
