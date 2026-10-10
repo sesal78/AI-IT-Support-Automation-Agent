@@ -13,7 +13,9 @@ import {
   createDbClient,
   createRepositories,
   dbEnvShape,
+  type Redaction,
   type Repositories,
+  type Triage,
 } from "@ai-it-support/db";
 import {
   MAX_KB_ARTICLES,
@@ -29,8 +31,10 @@ import {
   parseEnv,
   policyEnvShape,
   testOverridesSchema,
+  type PolicyInput,
   type PolicyReason,
   type PolicyThresholds,
+  type Priority,
   type Route,
   type TriageResult,
   type TriageTicketPayload,
@@ -60,6 +64,7 @@ export interface TriageDeps {
     | "getTriage"
     | "searchKb"
     | "saveTriageResult"
+    | "listEventTypes"
     | "addEvent"
     | "setTicketStatus"
   >;
@@ -147,6 +152,10 @@ const statusLabel = (status: string) =>
  * write, so a failed AI step leaves no triage result, no event and the status
  * `redacted`. A ticket already `triaged` (or later) is skipped with no call.
  *
+ * Resumable: when a write after saveTriageResult fails, the retry finds the
+ * saved result (triaged_at set, status still `redacted`), runs no AI step,
+ * writes only the events still missing, then the status.
+ *
  * Privacy: every AI input comes from `ticket_redactions` (the department is
  * redacted inside the judge). Logs and event payloads carry IDs, counts and
  * names only, never ticket text.
@@ -186,15 +195,69 @@ export async function runTriageTicket(
     throw new AbortTaskRunError(`triage-ticket: ticket ${ticketId} has no triage row`);
   }
 
-  // Redacted text only from here on.
+  let outcome: TriageOutcome;
+  if (triage.triaged_at !== null) {
+    // Resume: an earlier attempt saved the result but failed before the status
+    // write. No AI step runs again; only the missing events and the status are
+    // written. P3-T10c: onTriageFailure must not set `failed` while a saved
+    // result exists (the triage columns are no longer null).
+    outcome = savedOutcome(triage, deps.thresholds);
+    log.info("triage-ticket: resuming a saved result", { ticketId, attempt });
+  } else {
+    const fresh = await triageWithAi(ticketId, ticket.department, redaction, triage, deps);
+    // First write: every AI step above has succeeded.
+    await repos.saveTriageResult(ticketId, fresh.result);
+    outcome = fresh.outcome;
+  }
+
+  const { route, reasons, articleIds, steps } = outcome;
+  const events: Array<[TriageEvent, Record<string, unknown>]> = [
+    ["kb_matched", { articleIds, count: articleIds.length }],
+    ["fix_drafted", { steps }],
+    ["policy_decided", { route, reasons }],
+    ["triaged", { route }],
+  ];
+  // A retry skips the events an earlier attempt already wrote.
+  const written = new Set(await repos.listEventTypes(ticketId, TRIAGE_EVENTS));
+  for (const [type, data] of events) {
+    if (!written.has(type)) await repos.addEvent(ticketId, type, data);
+  }
+  await repos.setTicketStatus(ticketId, "triaged");
+  log.info("triage-ticket: triaged", {
+    ticketId,
+    attempt,
+    route,
+    reasons,
+    articles: articleIds.length,
+  });
+
+  return { ticketId, skipped: false, route, reasons };
+}
+
+const TRIAGE_EVENTS = ["kb_matched", "fix_drafted", "policy_decided", "triaged"] as const;
+type TriageEvent = (typeof TRIAGE_EVENTS)[number];
+
+/** What the event payloads need: IDs, counts and names only. */
+interface TriageOutcome {
+  route: Route;
+  reasons: PolicyReason[];
+  articleIds: string[];
+  steps: number;
+}
+
+/** Runs every AI step and the policy. Writes nothing. */
+async function triageWithAi(
+  ticketId: string,
+  department: string | null,
+  redaction: Redaction,
+  triage: Triage,
+  deps: TriageDeps,
+): Promise<{ result: TriageResult; outcome: TriageOutcome }> {
+  // Redacted text only; the judge redacts the department itself.
   const text = { title: redaction.redacted_title, description: redaction.redacted_description };
 
-  const judgments = await deps.judge.judge({
-    ticketId,
-    ...text,
-    department: ticket.department,
-  });
-  const candidates = await repos.searchKb(buildKbQuery(`${text.title} ${text.description}`));
+  const judgments = await deps.judge.judge({ ticketId, ...text, department });
+  const candidates = await deps.repos.searchKb(buildKbQuery(`${text.title} ${text.description}`));
   const ranked = await deps.reranker.rerankKb({ ticketId, ticket: text, candidates });
   const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
   const articles = [...new Set(ranked.map((r) => r.id))]
@@ -202,69 +265,92 @@ export async function runTriageTicket(
     .filter((article) => article !== undefined)
     .slice(0, MAX_KB_ARTICLES);
   const draft = await deps.drafter.draft({ ticketId, ticket: text, articles });
-  const grounding = await deps.grounding.scoreGrounding({
-    ticketId,
-    steps: draft.steps,
-    articles,
-  });
+  const grounding = await deps.grounding.scoreGrounding({ ticketId, steps: draft.steps, articles });
+  const probabilities = {
+    category: judgments.category.probability,
+    priority: judgments.priority.probability,
+    urgency: judgments.urgency.probability,
+    assignment_group: judgments.assignmentGroup.probability,
+    injection: judgments.injection,
+    needs_info: judgments.needsInfo,
+    outage_or_duplicate: judgments.outageOrDuplicate,
+  };
   const decision = decideRoute(
-    {
-      sensitive: triage.sensitive,
-      categoryProbability: judgments.category.probability,
-      priority: judgments.priority.value,
-      injection: judgments.injection,
-      needsInfo: judgments.needsInfo,
-      outageOrDuplicate: judgments.outageOrDuplicate,
-      ungroundedFix: grounding.flagged,
-      capReached: false,
-      llmUnavailable: false,
-    },
+    policyInput(triage.sensitive, judgments.priority.value, probabilities, grounding.flagged),
     deps.thresholds,
   );
 
   const articleIds = articles.map((article) => article.id);
-  const result: TriageResult = {
-    category: judgments.category.value,
-    subcategory: null,
-    priority: judgments.priority.value,
-    urgency: judgments.urgency.value,
-    assignmentGroup: judgments.assignmentGroup.value,
-    route: decision.route,
-    probabilities: {
-      category: judgments.category.probability,
-      priority: judgments.priority.probability,
-      urgency: judgments.urgency.probability,
-      assignment_group: judgments.assignmentGroup.probability,
-      injection: judgments.injection,
-      needs_info: judgments.needsInfo,
-      outage_or_duplicate: judgments.outageOrDuplicate,
+  return {
+    result: {
+      category: judgments.category.value,
+      subcategory: null,
+      priority: judgments.priority.value,
+      urgency: judgments.urgency.value,
+      assignmentGroup: judgments.assignmentGroup.value,
+      route: decision.route,
+      probabilities,
+      flags: decision.flags,
+      groundingScore: grounding.score,
+      kbArticleIds: articleIds,
+      suggestedFix: { steps: [...draft.steps], caveats: [...draft.caveats] },
+      modelVersions: { typesafe: judgments.model, llm: draft.model },
     },
-    flags: decision.flags,
-    groundingScore: grounding.score,
-    kbArticleIds: articleIds,
-    suggestedFix: { steps: [...draft.steps], caveats: [...draft.caveats] },
-    modelVersions: { typesafe: judgments.model, llm: draft.model },
+    outcome: {
+      route: decision.route,
+      reasons: decision.reasons,
+      articleIds,
+      steps: draft.steps.length,
+    },
   };
+}
 
-  // First write: everything above has succeeded.
-  await repos.saveTriageResult(ticketId, result);
-  await repos.addEvent(ticketId, "kb_matched", { articleIds, count: articleIds.length });
-  await repos.addEvent(ticketId, "fix_drafted", { steps: draft.steps.length });
-  await repos.addEvent(ticketId, "policy_decided", {
-    route: decision.route,
-    reasons: decision.reasons,
-  });
-  await repos.addEvent(ticketId, "triaged", { route: decision.route });
-  await repos.setTicketStatus(ticketId, "triaged");
-  log.info("triage-ticket: triaged", {
-    ticketId,
-    attempt,
-    route: decision.route,
-    reasons: decision.reasons,
-    articles: articleIds.length,
-  });
+function policyInput(
+  sensitive: boolean,
+  priority: Priority,
+  probabilities: Record<string, number | undefined>,
+  ungroundedFix: boolean,
+): PolicyInput {
+  // A missing probability stays undefined, so decideRoute throws rather than guess.
+  return {
+    sensitive,
+    categoryProbability: probabilities.category as number,
+    priority,
+    injection: probabilities.injection as number,
+    needsInfo: probabilities.needs_info as number,
+    outageOrDuplicate: probabilities.outage_or_duplicate as number,
+    ungroundedFix,
+    capReached: false,
+    llmUnavailable: false,
+  };
+}
 
-  return { ticketId, skipped: false, route: decision.route, reasons: decision.reasons };
+/**
+ * Rebuilds the event payloads from a saved triage row. The route is the saved
+ * one; the reasons are not stored, so the pure policy runs again on the saved
+ * columns. A row that does not hold a full result throws.
+ */
+function savedOutcome(triage: Triage, thresholds: PolicyThresholds): TriageOutcome {
+  const route = triage.route;
+  if (route !== "auto" && route !== "review") {
+    throw new Error("triage-ticket: the saved triage result has no valid route");
+  }
+  const decision = decideRoute(
+    policyInput(
+      triage.sensitive,
+      triage.priority as Priority,
+      triage.probabilities ?? {},
+      (triage.flags ?? []).includes("ungrounded_fix"),
+    ),
+    thresholds,
+  );
+  const steps = triage.suggested_fix?.steps;
+  return {
+    route,
+    reasons: decision.reasons,
+    articleIds: triage.kb_article_ids ?? [],
+    steps: Array.isArray(steps) ? steps.length : 0,
+  };
 }
 
 /**

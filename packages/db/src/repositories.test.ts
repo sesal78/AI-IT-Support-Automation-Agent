@@ -221,6 +221,33 @@ describe("addEvent", () => {
   });
 });
 
+describe("listEventTypes", () => {
+  it("selects only the type of the ticket's events of the given types, without duplicates", async () => {
+    const calls = respond(
+      ok([{ type: "kb_matched" }, { type: "kb_matched" }, { type: "triaged" }]),
+    );
+    expect(await repos.listEventTypes(ticketId, ["kb_matched", "triaged"])).toEqual([
+      "kb_matched",
+      "triaged",
+    ]);
+    expect(calls[0]?.url.pathname).toBe("/rest/v1/ticket_events");
+    expect(calls[0]?.url.searchParams.get("select")).toBe("type");
+    expect(calls[0]?.url.searchParams.get("ticket_id")).toBe(`eq.${ticketId}`);
+    expect(calls[0]?.url.searchParams.get("type")).toBe("in.(kb_matched,triaged)");
+  });
+
+  it("returns [] for no types without a request", async () => {
+    const calls = respond();
+    expect(await repos.listEventTypes(ticketId, [])).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("throws DbError on a Supabase error", async () => {
+    respond(pgError("XX000", 500));
+    await expectDbError(repos.listEventTypes(ticketId, ["triaged"]), "listEventTypes");
+  });
+});
+
 describe("saveRedaction and saveTriage", () => {
   it("saveRedaction upserts by ticket_id", async () => {
     const calls = respond(ok(redactionRow, 201));

@@ -16,6 +16,7 @@ import {
   triageResultSchema,
   type TriageResult,
 } from "@ai-it-support/shared";
+import { createTriageJudge, type TriageJudgeDeps } from "@ai-it-support/ai";
 import { AbortTaskRunError } from "@trigger.dev/sdk";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -138,8 +139,13 @@ interface Options {
   candidates?: KbSearchResult[];
   ranked?: (candidates: readonly KbCandidate[]) => KbRerankResult[];
   grounding?: GroundingResult;
-  fail?: "judge" | "searchKb" | "rerank" | "draft" | "grounding" | "saveTriageResult";
+  /** A step name, `event:<type>` or `status:triaged`. */
+  fail?: string;
+  /** Fail only the first time, so a second attempt can succeed. */
+  failOnce?: boolean;
 }
+
+const AI_STEPS = ["judge", "searchKb", "rerank", "draft", "grounding"];
 
 function harness(options: Options = {}) {
   const calls: string[] = [];
@@ -149,10 +155,17 @@ function harness(options: Options = {}) {
   const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
   const statuses: string[] = [];
   const candidates = options.candidates ?? [candidate(1), candidate(2), candidate(3)];
-  const step = (name: NonNullable<Options["fail"]> | string, input?: unknown) => {
+  // Stateful fakes: a failed write stores nothing, a successful one is seen by the next attempt.
+  let failing = options.fail;
+  let status = "redacted";
+  let triageState = options.triage === undefined ? triageRow(false) : options.triage;
+  const step = (name: string, input?: unknown) => {
     calls.push(name);
     if (input !== undefined) aiInputs.push(input);
-    if (options.fail === name) throw new Error(`${name} failed`);
+    if (failing === name) {
+      if (options.failOnce) failing = undefined;
+      throw new Error(`${name} failed`);
+    }
   };
   const log = (...args: unknown[]) => {
     logs.push(args);
@@ -161,7 +174,7 @@ function harness(options: Options = {}) {
     repos: {
       getTicket: vi.fn(async () => {
         calls.push("getTicket");
-        return options.found === undefined ? ticket() : options.found;
+        return options.found === undefined ? ticket(status) : options.found;
       }),
       getRedaction: vi.fn(async () => {
         calls.push("getRedaction");
@@ -169,7 +182,7 @@ function harness(options: Options = {}) {
       }),
       getTriage: vi.fn(async () => {
         calls.push("getTriage");
-        return options.triage === undefined ? triageRow(false) : options.triage;
+        return triageState;
       }),
       searchKb: vi.fn(async (query: string) => {
         step("searchKb", query);
@@ -178,17 +191,40 @@ function harness(options: Options = {}) {
       saveTriageResult: vi.fn(async (id: string, result: TriageResult) => {
         step("saveTriageResult");
         // The real repository validates the same way before any database call.
-        saved.push(triageResultSchema.parse(result));
-        return { ...triageRow(false), ticket_id: id, triaged_at: now };
+        const r = triageResultSchema.parse(result);
+        saved.push(r);
+        triageState = {
+          ...(triageState ?? triageRow(false)),
+          ticket_id: id,
+          category: r.category,
+          subcategory: r.subcategory,
+          priority: r.priority,
+          urgency: r.urgency,
+          assignment_group: r.assignmentGroup,
+          route: r.route,
+          probabilities: r.probabilities,
+          flags: r.flags,
+          grounding_score: r.groundingScore,
+          kb_article_ids: r.kbArticleIds,
+          suggested_fix: r.suggestedFix,
+          model_versions: r.modelVersions,
+          triaged_at: now,
+        };
+        return triageState;
+      }),
+      listEventTypes: vi.fn(async (_id: string, types: readonly string[]) => {
+        calls.push("listEventTypes");
+        return [...new Set(events.map((e) => e.type))].filter((t) => types.includes(t));
       }),
       addEvent: vi.fn(async (id: string, type: string, payload: Record<string, unknown> = {}) => {
-        calls.push(`event:${type}`);
+        step(`event:${type}`);
         events.push({ type, payload });
         return { id: events.length, ticket_id: id, type, payload, at: now };
       }),
       setTicketStatus: vi.fn(async (_id: string, to: string) => {
-        calls.push(`status:${to}`);
+        step(`status:${to}`);
         statuses.push(to);
+        status = to;
         return { changed: true };
       }),
     },
@@ -228,11 +264,12 @@ function harness(options: Options = {}) {
     },
     logger: { info: log, warn: log, error: log },
   };
+  const aiCalls = () => calls.filter((c) => AI_STEPS.includes(c)).length;
   const writes = () =>
     calls.filter(
       (c) => c.startsWith("event:") || c.startsWith("status:") || c === "saveTriageResult",
     );
-  return { deps, calls, aiInputs, logs, saved, events, statuses, candidates, writes };
+  return { deps, calls, aiInputs, logs, saved, events, statuses, candidates, writes, aiCalls };
 }
 
 describe("triage-ticket task", () => {
@@ -255,6 +292,7 @@ describe("triage-ticket task", () => {
       "draft",
       "grounding",
       "saveTriageResult",
+      "listEventTypes",
       "event:kb_matched",
       "event:fix_drafted",
       "event:policy_decided",
@@ -460,6 +498,157 @@ describe("triage-ticket task", () => {
     ]) {
       expect(logged).not.toContain(text);
     }
+  });
+});
+
+const WRITE_POSITIONS = [
+  "saveTriageResult",
+  "event:kb_matched",
+  "event:fix_drafted",
+  "event:policy_decided",
+  "event:triaged",
+  "status:triaged",
+];
+
+describe("triage-ticket retry after a failed write", () => {
+  // Sensitive and ungrounded, so the policy_decided reasons are not trivial.
+  const options = { triage: triageRow(true), grounding: { score: 0.2, flagged: true } };
+
+  it.each(WRITE_POSITIONS)(
+    "a failure at %s, then a second attempt: one save, one of each event, status triaged",
+    async (fail) => {
+      const h = harness({ ...options, fail, failOnce: true });
+
+      await expect(runTriageTicket({ ticketId }, h.deps, 1)).rejects.toThrow(`${fail} failed`);
+      const aiBefore = h.aiCalls();
+      await expect(runTriageTicket({ ticketId }, h.deps, 2)).resolves.toMatchObject({
+        skipped: false,
+        route: "review",
+        reasons: ["sensitive", "ungrounded_fix"],
+      });
+
+      expect(h.saved).toHaveLength(1);
+      expect(h.events).toEqual([
+        { type: "kb_matched", payload: { articleIds: h.candidates.map((c) => c.id), count: 3 } },
+        { type: "fix_drafted", payload: { steps: 2 } },
+        {
+          type: "policy_decided",
+          payload: { route: "review", reasons: ["sensitive", "ungrounded_fix"] },
+        },
+        { type: "triaged", payload: { route: "review" } },
+      ]);
+      expect(h.statuses).toEqual(["triaged"]);
+      // The save failed: nothing to resume, so the AI steps run again. Otherwise none run.
+      expect(h.aiCalls() - aiBefore).toBe(fail === "saveTriageResult" ? AI_STEPS.length : 0);
+    },
+  );
+
+  it("a third attempt after the resumed success is skipped", async () => {
+    const h = harness({ ...options, fail: "event:fix_drafted", failOnce: true });
+    await runTriageTicket({ ticketId }, h.deps).catch(() => undefined);
+    await runTriageTicket({ ticketId }, h.deps);
+    const before = h.calls.length;
+
+    await expect(runTriageTicket({ ticketId }, h.deps)).resolves.toEqual({
+      ticketId,
+      skipped: true,
+    });
+    expect(h.calls.slice(before)).toEqual(["getTicket"]);
+  });
+
+  it("a failure before the save makes the retry run every AI step again", async () => {
+    const h = harness({ fail: "draft", failOnce: true });
+
+    await expect(runTriageTicket({ ticketId }, h.deps)).rejects.toThrow("draft failed");
+    expect(h.writes()).toEqual([]);
+    const aiBefore = h.aiCalls();
+    await runTriageTicket({ ticketId }, h.deps, 2);
+
+    expect(h.aiCalls() - aiBefore).toBe(AI_STEPS.length);
+    expect(h.saved).toHaveLength(1);
+    expect(h.events.map((e) => e.type)).toEqual([
+      "kb_matched",
+      "fix_drafted",
+      "policy_decided",
+      "triaged",
+    ]);
+    expect(h.statuses).toEqual(["triaged"]);
+  });
+
+  it("a saved row with a missing probability throws on resume and writes nothing", async () => {
+    const h = harness({
+      triage: {
+        ...triageRow(false),
+        route: "auto",
+        priority: "P3",
+        probabilities: { category: 0.9 },
+        flags: [],
+        kb_article_ids: [],
+        suggested_fix: { steps: ["a"], caveats: [] },
+        triaged_at: now,
+      },
+    });
+
+    await expect(runTriageTicket({ ticketId }, h.deps)).rejects.toThrow(/injection/);
+    expect(h.aiCalls()).toBe(0);
+    expect(h.writes()).toEqual([]);
+  });
+});
+
+describe("triage-ticket department privacy (real judge)", () => {
+  const DEPT_MARKER = "deptmarker4471@example.test";
+
+  function judgeResponse() {
+    const choiceAnswer = (labels: readonly string[], value: string) => ({
+      type: "choice",
+      choice: value,
+      confidence: 0.9,
+      probabilities: Object.fromEntries(labels.map((l) => [l, l === value ? 0.9 : 0.02])),
+    });
+    return {
+      model: "jev-reported-1",
+      answers: {
+        category: choiceAnswer(CATEGORIES, "network"),
+        priority: choiceAnswer(PRIORITIES, "P3"),
+        urgency: choiceAnswer(URGENCIES, "medium"),
+        assignment_group: choiceAnswer(ASSIGNMENT_GROUPS, "Network"),
+        outage_or_duplicate: { type: "noul", noul: 0.05 },
+        injection: { type: "noul", noul: 0.01 },
+        actionable: { type: "noul", noul: 0.9 },
+      },
+      usage: { input_tokens: 10, output_tokens: 2 },
+    };
+  }
+
+  it("the department reaches the judge only through its own redact()", async () => {
+    const h = harness({ found: { ...ticket(), department: `Finance ${DEPT_MARKER}` } });
+    const requests: unknown[] = [];
+    const runtime = {
+      call: async (meta: { input: unknown }, fn: () => Promise<unknown>) => {
+        requests.push(meta.input);
+        return fn();
+      },
+    } as unknown as TriageJudgeDeps["runtime"];
+    const client = {
+      systemOne: async (request: unknown) => {
+        requests.push(request);
+        return judgeResponse();
+      },
+    } as unknown as TriageJudgeDeps["client"];
+    h.deps.judge = createTriageJudge({
+      client,
+      runtime,
+    });
+
+    await runTriageTicket({ ticketId }, h.deps);
+
+    expect(requests.length).toBeGreaterThan(0);
+    const sent = JSON.stringify([...requests, ...h.aiInputs]);
+    expect(sent).toContain("Finance");
+    for (const marker of [DEPT_MARKER, "deptmarker4471", ...Object.values(MARKERS)]) {
+      expect(sent).not.toContain(marker);
+    }
+    expect(JSON.stringify(h.logs)).not.toContain("deptmarker4471");
   });
 });
 
