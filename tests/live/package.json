@@ -1,0 +1,15 @@
+{
+  "name": "@ai-it-support/live-tests",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ai-it-support/shared": "workspace:*",
+    "zod": "^4.6.5"
+  }
+}
