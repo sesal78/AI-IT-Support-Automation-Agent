@@ -14,6 +14,7 @@ const allowedDirs = new Set([
   "legacy",
   "supabase",
   ".github",
+  "evals",
 ]);
 
 // Root-level config files. Anything else at the root must be justified here.
