@@ -154,7 +154,7 @@ Target repo: D:/Homebase/Sandbox/ai-it-support-agent
 |---|---|---|
 | H6 | Shared Supabase: add `itsupport` to the REST API's exposed schemas (`PGRST_DB_SCHEMAS` in the Dokploy Supabase compose env), then restart the `rest` service | You (I give the exact line) |
 | H7 | Apply migration 0002 in Supabase Studio after P2-T1 merges, then run the check query I give you | You |
-| H8 | Create a Cloudflare Turnstile widget for `itsupport-staging.techiesandbox.com`; store the secret as `ITSUPPORT_TURNSTILE_SECRET_KEY`; set Dokploy env `TURNSTILE_SECRET_KEY` and `TURNSTILE_SITE_KEY` | You |
+| H8 | Create a Cloudflare Turnstile widget for `<staging-host>`; store the secret as `ITSUPPORT_TURNSTILE_SECRET_KEY`; set Dokploy env `TURNSTILE_SECRET_KEY` and `TURNSTILE_SITE_KEY` | You |
 | H9 | Trigger.dev prod env vars for the task: `TYPESAFE_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_DB_SCHEMA`; then I deploy the tasks | You (values), Claude (deploy) |
 
 ## Filed tasks (ClickUp, Build Loop list 901616104690)
