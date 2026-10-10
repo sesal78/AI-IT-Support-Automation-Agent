@@ -289,6 +289,21 @@ export function createRepositories(client: DbClient) {
       return parseRow("addEvent", ticketEventSchema, result);
     },
 
+    /**
+     * The distinct event types the ticket already has, out of `types` (no
+     * payloads are read). Lets a retried task skip events it already wrote.
+     */
+    async listEventTypes(ticketId: string, types: readonly string[]): Promise<string[]> {
+      if (types.length === 0) return [];
+      const result = await client
+        .from("ticket_events")
+        .select("type")
+        .eq("ticket_id", ticketId)
+        .in("type", [...types]);
+      const rows = parseRow("listEventTypes", z.array(z.object({ type: z.string() })), result);
+      return [...new Set(rows.map((row) => row.type))];
+    },
+
     /** Saves the redacted copy; upserts by ticket_id so a task retry is safe. */
     async saveRedaction(input: NewRedaction): Promise<Redaction> {
       const result = await client

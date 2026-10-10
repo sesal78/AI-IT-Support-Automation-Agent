@@ -26,3 +26,15 @@ export interface IntakeTicketPayload {
   /** Test switches from the E2E test route only; the pipeline ignores them until P3-T10c. */
   testOverrides?: TestOverrides;
 }
+
+/**
+ * Trigger.dev id of the triage task (services/pipeline, P3-T10b), triggered
+ * by string id with `TriageTicketPayload` once a ticket is `redacted`.
+ */
+export const TRIAGE_TICKET_TASK_ID = "triage-ticket";
+
+export interface TriageTicketPayload {
+  ticketId: string;
+  /** Test switches from the E2E test route only; applied from P3-T10c. */
+  testOverrides?: TestOverrides;
+}
