@@ -87,6 +87,29 @@ describe("createFormPacer", () => {
     },
   );
 
+  it("treats a submit time in the future as a corrupt file, naming it, and never waits for it", async () => {
+    const dir = evidenceDir();
+    const clock = fakeClock();
+    const file = pacerStateFile(dir);
+    mkdirSync(dirname(file), { recursive: true });
+    const future = clock.now() + 2 ** 31 + 1;
+    writeFileSync(file, JSON.stringify({ submits: [future, future, future, future] }));
+    const pacer = createFormPacer({ evidenceDir: dir, now: clock.now, sleep: clock.sleep });
+    const error = await pacer.acquire().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(PacerStateError);
+    expect((error as Error).message).toContain(file);
+    expect(clock.waits).toEqual([]);
+  });
+
+  it("never waits longer than the window", async () => {
+    const dir = evidenceDir();
+    const clock = fakeClock();
+    const pacer = createFormPacer({ evidenceDir: dir, now: clock.now, sleep: clock.sleep });
+    for (let i = 0; i < 6; i++) await pacer.acquire();
+    // Four at one instant: the 5th waits exactly one window, then the window is clear.
+    expect(clock.waits).toEqual([FORM_WINDOW_MS]);
+  });
+
   it("names the file when the state path cannot be read", async () => {
     const dir = evidenceDir();
     const file = pacerStateFile(dir);

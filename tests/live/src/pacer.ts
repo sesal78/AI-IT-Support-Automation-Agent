@@ -68,15 +68,16 @@ export function createFormPacer(options: FormPacerOptions): FormPacer {
     async acquire() {
       for (;;) {
         const at = now();
-        const recent = read()
-          .filter((t) => at - t < FORM_WINDOW_MS)
-          .sort((a, b) => a - b);
+        const submits = read();
+        // A submit in the future cannot come from this clock: the file is corrupt.
+        if (submits.some((t) => t > at)) throw new PacerStateError(file);
+        const recent = submits.filter((t) => at - t < FORM_WINDOW_MS).sort((a, b) => a - b);
         if (recent.length < FORM_SUBMIT_LIMIT) {
           write([...recent, at]);
           return;
         }
         // Wait until the oldest submit in the window is 10 minutes old.
-        await sleep(recent[0]! + FORM_WINDOW_MS - at);
+        await sleep(Math.min(FORM_WINDOW_MS, recent[0]! + FORM_WINDOW_MS - at));
       }
     },
   };

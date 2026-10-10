@@ -32,6 +32,9 @@ const shape = {
   LANGFUSE_BASE_URL: langfuseEnvShape.LANGFUSE_BASE_URL.optional(),
 };
 
+// Lower-case, without one trailing dot: `qa.example.com.` is the same host as `qa.example.com`.
+const normalHost = (hostname: string): string => hostname.toLowerCase().replace(/\.$/, "");
+
 const STAGING_MESSAGE = "E2E_BASE_URL: live tests never run against staging";
 
 /**
@@ -67,10 +70,12 @@ export function loadLiveConfig(env: Record<string, string | undefined>): LiveCon
   let stagingOrigin: string | undefined;
   if (parsed.STAGING_BASE_URL !== undefined) {
     const staging = new URL(parsed.STAGING_BASE_URL);
-    if (staging.hostname === base.hostname) throw new LiveConfigError(STAGING_MESSAGE);
+    if (normalHost(staging.hostname) === normalHost(base.hostname)) {
+      throw new LiveConfigError(STAGING_MESSAGE);
+    }
     stagingOrigin = staging.origin;
   }
-  const firstLabel = base.hostname.split(".")[0] ?? "";
+  const firstLabel = normalHost(base.hostname).split(".")[0] ?? "";
   if (firstLabel.includes("staging")) throw new LiveConfigError(STAGING_MESSAGE);
 
   const secrets = [

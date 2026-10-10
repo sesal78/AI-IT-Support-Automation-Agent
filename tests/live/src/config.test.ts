@@ -88,6 +88,27 @@ describe("loadLiveConfig", () => {
     expect(error.message).not.toContain("preview");
   });
 
+  it.each([
+    ["a trailing dot on E2E_BASE_URL", "https://qa.example.com.", "https://qa.example.com"],
+    ["a trailing dot on STAGING_BASE_URL", "https://qa.example.com", "https://qa.example.com."],
+    ["a trailing dot on both", "https://qa.example.com.", "https://qa.example.com."],
+    ["upper case", "https://QA.Example.COM.", "https://qa.EXAMPLE.com"],
+  ])("refuses the staging host written with %s", (_case, e2e, staging) => {
+    const error = failure({ ...env, E2E_BASE_URL: e2e, STAGING_BASE_URL: staging });
+    expect(error.message).toBe("E2E_BASE_URL: live tests never run against staging");
+  });
+
+  it("refuses a staging first label written with a trailing dot or upper case", () => {
+    for (const host of ["staging.", "STAGING.example.com.", "Qa-Staging.example.com"]) {
+      const error = failure({
+        ...env,
+        E2E_BASE_URL: `https://${host}`,
+        STAGING_BASE_URL: undefined,
+      });
+      expect(error.message, host).toBe("E2E_BASE_URL: live tests never run against staging");
+    }
+  });
+
   it("refuses a host whose first label contains staging, even with STAGING_BASE_URL unset", () => {
     for (const host of ["staging.example.com", "app-staging.example.com", "STAGING2.example.com"]) {
       const error = failure({
