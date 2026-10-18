@@ -20,6 +20,12 @@ export interface ScenarioContext {
   readonly config: LiveConfig;
   readonly client: InternalClient;
   readonly pacer: FormPacer;
+  /**
+   * Plain fetch for the one request that must not carry credentials to a
+   * second origin (the staging check). Everything else goes through `client`.
+   */
+  readonly fetch: (input: URL, init: RequestInit) => Promise<Response>;
+  readonly now: () => number;
 }
 
 export interface Scenario {
@@ -158,6 +164,8 @@ export async function runLive(options: RunLiveOptions): Promise<number> {
     config,
     client: createInternalClient(config, { fetch: options.fetch }),
     pacer: createFormPacer({ evidenceDir: options.evidenceDir, now, sleep: options.sleep }),
+    fetch: options.fetch ?? ((input, init) => fetch(input, init)),
+    now,
   };
 
   const entries: ReportEntry[] = [];
