@@ -24,14 +24,19 @@
 // joined number, but it may sit right next to other digits across a space
 // (e.g. a card followed by its CVV). A candidate rejected by its checksum does
 // not consume text: scanning resumes one character later.
-// IPv6: `:` joins hex groups into one run, which is judged whole, so a run
-// that is no address (a MAC, a time, 9 groups) is never partly replaced.
-// Trailing dots and a single trailing `:` are punctuation, not the address.
-// A run never starts after a word character, `:` or `.`, except after one
-// `:` that follows a key (`ip:`, `node:`: a word with a non-hex letter) or a
-// non-word character; it never ends right before a word character. A zone ID
-// (`%eth0`) stays. A run is taken atomically and read at most twice (from its
-// start, then after a leading single `:`), so matching stays linear.
+// IPv6: hex digits, `:` and the dots of an IPv4 tail (a `.` between digits)
+// form a run. Its address is the longest valid tail that starts at a group
+// boundary: the run's start or any point after a `:`. One group in front of
+// it is a key and stays (`db:2001:…`); a longer head is replaced with it, so
+// a run is taken in one pass and never leaves part of an address. A run that
+// starts right after a word character starts inside that word, so its
+// address starts after a `:` (`eth0:`, `remote:`); but when that word, or a
+// first group longer than 4, ends in 3 or more digits that form an address
+// with the rest (`x2001:db8::1`, `abc2001:db8::1`), the address may start
+// inside the word, and the run stays whole. A run that ends
+// right before a word character stays; a single trailing `:` is punctuation;
+// a zone ID (`%eth0`) stays. A run is read at most three times and only its
+// last 45 characters are tried, so this stays linear.
 // Every pattern is anchored with lookbehinds so a match can only start at the
 // beginning of a run, and all repetition is bounded or unambiguous, which
 // keeps matching linear on adversarial input.
@@ -277,13 +282,44 @@ function ipv6Valid(s: string): boolean {
   );
 }
 
-/** The address in a run without its trailing dots and single `:` ("" for none). */
-function ipv6Fit(run: string): string {
-  let end = run.length;
-  while (run[end - 1] === ".") end--;
-  if (run[end - 1] === ":" && run[end - 2] !== ":") end--;
-  const address = run.slice(0, end);
-  return /\d/.test(address) && ipv6Valid(address) ? address : "";
+/** Whether text[i] is in a run: a hex digit, `:`, or a `.` between digits. */
+function inRun(text: string, i: number): boolean {
+  const c = text.charAt(i);
+  return (
+    /[\dA-Fa-f:]/.test(c) || (c === "." && /^\d\d$/.test(text.charAt(i - 1) + text.charAt(i + 1)))
+  );
+}
+
+/**
+ * Reads the IPv6 address of the run around `at`: its end when it starts at
+ * `at`, else minus where to resume (its start, or the run's end).
+ */
+function ipv6End(text: string, at: number): number {
+  let start = at;
+  while (inRun(text, start - 1)) start--;
+  let end = start;
+  let colon = -1;
+  for (; inRun(text, end); end++) if (colon < 0 && text[end] === ":") colon = end;
+  if (colon < 0 || (/\w/.test(text.charAt(end)) && text[end - 1] !== ":")) return -end;
+  const stop = text[end - 1] === ":" && text[end - 2] !== ":" ? end - 1 : end;
+  // The word in front of the first `:`; its last 3 digits may be a group.
+  let word = colon;
+  while (/\w/.test(text.charAt(word - 1))) word--;
+  const inWord = word !== start || colon - start > 4;
+  const digits = /\d{3}$/.test(text.slice(word, colon));
+  if (inWord && digits && ipv6Valid("0" + text.slice(colon, stop))) return -end;
+  // The first group boundary the address may start at.
+  const first = inWord ? colon + 1 : start;
+  for (let i = Math.max(first, stop - 45); i < stop; i++) {
+    if (i !== first && text[i - 1] !== ":") continue;
+    const address = text.slice(i, stop);
+    if (!/\d/.test(address) || !ipv6Valid(address)) continue;
+    // One group in front is a key and stays; a longer head goes with it.
+    const head = text.slice(first, i);
+    const from = head.indexOf(":") === head.length - 1 ? i : first;
+    return from === at ? stop : from > at ? -from : -end;
+  }
+  return -end;
 }
 
 const RULES: Rule[] = [
@@ -321,12 +357,10 @@ const RULES: Rule[] = [
     pattern: /(?<!\w|\d-)\d{3}-\d{2}-\d{4}(?!\w|-\d)/g,
   },
   {
-    // A whole run (atomic: lookahead plus back-reference) of hex groups and
-    // dots with a `:`, starting at a run's start or after a key's `:`.
+    // The first character of a run; ipv6End reads the run.
     type: "IPV6",
-    pattern:
-      /(?:(?<![\w:.])|(?<=(?:(?<![\w:.])|[^\W\dA-Fa-f][\dA-Fa-f]*):)(?=[\dA-Fa-f]))(?=([\dA-Fa-f.]*(?::[\dA-Fa-f.]*)+))\1(?!(?<=[\dA-Fa-f])\w)/g,
-    fit: ipv6Fit,
+    pattern: /[\dA-Fa-f:]/g,
+    read: ipv6End,
   },
   {
     type: "IPV4",

@@ -10,6 +10,10 @@ import { redactLegacy } from "./redact.js";
 // full history). All values below are obviously fake.
 const kv = (key: string, sep: string, value: string) => key + sep + value;
 
+// Timing and fuzz tests: skipped in mutation runs (the gate sets MUTATION_RUN),
+// where they only slow each mutant down; `pnpm test` always runs them.
+const timing = it.skipIf(process.env.MUTATION_RUN === "1");
+
 // Obviously fake PII: the Visa test card, example.com / x.com mail, TEST-NET
 // IPs (RFC 5737), 555 phone numbers and the documented example TFN.
 const fixtures: string[] = [
@@ -239,7 +243,7 @@ describe("redact", () => {
     }
   });
 
-  it("completes quickly on long adversarial input", () => {
+  timing("completes quickly on long adversarial input", () => {
     const inputs = [
       "a".repeat(100_000),
       "1".repeat(100_000),
@@ -344,7 +348,7 @@ describe("redact: fixed-length key patterns", () => {
     expect(scan(readFileSync(fileURLToPath(import.meta.url), "utf8"))).toEqual([]);
   });
 
-  it("leaves no digit run or @domain that the legacy rules remove (generated)", () => {
+  timing("leaves no digit run or @domain that the legacy rules remove (generated)", () => {
     // Fixed-seed Lehmer generator, so the 5 000 inputs are the same every run.
     let seed = 20261004;
     const rnd = (n: number) => (seed = (seed * 48271) % 2147483647) % n;
@@ -396,7 +400,7 @@ describe("redact: fixed-length key patterns", () => {
     }
   });
 
-  it("stays linear on adversarial key-shaped input", () => {
+  timing("stays linear on adversarial key-shaped input", () => {
     const seeds = ["AKIA", "AKIA7", "AKIA-", "ghp_", "ghp_a-", awsKey, ghToken, ghToken + " "];
     for (const [size, limit] of [
       [5_000, 250],
@@ -483,7 +487,7 @@ describe("redact: a GitHub token whose prefix an email took", () => {
     expect(redact("ann@corp.example_ab12").text).toBe("[REDACTED_EMAIL]_ab12");
   });
 
-  it("stays linear on repeated email and token-body fragments", () => {
+  timing("stays linear on repeated email and token-body fragments", () => {
     for (const size of [5_000, 100_000]) {
       const start = performance.now();
       for (const unit of ["jo@x.ghp_" + "a1".repeat(18), "[REDACTED_EMAIL]_", "jo@x.ghp_a"]) {
@@ -545,7 +549,7 @@ describe("redact: glued keys", () => {
     }
   });
 
-  it("stays linear on glued key runs", () => {
+  timing("stays linear on glued key runs", () => {
     const units = [awsKey + ghToken, ghToken + awsKey, awsKey + awsKey, ghToken + ghToken];
     for (const size of [5_000, 100_000]) {
       for (const unit of [...units, ...units.map((u) => u + "Z"), "a" + ghToken]) {
@@ -616,7 +620,7 @@ describe("redact: glued runs split from their start", () => {
     }
   });
 
-  it("stays linear on seeded glued runs", () => {
+  timing("stays linear on seeded glued runs", () => {
     const units = [ghSeeded + awsSeeded, awsSeeded + ghMixed, H + P.repeat(19) + "Z", P, H + P];
     for (const size of [5_000, 100_000]) {
       const start = performance.now();
@@ -837,7 +841,7 @@ describe("redact: sk- keys and Slack tokens", () => {
     expect(readFileSync(fileURLToPath(import.meta.url), "utf8")).not.toMatch(spec);
   });
 
-  it("stays linear on long and repeated key-shaped input", () => {
+  timing("stays linear on long and repeated key-shaped input", () => {
     const units = [
       SKP,
       "xo" + "xb-",
@@ -998,7 +1002,7 @@ describe("redact: JWTs", () => {
     expect(readFileSync(fileURLToPath(import.meta.url), "utf8")).not.toMatch(spec);
   });
 
-  it("stays linear on long and repeated JWT-shaped input", () => {
+  timing("stays linear on long and repeated JWT-shaped input", () => {
     const units = [
       EYJ + ".",
       EYJ + "-",
@@ -1024,7 +1028,7 @@ describe("redact: JWTs", () => {
     }
   });
 
-  it("stays linear on an email whose domain holds many JWT-like labels", () => {
+  timing("stays linear on an email whose domain holds many JWT-like labels", () => {
     const input = "jo@" + (EYJ + "a".repeat(7) + ".").repeat(20_000) + "com x";
     const start = performance.now();
     redact(input);
@@ -1069,44 +1073,67 @@ const stable = (input: string, text: string) => {
 describe("redact: IPv6", () => {
   it("redacts full, compressed and IPv4-tail addresses with the log IPV6:1", () => {
     const inputs = [...v6Addresses, "::ffff:192.0.2.1", "::FFFF:192.0.2.1", "2001:DB8::1"];
-    for (const input of [...inputs, "1:2:3:4:5:6:7::", "::1:2:3:4:5:6:7", "::1.2.3.4"]) {
+    const max = "ffff:".repeat(6) + "255.255.255.255"; // 45 characters, the longest
+    for (const input of [...inputs, "FE80::1", max, "1:2:3:4:5:6:7::", "::1:2:3:4:5:6:7"]) {
       for (const fn of [redact, redactLegacy]) {
         expect(fn(input), input).toEqual({ text: V6, log: [{ type: "IPV6", count: 1 }] });
       }
     }
+    expect(redact("::1.2.3.4").text).toBe(V6);
   });
 
   it("leaves near-misses and colon runs without a digit unchanged", () => {
     for (const input of [
       ...v6NearMisses,
-      ...["::", "dead::beef", "a::b::c", "C::", "C:\\Users", "Foo::1", "x.2001:db8::1"],
+      ...["::", "dead::beef", "a::b::c", "C::", "C:\\Users", "Foo::1", "ip::1"],
       ...["10:15-11:30", "John 3:16", "12:34:56:789", "10:15:30.250", "+10:00"],
     ]) {
       expect(redact(input), input).toEqual({ text: input, log: [] });
     }
   });
 
-  it("never replaces part of a run that is no address", () => {
+  it("leaves a run with no address in it unchanged", () => {
     for (const input of [
-      "1:2:3:4:5:6:7:8:9",
       "12345::1",
       "2001:db8:12345::1",
-      "1:2:3:4::5:6:7:8",
-      "1::2::3",
       "1.2::3",
       "::1.5",
       "::ffff:192.0.2.1.5",
       "::ffff:192.0.2.256",
-      "fe80::1::",
-      "abc2001:db8::1",
       "fe80::1g",
       "fe80::1_x",
     ]) {
       expect(redact(input), input).toEqual({ text: input, log: [] });
     }
-    // The IPv4 rule still takes a dotted quad left in such a run.
-    stable("1:2:3:4:5:6:7:192.0.2.1", "1:2:3:4:5:6:7:" + V4);
     stable("192.0.2.1::", V4 + "::");
+    // A port after an IPv4 tail ends the run's address; IPv4 takes the quad.
+    stable("::ffff:192.0.2.1:80", "::ffff:" + V4 + ":80");
+  });
+
+  // Review (P3-T3b, round 1): a hex key in front of a full address made one
+  // run too long for an address, and the whole run was left.
+  it("takes the longest valid tail of a run: one group in front stays, more goes with it", () => {
+    const full = v6Full;
+    const rows: Array<[string, string]> = [
+      ["db:" + full, "db:" + V6],
+      ["add:" + full, "add:" + V6],
+      ["a:" + full, "a:" + V6],
+      ["dc 1:" + full, "dc 1:" + V6],
+      ["1234:" + full, "1234:" + V6],
+      ["a:2001:db8:1:2:3:4:5:6", "a:" + V6],
+      ["1:2:3:4:5:6:7:8:9", "1:" + V6],
+      ["1:2:3:4::5:6:7:8", "1:" + V6],
+      ["1:2:3:4:5:6:7:192.0.2.1", "1:" + V6],
+      ["eth0:1:2:3:4:5:6:7:8:9", "eth0:1:" + V6],
+      ["1:2:3:4:5:6:7:8:9:10", V6],
+      ["fe80::1::", V6],
+      ["1::2::3", V6],
+      [`${v6Canary}:${v6Canary}`, V6],
+    ];
+    for (const [input, text] of rows) {
+      expect(redact(input), input).toEqual({ text, log: [{ type: "IPV6", count: 1 }] });
+      expect(redact(text).text, input).toBe(text);
+    }
   });
 
   it("redacts an address next to punctuation, brackets, a port or a zone ID", () => {
@@ -1127,18 +1154,49 @@ describe("redact: IPv6", () => {
       ["fe80::1-x", `${V6}-x`],
       ['"2001:db8::1"', `"${V6}"`],
       ["ab:cd:2001:db8::1", V6],
+      ["abc:2001:db8::1", V6],
     ];
     for (const [input, text] of rows) stable(input, text);
   });
 
-  it("redacts an address after a key's colon or a non-word character", () => {
-    // A key holds a letter that is not hex, so `db8::1` after `xyz2001:` is an
-    // address, as it is after `eth0:`; `abc2001` above is one hex run.
-    for (const key of ["ip:", "src:", "remote:", "eth0:", "IPv6:", "node=", " :", ":"]) {
+  // Review (P3-T3b, round 1): an address right after a dot was left.
+  it("redacts an address after a dot, as the IPv4 rule does", () => {
+    const rows: Array<[string, string]> = [
+      ["router.2001:db8::1", `router.${V6}`],
+      ["done.fe80::1 still down", `done.${V6} still down`],
+      ["IP is...fe80::1", `IP is...${V6}`],
+      ["x.2001:db8::1", `x.${V6}`],
+    ];
+    for (const [input, text] of rows) stable(input, text);
+  });
+
+  it("redacts an address after a key's colon, a `::` after it included", () => {
+    for (const key of ["ip:", "src:", "remote:", "eth0:", "IPv6:", "web01:", "node=", " :", ":"]) {
       stable(key + "2001:db8::1", key + V6);
     }
-    stable("xyz2001:db8::1", "xyz2001:" + V6);
+    // Review (P3-T3b, round 1): a key in front of a `::` address.
+    stable("ip:::ffff:c0a8:101", "ip:" + V6);
+    stable("src:::1", "src:" + V6);
     stable("[REDACTED_EMAIL]:fe80::1", "[REDACTED_EMAIL]:" + V6);
+  });
+
+  // Review (P3-T3b, round 1): `x2001:[REDACTED_IPV6]` kept the address's
+  // first group. When the word's last 3 digits and the rest form an address,
+  // the address starts inside the word, so the whole run stays.
+  it("never leaves part of an address that may start inside a word", () => {
+    for (const input of [
+      "x2001:db8::1",
+      "ip_2001:db8::1",
+      "xyz2001:db8::1",
+      "abc2001:db8::1",
+      "x123:db8::1",
+      "vlan100:fe80::1",
+      "x" + v6Full,
+    ]) {
+      expect(redact(input), input).toEqual({ text: input, log: [] });
+    }
+    // Here the digits cannot start the address: 8 groups follow the key.
+    stable("x2001:db8:1:2:3:4:5:6:7", "x2001:" + V6);
   });
 
   it("redacts an IPv6 address next to an IPv4 address", () => {
@@ -1162,8 +1220,8 @@ describe("redact: IPv6", () => {
     expect(redact("2001:db8::1:192.0.2.1").text).toBe(V6);
   });
 
-  it("stays linear on long colon, hex and dot runs", () => {
-    const units = ["ab:", "1::", "x1:", "1.:", ":1.", "[::1]", "fe80::1%", "g:1:"];
+  timing("stays linear on long colon, hex and dot runs", () => {
+    const units = ["ab:", "1::", "1:", "x1:", "1.:", ":1.", "[::1]", "fe80::1%", "g:1:", "x2001:"];
     for (const input of [...units.map((u) => u.repeat(30_000)), "f".repeat(100_000) + ":1"]) {
       const start = performance.now();
       redact(input);
@@ -1243,7 +1301,8 @@ describe("redact: the six new rules (T3.U.06)", () => {
     const canaries = buildCanaries("t3u06");
     expect(canaries).toHaveLength(10);
     for (const { type, value } of canaries) {
-      // A password is only a secret next to its keyword, as in the ticket.
+      // Accepted (orchestrator, P3-T3b review): a bare password has no keyword
+      // to find, so the password canary is tested as `Password: <value>`.
       const input = type === "password" ? kv("Password", ": ", value) : value;
       expect(redact(input).text, type).not.toContain(value);
       expect(findCanaries(redact(input).text, "t3u06"), type).toEqual([]);
