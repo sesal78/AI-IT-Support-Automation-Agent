@@ -10,6 +10,10 @@ const baseURL = `http://127.0.0.1:${port}`;
 // so secret scanners do not see a key-shaped literal. The ticket form tests stub
 // the challenges.cloudflare.com script, so the widget never uses the network.
 const turnstileTestSiteKey = `1x${"0".repeat(20)}AA`;
+// The pipeline spec (P3-T10h) starts its own web server on this port, against
+// the local REST stack (Docker) and the local Trigger.dev runner; see
+// e2e/support/pipeline-stack.ts.
+const pipelinePort = 3003;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -18,7 +22,18 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   reporter: "list",
   use: { baseURL },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    {
+      name: "chromium",
+      testIgnore: "**/pipeline.spec.ts",
+      use: { ...devices["Desktop Chrome"] },
+    },
+    {
+      name: "pipeline",
+      testMatch: "**/pipeline.spec.ts",
+      use: { ...devices["Desktop Chrome"], baseURL: `http://127.0.0.1:${pipelinePort}` },
+    },
+  ],
   webServer: {
     command: `next start --port ${port} --hostname 127.0.0.1`,
     url: `${baseURL}/api/health`,
