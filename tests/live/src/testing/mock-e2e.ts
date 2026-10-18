@@ -15,6 +15,8 @@ export interface MockRequest {
   /** Any Authorization header was present. */
   readonly hasAuthorization: boolean;
   readonly body: string;
+  /** Mock clock time the request arrived. */
+  readonly at: number;
 }
 
 export interface MockReply {
@@ -32,6 +34,63 @@ export interface MockReply {
  */
 export type MockSecurityEvents = "per-minute" | "per-request" | "none";
 
+/** A ticket the mock created, from the test path or the form path. */
+export interface MockTicketInput {
+  readonly id: string;
+  readonly path: "test" | "form";
+  /** The parsed request body (test support only; never reported). */
+  readonly body: Record<string, unknown>;
+  readonly createdAt: number;
+}
+
+/**
+ * How the mock pipeline treats one ticket. Times are ms after creation;
+ * `triagedAfterMs: null` means the ticket never reaches `triaged`.
+ */
+export interface MockTicketOutcome {
+  readonly isTest: boolean;
+  readonly redactedAfterMs: number;
+  readonly triagedAfterMs: number | null;
+  /** Set to `failed` (at `failedAfterMs`) instead of being triaged. */
+  readonly failedAfterMs: number | null;
+  readonly route: "auto" | "review";
+  readonly sensitiveFlags: readonly string[];
+  readonly fixSteps: number;
+  /** Extra events, written together with `triaged`. */
+  readonly extraEvents: readonly string[];
+}
+
+/**
+ * The default pipeline, like the e2e app: every ticket is a test ticket
+ * (E2E_MODE), redacted after 1 s and triaged after 5 s. Test switches count
+ * on the test path only: `llmCallCap: 0` gives `llm_cap_reached`, the route
+ * `review` and no fix steps; `langfuseDown` gives `trace_export_failed`. A
+ * ticket that mentions HR is sensitive (`hr`) and goes to review.
+ */
+export function defaultTicketOutcome(ticket: MockTicketInput): MockTicketOutcome {
+  const requested = ticket.body["testOverrides"];
+  const overrides =
+    ticket.path === "test" && typeof requested === "object" && requested !== null
+      ? (requested as { llmCallCap?: unknown; langfuseDown?: unknown })
+      : {};
+  const capped = overrides.llmCallCap === 0;
+  const text = `${String(ticket.body["title"])} ${String(ticket.body["description"])}`;
+  const hr = /\bHR\b/.test(text);
+  return {
+    isTest: true,
+    redactedAfterMs: 1_000,
+    triagedAfterMs: 5_000,
+    failedAfterMs: null,
+    route: capped || hr ? "review" : "auto",
+    sensitiveFlags: hr ? ["hr"] : [],
+    fixSteps: capped ? 0 : 2,
+    extraEvents: [
+      ...(capped ? ["llm_cap_reached"] : []),
+      ...(overrides.langfuseDown === true ? ["trace_export_failed"] : []),
+    ],
+  };
+}
+
 export interface MockE2eOptions {
   readonly token: string;
   readonly accessClientId: string;
@@ -48,9 +107,12 @@ export interface MockE2eOptions {
   readonly usage?: () => { readonly llm: number; readonly typesafe: number };
   /**
    * Status and triage of a created test ticket's view, by `testId` and the
-   * number of times the view was read (1 for the first read). Default: `new`, no triage.
+   * number of times the view was read (1 for the first read). Without it, test
+   * tickets follow the mock pipeline (`pipeline`).
    */
   readonly ticketView?: (testId: string, reads: number) => MockTicketView | undefined;
+  /** Changes how the mock pipeline treats a ticket; gets the default outcome. */
+  readonly pipeline?: (ticket: MockTicketInput, defaults: MockTicketOutcome) => MockTicketOutcome;
 }
 
 export interface MockTicketView {
@@ -106,6 +168,8 @@ const NOT_FOUND: MockReply = {
 /** Paths the Access application leaves open (the inbound-mail webhook). */
 const ACCESS_BYPASS = new Set(["/api/inbound/email"]);
 
+const iso = (ms: number) => new Date(ms).toISOString();
+
 function parseObject(text: string): Record<string, unknown> {
   try {
     const value: unknown = JSON.parse(text);
@@ -117,6 +181,66 @@ function parseObject(text: string): Record<string, unknown> {
   }
 }
 
+/** The internal ticket view of a mock ticket at time `at`. */
+function ticketView(ticket: MockTicketInput, outcome: MockTicketOutcome, at: number) {
+  const age = at - ticket.createdAt;
+  const events: Array<{ type: string; at: string }> = [];
+  let status = "new";
+  if (age >= outcome.redactedAfterMs) {
+    status = "redacted";
+    events.push({ type: "redacted", at: iso(ticket.createdAt + outcome.redactedAfterMs) });
+  }
+  const failed = outcome.failedAfterMs !== null && age >= outcome.failedAfterMs;
+  const triagedAfterMs = failed ? null : outcome.triagedAfterMs;
+  const triaged = triagedAfterMs !== null && age >= triagedAfterMs;
+  if (failed) status = "failed";
+  if (triaged) {
+    status = "triaged";
+    const triagedAt = iso(ticket.createdAt + triagedAfterMs);
+    for (const type of outcome.extraEvents) events.push({ type, at: triagedAt });
+    events.push({ type: "triaged", at: triagedAt });
+  }
+  return {
+    id: ticket.id,
+    status,
+    isTest: outcome.isTest,
+    source: "web",
+    createdAt: iso(ticket.createdAt),
+    redacted:
+      age >= outcome.redactedAfterMs ? { title: "[redacted]", description: "[redacted]" } : null,
+    triage: triaged
+      ? {
+          sensitive: outcome.sensitiveFlags.length > 0,
+          sensitiveFlags: [...outcome.sensitiveFlags],
+          category: "software",
+          subcategory: null,
+          priority: "P3",
+          urgency: "medium",
+          assignmentGroup: "Software",
+          route: outcome.route,
+          flags: [],
+          probabilities: null,
+          groundingScore: outcome.fixSteps > 0 ? 0.9 : null,
+          kbArticleIds: [],
+          suggestedFix:
+            outcome.fixSteps > 0
+              ? {
+                  steps: Array.from({ length: outcome.fixSteps }, (_, i) => `step ${i + 1}`),
+                  caveats: [],
+                }
+              : null,
+          modelVersions: null,
+          triagedAt: iso(ticket.createdAt + triagedAfterMs),
+        }
+      : null,
+    aiCallCount: triaged ? 1 : 0,
+    events,
+    reviews: [],
+    notifications: [],
+    autofix: [],
+  };
+}
+
 function createDefaultRoute(
   options: MockE2eOptions,
   testTickets: Map<string, MockTestTicket>,
@@ -124,7 +248,30 @@ function createDefaultRoute(
 ) {
   const mode = options.securityEvents ?? "per-minute";
   const now = options.now ?? Date.now;
+  const pipeline = options.pipeline;
   const events: StoredEvent[] = [];
+  /** Every created ticket (test and form path) with its pipeline outcome, by ticket ID. */
+  const tickets = new Map<string, { ticket: MockTicketInput; outcome: MockTicketOutcome }>();
+  const formKeys = new Map<string, string>();
+
+  function track(id: string, path: "test" | "form", body: Record<string, unknown>): void {
+    const ticket: MockTicketInput = { id, path, body, createdAt: now() };
+    const defaults = defaultTicketOutcome(ticket);
+    tickets.set(id, { ticket, outcome: pipeline ? pipeline(ticket, defaults) : defaults });
+  }
+
+  /** The form path dedupes like the app's day key; the description stands in for it. */
+  function createFormTicket(body: Record<string, unknown>): MockReply {
+    const key = `web:${String(body["description"])}`;
+    const existing = formKeys.get(key);
+    if (existing !== undefined) {
+      return { status: 201, json: { ticketId: existing, queued: true, duplicate: true } };
+    }
+    const ticketId = randomUUID();
+    track(ticketId, "form", body);
+    formKeys.set(key, ticketId);
+    return { status: 201, json: { ticketId, queued: true } };
+  }
 
   function createTestTicket(request: MockRequest): MockReply {
     const body = parseObject(request.body);
@@ -135,6 +282,7 @@ function createDefaultRoute(
     }
     const ticketId = randomUUID();
     testTickets.set(testId, { testId, ticketId, body, reads: 0, finished: false });
+    track(ticketId, "test", body);
     onOpen([...testTickets.values()].filter((t) => !t.finished).length);
     return { status: 201, json: { ticketId, queued: true } };
   }
@@ -175,6 +323,15 @@ function createDefaultRoute(
         },
       };
     }
+    if (method === "POST" && path === "/api/tickets") {
+      // Like the app's form schema: unknown keys (a smuggled `testOverrides`)
+      // are dropped, and a missing Turnstile token is a failed challenge.
+      const body = parseObject(request.body);
+      if (typeof body["turnstileToken"] !== "string" || body["turnstileToken"] === "") {
+        return { status: 403, json: { error: "turnstile_failed" } };
+      }
+      return createFormTicket(body);
+    }
     if (!path.startsWith("/api/internal/")) return NOT_FOUND;
     if (!request.bearerOk) {
       record(request.hasAuthorization ? "bad_token" : "missing_token");
@@ -207,6 +364,11 @@ function createDefaultRoute(
       return createTestTicket(request);
     }
     const ticket = /^\/api\/internal\/tickets\/([^/]+)$/.exec(path);
+    const stored = ticket ? tickets.get(ticket[1]!) : undefined;
+    // With a `ticketView` callback, test tickets are served by it (below).
+    if (method === "GET" && stored && (stored.ticket.path === "form" || !options.ticketView)) {
+      return { status: 200, json: ticketView(stored.ticket, stored.outcome, now()) };
+    }
     if (method === "GET" && ticket && TICKET_ID.test(ticket[1]!)) {
       const known = [...testTickets.values()].find((t) => t.ticketId === ticket[1]);
       let view: MockTicketView | undefined;
@@ -256,11 +418,13 @@ function reply(response: ServerResponse, answer: MockReply): void {
 /**
  * Local mock of the e2e app on 127.0.0.1: a Cloudflare Access gate (403 HTML
  * without both Access headers, except on `/api/inbound/email`), the internal
- * API (401 JSON without the right bearer token, recorded as a security event)
- * and the health endpoints. Test support only.
+ * API (401 JSON without the right bearer token, recorded as a security event),
+ * the health endpoints, the form path `POST /api/tickets`, and a pipeline
+ * whose tickets move on the mock clock (`pipeline`). Test support only.
  */
 export async function startMockE2e(options: MockE2eOptions): Promise<MockE2e> {
   const requests: MockRequest[] = [];
+  const now = options.now ?? Date.now;
   const testTickets = new Map<string, MockTestTicket>();
   let maxOpen = 0;
   const defaultRoute = createDefaultRoute(options, testTickets, (open) => {
@@ -292,6 +456,7 @@ export async function startMockE2e(options: MockE2eOptions): Promise<MockE2e> {
         hasBearer: typeof authorization === "string" && authorization.startsWith("Bearer "),
         bearerOk: authorization === `Bearer ${options.token}`,
         body: await readBody(incoming),
+        at: now(),
       };
       requests.push(request);
       const answer = options.override?.(request) ?? defaultRoute(request);
