@@ -2,18 +2,8 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SENSITIVE_TOPICS } from "@ai-it-support/ai";
 import { createDbClient, createRepositories, type Repositories } from "@ai-it-support/db";
-import {
-  ASSIGNMENT_GROUPS,
-  CATEGORIES,
-  PRIORITIES,
-  URGENCIES,
-  buildCanaries,
-  canaryTicketText,
-  type TriageTicketPayload,
-} from "@ai-it-support/shared";
-import { HttpResponse } from "msw";
+import { buildCanaries, canaryTicketText, type TriageTicketPayload } from "@ai-it-support/shared";
 import { afterAll, beforeAll, beforeEach, expect } from "vitest";
 import { clientFor } from "../../../packages/db/integration/pg-container.js";
 import {
@@ -25,6 +15,24 @@ import { createIntakeDeps, runIntakeTicket } from "../src/trigger/intake-ticket.
 import { kbIngestPayload, runKbIngest } from "../src/trigger/kb-ingest.js";
 import { createTriageDeps, runTriageTicket } from "../src/trigger/triage-ticket.js";
 import { egress } from "../test-support/egress.js";
+import {
+  ORIGINS,
+  mockProviders,
+  pipelineEnv,
+  questionKeys,
+} from "../test-support/provider-mocks.js";
+
+// The canned answers live in test-support (shared with the local runner, P3-T10g).
+export {
+  FIX_REPLY,
+  LANGFUSE_BASE_URL,
+  LLM_BASE_URL,
+  ORIGINS,
+  TYPESAFE_ORIGIN,
+  llmReply,
+  questionKeys,
+  typesafeReply,
+} from "../test-support/provider-mocks.js";
 
 // Shared harness of the triage integration suites (P3-T10e, P3-T10f): the real
 // intake and triage bodies with their real deps, on the local REST stack
@@ -41,21 +49,6 @@ const seedPath = join(
 const seed: unknown = JSON.parse(readFileSync(seedPath, "utf8"));
 export const seedArticles = () => kbIngestPayload.parse({ articles: seed }).articles;
 
-// Public endpoints, never reached: every request to them is answered by msw.
-export const LLM_BASE_URL = "https://opencode.ai/zen/go/v1";
-export const LANGFUSE_BASE_URL = "https://cloud.langfuse.com";
-// The SDK's own default, unless the environment points it elsewhere.
-export const TYPESAFE_ORIGIN = new URL(
-  process.env.TYPESAFE_BASE_URL?.trim() || "https://api.typesafe.ai",
-).origin;
-export const ORIGINS = {
-  typesafe: new URL(TYPESAFE_ORIGIN).host,
-  llm: new URL(LLM_BASE_URL).host,
-  langfuse: new URL(LANGFUSE_BASE_URL).host,
-};
-const MODEL = "jev-1.13.0";
-const TOKENS = { input_tokens: 40, output_tokens: 6 };
-
 let stack: RestStack | undefined;
 let db: ReturnType<typeof clientFor> | undefined;
 let repos: Repositories | undefined;
@@ -64,6 +57,11 @@ let env: Record<string, string> | undefined;
 export function sql(): ReturnType<typeof clientFor> {
   if (!db) throw new Error("database client not connected");
   return db;
+}
+
+export function testStack(): RestStack {
+  if (!stack) throw new Error("REST stack not started");
+  return stack;
 }
 
 export function testRepos(): Repositories {
@@ -79,72 +77,6 @@ export function testEnv(): Record<string, string> {
 export const quiet = { info: () => undefined, warn: () => undefined, error: () => undefined };
 
 // ---- HTTP mocks --------------------------------------------------------------
-
-const probabilities = <L extends string>(labels: readonly L[], pick: L) =>
-  Object.fromEntries(
-    labels.map((label) => [label, label === pick ? 0.9 : 0.1 / (labels.length - 1)]),
-  );
-const choiceAnswer = <L extends string>(labels: readonly L[], pick: L) => ({
-  type: "choice",
-  choice: pick,
-  confidence: 0.9,
-  probabilities: probabilities(labels, pick),
-});
-
-/** One System One answer per request kind, told apart by the question keys. */
-function typesafeAnswer(questions: string[]): Record<string, unknown> {
-  if (questions.includes("legal")) {
-    return Object.fromEntries(
-      SENSITIVE_TOPICS.map((topic) => [topic, { type: "noul", noul: 0.02 }]),
-    );
-  }
-  if (questions.includes("category")) {
-    return {
-      category: choiceAnswer(CATEGORIES, "network"),
-      priority: choiceAnswer(PRIORITIES, "P3"),
-      urgency: choiceAnswer(URGENCIES, "medium"),
-      assignment_group: choiceAnswer(ASSIGNMENT_GROUPS, "Network"),
-      outage_or_duplicate: { type: "noul", noul: 0.05 },
-      injection: { type: "noul", noul: 0.02 },
-      actionable: { type: "noul", noul: 0.95 },
-    };
-  }
-  if (questions.includes("grounded")) return { grounded: { type: "score", score: 3 } };
-  // KB rerank: a1 is the best match, the rest loosely related.
-  return Object.fromEntries(
-    questions.map((key) => [key, { type: "score", score: key === "a1" ? 3 : 1 }]),
-  );
-}
-
-export const questionKeys = (body: string): string[] =>
-  Object.keys((JSON.parse(body) as { questions?: Record<string, unknown> }).questions ?? {});
-
-/** A 200 System One reply for a TypeSafe request body. */
-export const typesafeReply = (body: string) =>
-  HttpResponse.json({ model: MODEL, answers: typesafeAnswer(questionKeys(body)), usage: TOKENS });
-
-/** A 200 chat completion whose message content is `content`. */
-export const llmReply = (content: string) =>
-  HttpResponse.json({
-    id: "chatcmpl-test",
-    object: "chat.completion",
-    created: 1_790_000_000,
-    model: "test-llm",
-    choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
-    usage: { prompt_tokens: 120, completion_tokens: 30, total_tokens: 150 },
-  });
-
-export const FIX_REPLY = JSON.stringify({
-  steps: ["Restart the VPN client.", "Sign in to the VPN again."],
-  caveats: [],
-});
-
-/** The default mocks; a test registers its own after them to override one host. */
-function mockProviders(): void {
-  egress.mock(TYPESAFE_ORIGIN, async ({ request }) => typesafeReply(await request.text()));
-  egress.mock(LLM_BASE_URL, () => llmReply(FIX_REPLY));
-  egress.mock(LANGFUSE_BASE_URL, () => HttpResponse.json({}));
-}
 
 /** Requests to a host, from the `from`-th recorded request on. */
 export const requestsTo = (host: string, from = 0) =>
@@ -320,19 +252,7 @@ export function useTriageStack(): void {
     stack = await startRestStack();
     db = clientFor(stack.pg);
     await db.connect();
-    env = {
-      SUPABASE_URL: stack.url,
-      SUPABASE_SERVICE_ROLE_KEY: stack.serviceRoleKey,
-      SUPABASE_DB_SCHEMA: "itsupport",
-      TYPESAFE_API_KEY: "x".repeat(32),
-      LLM_API_KEY: "x".repeat(32),
-      LLM_BASE_URL,
-      LLM_MODEL: "test-llm",
-      LANGFUSE_PUBLIC_KEY: "x".repeat(16),
-      LANGFUSE_SECRET_KEY: "x".repeat(24),
-      LANGFUSE_BASE_URL,
-      E2E_MODE: "false",
-    };
+    env = pipelineEnv(stack);
     repos = createRepositories(createDbClient(env));
     await runKbIngest({ articles: seedArticles() }, { repos, logger: quiet });
     expect(await rowCount("kb_articles")).toBe(30);
@@ -344,6 +264,6 @@ export function useTriageStack(): void {
   });
 
   beforeEach(() => {
-    mockProviders();
+    mockProviders(egress);
   });
 }
