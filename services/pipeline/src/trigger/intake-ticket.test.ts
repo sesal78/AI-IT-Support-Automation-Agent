@@ -523,9 +523,8 @@ describe("intake-ticket metered sensitive check", () => {
   });
 
   it("puts only the redacted title and description in the span input, request and logs", async () => {
-    // Every plan canary but IPv6, which redact() does not cover until P3-T3b.
+    // Every plan canary, IPv6 included.
     const raw = buildCanaries(egress.runId)
-      .filter((canary) => canary.type !== "ipv6")
       .map((canary) => `${canary.type}: ${canary.value}`)
       .join("\n");
     const h = meteredHarness(ticket(`Locked out ${raw}`, raw), true);
