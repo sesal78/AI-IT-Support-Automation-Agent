@@ -1094,7 +1094,6 @@ describe("redact: IPv6", () => {
 
   it("leaves a run with no address in it unchanged", () => {
     for (const input of [
-      "12345::1",
       "2001:db8:12345::1",
       "1.2::3",
       "::1.5",
@@ -1110,21 +1109,26 @@ describe("redact: IPv6", () => {
     stable("::ffff:192.0.2.1:80", "::ffff:" + V4 + ":80");
   });
 
-  // Review (P3-T3b, round 1): a hex key in front of a full address made one
-  // run too long for an address, and the whole run was left.
-  it("takes the longest valid tail of a run: one group in front stays, more goes with it", () => {
+  // Review (P3-T3b, rounds 1 and 2): a hex key in front of a full address
+  // made one run too long for an address, and the whole run was left; then a
+  // port behind one kept the first group. A key or port glued by one `:`
+  // cannot be told from a group, so a run with an address goes as one.
+  it("replaces a run that holds an address as one, a key or port in it included", () => {
     const full = v6Full;
     const rows: Array<[string, string]> = [
-      ["db:" + full, "db:" + V6],
-      ["add:" + full, "add:" + V6],
-      ["a:" + full, "a:" + V6],
-      ["dc 1:" + full, "dc 1:" + V6],
-      ["1234:" + full, "1234:" + V6],
-      ["a:2001:db8:1:2:3:4:5:6", "a:" + V6],
-      ["1:2:3:4:5:6:7:8:9", "1:" + V6],
-      ["1:2:3:4::5:6:7:8", "1:" + V6],
-      ["1:2:3:4:5:6:7:192.0.2.1", "1:" + V6],
-      ["eth0:1:2:3:4:5:6:7:8:9", "eth0:1:" + V6],
+      ["db:" + full, V6],
+      ["add:" + full, V6],
+      ["a:" + full, V6],
+      ["dc 1:" + full, "dc " + V6],
+      ["1234:" + full, V6],
+      [full + ":443", V6],
+      ["2001:db8:85a3:0:0:8a2e:370:7334:443", V6],
+      [`see ${full}:8080 now`, `see ${V6} now`],
+      ["a:2001:db8:1:2:3:4:5:6", V6],
+      ["1:2:3:4:5:6:7:8:9", V6],
+      ["1:2:3:4::5:6:7:8", V6],
+      ["1:2:3:4:5:6:7:192.0.2.1", V6],
+      ["eth0:1:2:3:4:5:6:7:8:9", "eth0:" + V6],
       ["1:2:3:4:5:6:7:8:9:10", V6],
       ["fe80::1::", V6],
       ["1::2::3", V6],
@@ -1171,7 +1175,7 @@ describe("redact: IPv6", () => {
   });
 
   it("redacts an address after a key's colon, a `::` after it included", () => {
-    for (const key of ["ip:", "src:", "remote:", "eth0:", "IPv6:", "web01:", "node=", " :", ":"]) {
+    for (const key of ["ip:", "src:", "remote:", "eth0:", "IPv6:", "node=", " :", ":"]) {
       stable(key + "2001:db8::1", key + V6);
     }
     // Review (P3-T3b, round 1): a key in front of a `::` address.
@@ -1180,23 +1184,33 @@ describe("redact: IPv6", () => {
     stable("[REDACTED_EMAIL]:fe80::1", "[REDACTED_EMAIL]:" + V6);
   });
 
-  // Review (P3-T3b, round 1): `x2001:[REDACTED_IPV6]` kept the address's
-  // first group. When the word's last 3 digits and the rest form an address,
-  // the address starts inside the word, so the whole run stays.
-  it("never leaves part of an address that may start inside a word", () => {
-    for (const input of [
-      "x2001:db8::1",
-      "ip_2001:db8::1",
-      "xyz2001:db8::1",
-      "abc2001:db8::1",
-      "x123:db8::1",
-      "vlan100:fe80::1",
-      "x" + v6Full,
-    ]) {
-      expect(redact(input), input).toEqual({ text: input, log: [] });
+  // Review (P3-T3b, rounds 1 and 2): `x2001:[REDACTED_IPV6]` kept a possible
+  // first group, then `vlan100:fe80::1` was left whole. When 3 or more hex
+  // characters of the word, a digit among them, may start the address, the
+  // run goes from inside the word; a shorter end of a key stays in front.
+  it("never leaves an address, or a part of one, in a key that ends in digits", () => {
+    const rows: Array<[string, string]> = [
+      ["if0:fe80::1", "if0:" + V6],
+      ["eth10:fe80::1", "eth10:" + V6],
+      ["vlan100:fe80::1", "vlan" + V6],
+      ["port8080:fe80::1", "port" + V6],
+      ["x12345:fe80::1", "x" + V6],
+      ["x2001:db8::1", "x" + V6],
+      ["ip_2001:db8::1", "ip_" + V6],
+      ["xyz2001:db8::1", "xyz" + V6],
+      ["abc2001:db8::1", V6],
+      ["12345::1", V6],
+      ["x123:db8::1", "x" + V6],
+      ["xfe80:1::2", "x" + V6],
+      ["web01:fe80::1", "w" + V6],
+      ["x" + v6Full, "x" + V6],
+      // The digits cannot start the address here: 8 groups follow the key.
+      ["x2001:db8:1:2:3:4:5:6:7", "x2001:" + V6],
+    ];
+    for (const [input, text] of rows) {
+      expect(redact(input), input).toEqual({ text, log: [{ type: "IPV6", count: 1 }] });
+      expect(redact(text).text, input).toBe(text);
     }
-    // Here the digits cannot start the address: 8 groups follow the key.
-    stable("x2001:db8:1:2:3:4:5:6:7", "x2001:" + V6);
   });
 
   it("redacts an IPv6 address next to an IPv4 address", () => {

@@ -25,15 +25,14 @@
 // (e.g. a card followed by its CVV). A candidate rejected by its checksum does
 // not consume text: scanning resumes one character later.
 // IPv6: hex digits, `:` and the dots of an IPv4 tail (a `.` between digits)
-// form a run. Its address is the longest valid tail that starts at a group
-// boundary: the run's start or any point after a `:`. One group in front of
-// it is a key and stays (`db:2001:…`); a longer head is replaced with it, so
-// a run is taken in one pass and never leaves part of an address. A run that
-// starts right after a word character starts inside that word, so its
-// address starts after a `:` (`eth0:`, `remote:`); but when that word, or a
-// first group longer than 4, ends in 3 or more digits that form an address
-// with the rest (`x2001:db8::1`, `abc2001:db8::1`), the address may start
-// inside the word, and the run stays whole. A run that ends
+// form a run. A run with a valid address tail at a group boundary (the start
+// or after a `:`) is replaced as one, in one pass: a key or port glued to
+// the address by one `:` cannot be told from a group (`db:2001:…:7334`,
+// `2001:…:7334:443`), so it goes too and no part of the address stays. A
+// run that starts right after a word character starts inside that word: it
+// is replaced from after the word's `:` (`eth0:`, `remote:`), or from inside
+// the word when 3 or more of its hex characters, a digit among them, may
+// start the address (`vlan100:fe80::1`, `x2001:db8::1`). A run that ends
 // right before a word character stays; a single trailing `:` is punctuation;
 // a zone ID (`%eth0`) stays. A run is read at most three times and only its
 // last 45 characters are tried, so this stays linear.
@@ -302,22 +301,25 @@ function ipv6End(text: string, at: number): number {
   for (; inRun(text, end); end++) if (colon < 0 && text[end] === ":") colon = end;
   if (colon < 0 || (/\w/.test(text.charAt(end)) && text[end - 1] !== ":")) return -end;
   const stop = text[end - 1] === ":" && text[end - 2] !== ":" ? end - 1 : end;
-  // The word in front of the first `:`; its last 3 digits may be a group.
+  const take = (from: number): number => (from === at ? stop : from > at ? -from : -end);
+  // The first group is in a word: glued to a letter, or longer than 4.
   let word = colon;
   while (/\w/.test(text.charAt(word - 1))) word--;
   const inWord = word !== start || colon - start > 4;
-  const digits = /\d{3}$/.test(text.slice(word, colon));
-  if (inWord && digits && ipv6Valid("0" + text.slice(colon, stop))) return -end;
-  // The first group boundary the address may start at.
-  const first = inWord ? colon + 1 : start;
+  // 3 or more of its hex characters, a digit among them, may start the
+  // address (`vlan100:`, `x2001:`): the run goes from inside the word.
+  const hex = text.slice(start, colon);
+  if (inWord && /^[\dA-Fa-f]{3,}$/.test(hex) && /\d/.test(hex)) {
+    if (ipv6Valid("0" + text.slice(colon, stop))) return take(start);
+  }
+  // Else the address starts after a word's `:` (`eth0:`) or a leading `:`.
+  const first = inWord || (colon === start && text[start + 1] !== ":") ? colon + 1 : start;
   for (let i = Math.max(first, stop - 45); i < stop; i++) {
     if (i !== first && text[i - 1] !== ":") continue;
     const address = text.slice(i, stop);
-    if (!/\d/.test(address) || !ipv6Valid(address)) continue;
-    // One group in front is a key and stays; a longer head goes with it.
-    const head = text.slice(first, i);
-    const from = head.indexOf(":") === head.length - 1 ? i : first;
-    return from === at ? stop : from > at ? -from : -end;
+    // The run from `first` goes as one: a key or port in it cannot be told
+    // from a group, so no part of the address stays.
+    if (/\d/.test(address) && ipv6Valid(address)) return take(first);
   }
   return -end;
 }
