@@ -1,6 +1,11 @@
 /** Alert kinds raised by phase 3. Delivery to Slack comes in phases 4 and 7. */
 export type AlertKind =
-  "llm_cap_80" | "typesafe_cap_80" | "typesafe_cap_reached" | "llm_unavailable" | "triage_failed";
+  | "llm_cap_80"
+  | "typesafe_cap_80"
+  | "typesafe_cap_reached"
+  | "llm_unavailable"
+  | "triage_failed"
+  | "triage_enqueue_failed";
 
 export interface AlertOptions {
   ticketId?: string | undefined;
