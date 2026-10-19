@@ -98,8 +98,39 @@ const pageSchema = z.object({
 });
 
 const PAGE_LIMIT = 100;
+// Langfuse cuts each metadata value over 200 characters unless its key is in
+// `expandMetadata` (comma-separated keys; no wildcard is documented):
+// https://cloud.langfuse.com/generated/api/openapi.yml, `observations_getMany`.
+const METADATA_LIMIT = 200;
+// The keys packages/ai langfuse-sink writes (`langfuse.observation.metadata.*`).
+const KNOWN_METADATA_KEYS = ["provider", "kind"];
+const METADATA_KEY = /^[A-Za-z0-9_.-]{1,100}$/;
+const TRUNCATION_MARKER = /(\.\.\.|…|\[truncated\])$/i;
 const MAX_PAGES = 1000;
 const ENDPOINT = "GET /api/public/v2/observations";
+
+function metadataEntries(metadata: unknown): Array<[string, string]> {
+  if (metadata === undefined || metadata === null || typeof metadata !== "object") return [];
+  return Object.entries(metadata).map(([key, value]) => [key, asText(value)]);
+}
+
+/** A value the API may have cut: one at the limit, or one at least that long ending in a marker. */
+function looksTruncated(value: string): boolean {
+  return (
+    value.length === METADATA_LIMIT ||
+    (value.length >= METADATA_LIMIT && TRUNCATION_MARKER.test(value))
+  );
+}
+
+/** No input, no output and no metadata: nothing was scanned. */
+function hasNoContent(row: { input?: unknown; output?: unknown; metadata?: unknown }): boolean {
+  const empty = (value: unknown) =>
+    value === undefined ||
+    value === null ||
+    value === "" ||
+    (typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0);
+  return empty(row.input) && empty(row.output) && empty(row.metadata);
+}
 
 function asText(value: unknown): string {
   if (value === undefined || value === null) return "";
@@ -130,16 +161,26 @@ export async function scanTraces(
     return EXIT_NOT_SCANNED;
   }
   const doFetch: FetchLike = options.fetch ?? ((input, init) => fetch(input, init));
-  const origin = new URL(config.LANGFUSE_BASE_URL).origin;
+  const base = new URL(config.LANGFUSE_BASE_URL);
+  const origin = base.origin;
+  // Keep any base path (a self-hosted prefix); the result stays on the same origin.
+  const endpointUrl = new URL(
+    "api/public/v2/observations",
+    `${origin}${base.pathname.endsWith("/") ? base.pathname : `${base.pathname}/`}`,
+  );
   const auth = `Basic ${Buffer.from(`${config.LANGFUSE_PUBLIC_KEY}:${config.LANGFUSE_SECRET_KEY}`).toString("base64")}`;
   const until = (options.now ?? new Date()).toISOString();
 
-  async function page(cursor: string | undefined): Promise<z.infer<typeof pageSchema>> {
-    const url = new URL("/api/public/v2/observations", origin);
+  async function page(
+    cursor: string | undefined,
+    expand: ReadonlySet<string>,
+  ): Promise<z.infer<typeof pageSchema>> {
+    const url = new URL(endpointUrl);
     url.searchParams.set("fromStartTime", args.since!.toISOString());
     url.searchParams.set("toStartTime", until);
     url.searchParams.set("fields", "core,io,metadata");
     url.searchParams.set("limit", String(PAGE_LIMIT));
+    url.searchParams.set("expandMetadata", [...expand].join(","));
     if (cursor !== undefined) url.searchParams.set("cursor", cursor);
     if (url.origin !== origin) throw new TraceApiError(`${ENDPOINT}: origin refused`);
     let response: Response;
@@ -172,15 +213,42 @@ export async function scanTraces(
   let pages = 0;
   let hard = 0;
   let soft = 0;
+  let empty = 0;
+  let truncated = 0;
   let failure: string | undefined;
+  const expand = new Set(KNOWN_METADATA_KEYS);
   const seenCursors = new Set<string>();
   try {
     let cursor: string | undefined;
     do {
       if (pages >= MAX_PAGES) throw new TraceApiError(`${ENDPOINT}: more than ${MAX_PAGES} pages`);
-      const result = await page(cursor);
+      let result = await page(cursor, expand);
+      // Long metadata values under keys not yet expanded may be cut: add the
+      // keys and read the same page again, once.
+      const missing = result.data
+        .flatMap((row) => metadataEntries(row.metadata))
+        .filter(([key, value]) => value.length >= METADATA_LIMIT && !expand.has(key))
+        .map(([key]) => key);
+      if (missing.length > 0) {
+        if (missing.some((key) => !METADATA_KEY.test(key))) {
+          throw new TraceApiError(`${ENDPOINT}: metadata truncated (key cannot be expanded)`);
+        }
+        for (const key of missing) expand.add(key);
+        result = await page(cursor, expand);
+      }
       pages++;
       for (const observation of result.data) {
+        if (hasNoContent(observation)) {
+          out.stdout(`EMPTY observation ${observation.id} observation without content`);
+          empty++;
+          continue;
+        }
+        const cut = ([key, value]: [string, string]) =>
+          looksTruncated(value) || (value.length >= METADATA_LIMIT && !expand.has(key));
+        if (metadataEntries(observation.metadata).some(cut)) {
+          out.stdout(`TRUNCATED observation ${observation.id} metadata truncated`);
+          truncated++;
+        }
         const text = [observation.input, observation.output, observation.metadata]
           .map(asText)
           .join("\n");
@@ -206,6 +274,12 @@ export async function scanTraces(
   out.stdout(
     `scan:traces: ${scanned} observations scanned on ${pages} pages; ${hard} hard hits, ${soft} warnings`,
   );
+  if (failure === undefined && empty > 0) {
+    failure = `${empty} observation without content (input, output and metadata absent)`;
+  }
+  if (failure === undefined && truncated > 0) {
+    failure = `metadata truncated in ${truncated} observations`;
+  }
   if (failure !== undefined) out.stderr(`scan:traces: ${failure}; not proven clean`);
   if (hard > 0) return EXIT_HARD_HIT;
   if (failure !== undefined) return EXIT_NOT_SCANNED;
@@ -216,15 +290,26 @@ export async function scanTraces(
   return EXIT_CLEAN;
 }
 
+/** UTF-8 (BOM optional) or UTF-16 with a BOM; undefined for other text with NUL bytes. */
+function decodeLog(bytes: Buffer): string | undefined {
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return bytes.subarray(2).toString("utf16le");
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+    return new TextDecoder("utf-16be").decode(bytes.subarray(2));
+  }
+  if (bytes.includes(0)) return undefined;
+  const text = bytes.toString("utf8");
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
 /** Scans each log file line by line. Returns the exit code. */
 export async function scanLogs(
   args: ScanArgs,
   out: ScanOutput,
-  options: { readFile?: (path: string) => Promise<string> } = {},
+  options: { readFile?: (path: string) => Promise<Buffer> } = {},
 ): Promise<number> {
   if (args.since !== undefined) throw new ScanUsageError("scan:logs takes no --since");
   if (args.files.length === 0) throw new ScanUsageError("scan:logs needs at least one file");
-  const read = options.readFile ?? ((path: string) => readFile(path, "utf8"));
+  const read = options.readFile ?? ((path: string) => readFile(path));
   let lines = 0;
   let hard = 0;
   let soft = 0;
@@ -232,7 +317,13 @@ export async function scanLogs(
   for (const file of args.files) {
     let content: string;
     try {
-      content = await read(file);
+      const decoded = decodeLog(await read(file));
+      if (decoded === undefined) {
+        out.stderr(`scan:logs: ${file}: NUL bytes without a UTF-16 BOM; not proven clean`);
+        failed = true;
+        continue;
+      }
+      content = decoded;
     } catch (error) {
       const code = (error as { code?: unknown } | null)?.code;
       const reason =
@@ -271,7 +362,7 @@ export async function runScan(
   argv: readonly string[],
   env: Record<string, string | undefined>,
   out: ScanOutput,
-  options: { fetch?: FetchLike; readFile?: (path: string) => Promise<string>; now?: Date } = {},
+  options: { fetch?: FetchLike; readFile?: (path: string) => Promise<Buffer>; now?: Date } = {},
 ): Promise<number> {
   const [command, ...rest] = argv;
   if (command !== "traces" && command !== "logs") {

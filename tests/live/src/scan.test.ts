@@ -66,6 +66,7 @@ describe("scan:traces", () => {
     );
     expect(first.url.searchParams.get("fromStartTime")).toBe(SINCE);
     expect(first.url.searchParams.get("fields")).toBe("core,io,metadata");
+    expect(first.url.searchParams.get("expandMetadata")).toBe("provider,kind");
     expect(api.requests[1]!.url.searchParams.get("cursor")).toBe("c1");
     expect(first.init.redirect).toBe("manual");
     const auth = new Headers(first.init.headers).get("Authorization")!;
@@ -170,12 +171,76 @@ describe("scan:traces", () => {
   });
 });
 
+describe("scan:traces metadata and content", () => {
+  const long = `${"a".repeat(230)} SSN ${canary.ssn}`;
+  // Langfuse cuts unexpanded metadata values at 200 characters.
+  const cutUnlessExpanded = (url: URL) => {
+    const expanded = (url.searchParams.get("expandMetadata") ?? "").split(",").includes("note");
+    return Response.json({
+      data: [{ id: "o7", output: "ok", metadata: { note: expanded ? long : long.slice(0, 200) } }],
+      meta: {},
+    });
+  };
+
+  it("re-reads a page with the cut key expanded and finds a canary past character 200", async () => {
+    const api = mockLangfuse([], cutUnlessExpanded);
+    const { code, text } = await run(traces(), { fetch: api.fetch });
+    expect(code).toBe(1);
+    expect(text).toContain("HARD observation o7 canary:ssn");
+    expect(api.requests).toHaveLength(2);
+    expect(api.requests[1]!.url.searchParams.get("expandMetadata")).toBe("provider,kind,note");
+  });
+
+  it("exits 2 with metadata truncated when the API still cuts an expanded value", async () => {
+    const api = mockLangfuse([[{ id: "o8", output: "ok", metadata: { note: "a".repeat(200) } }]]);
+    const { code, text } = await run(traces(), { fetch: api.fetch });
+    expect(code).toBe(2);
+    expect(text).toContain("TRUNCATED observation o8 metadata truncated");
+  });
+
+  it("exits 2 with metadata truncated on a long value ending in a truncation marker", async () => {
+    const value = `${"b".repeat(240)}...`;
+    const api = mockLangfuse([[{ id: "o6", output: "ok", metadata: { provider: value } }]]);
+    const { code, text } = await run(traces(), { fetch: api.fetch });
+    expect(code).toBe(2);
+    expect(text).toContain("metadata truncated");
+  });
+
+  it("exits 2 on an observation without input, output and metadata", async () => {
+    const api = mockLangfuse([
+      [clean("o1"), { id: "o2" }, { id: "o3", input: null, metadata: {} }],
+    ]);
+    const { code, text } = await run(traces(), { fetch: api.fetch });
+    expect(code).toBe(2);
+    expect(text).toContain("1 observations scanned");
+    expect(text).toContain("EMPTY observation o2");
+    expect(text).toContain("2 observation without content");
+  });
+
+  it("keeps the base path of LANGFUSE_BASE_URL and its origin", async () => {
+    const api = mockLangfuse([[clean("o1")]]);
+    const { code } = await run(
+      traces(),
+      { fetch: api.fetch },
+      {
+        ...env,
+        LANGFUSE_BASE_URL: "https://langfuse.example/lf",
+      },
+    );
+    expect(code).toBe(0);
+    const url = api.requests[0]!.url;
+    expect(url.origin + url.pathname).toBe(
+      "https://langfuse.example/lf/api/public/v2/observations",
+    );
+  });
+});
+
 describe("scan:logs", () => {
   const dirs: string[] = [];
   afterEach(() => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
-  function file(name: string, content: string): string {
+  function file(name: string, content: string | Buffer): string {
     const dir = mkdtempSync(join(tmpdir(), "scan-logs-"));
     dirs.push(dir);
     const path = join(dir, name);
@@ -203,6 +268,33 @@ describe("scan:logs", () => {
     const { code, text } = await run(["logs", "--run", RUN, missing]);
     expect(code).toBe(2);
     expect(text).toContain("cannot read (ENOENT)");
+  });
+
+  it("decodes a UTF-16 LE file with a BOM", async () => {
+    const body = Buffer.from(
+      `ok
+key ${canary.api_key}
+`,
+      "utf16le",
+    );
+    const path = file("utf16.log", Buffer.concat([Buffer.from([0xff, 0xfe]), body]));
+    const { code, text } = await run(["logs", "--run", RUN, path]);
+    expect(code).toBe(1);
+    expect(text).toContain(`HARD ${path}:2 canary:api_key`);
+  });
+
+  it("exits 2 on a file with NUL bytes and no UTF-16 BOM", async () => {
+    const path = file(
+      "nul.log",
+      Buffer.from(
+        `key ${canary.api_key}
+`,
+        "utf16le",
+      ),
+    );
+    const { code, text } = await run(["logs", "--run", RUN, path]);
+    expect(code).toBe(2);
+    expect(text).toContain("NUL bytes without a UTF-16 BOM");
   });
 
   it("exits 2 on an empty file", async () => {
