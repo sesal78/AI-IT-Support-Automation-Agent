@@ -19,6 +19,23 @@ const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
 const tickets = (raw as unknown[]).map((t) => evalTicketSchema.parse(t));
 const inSet = (set: EvalTicket["set"]) => tickets.filter((t) => t.set === set);
 
+/** Digit runs of 8+ digits with phone separators; IPs are removed first. */
+function phoneLike(text: string): string[] {
+  const bare = text.replace(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g, " ");
+  const found = bare.match(/(?<![\w.])[+(]?\d[\d ().-]{6,}\d(?![\w])/g) ?? [];
+  return found.filter((m) => m.replace(/\D/g, "").length >= 8);
+}
+
+/** Fictional ranges only: US 555-01xx, AU ACMA 0491 570 xxx and 0X 5550 xxxx. */
+function isReservedPhone(phone: string): boolean {
+  const digits = phone.replace(/\D/g, "").replace(/^61/, "0");
+  return (
+    /^1?\d{3}55501\d{2}$/.test(digits) ||
+    /^0491570\d{3}$/.test(digits) ||
+    /^0[2378]5550\d{4}$/.test(digits)
+  );
+}
+
 describe("evals/tickets.json", () => {
   it("is an array of exactly 100 tickets with unique ids E001...E100", () => {
     expect(Array.isArray(raw)).toBe(true);
@@ -148,8 +165,35 @@ describe("evals/tickets.json", () => {
       for (const ip of t.description.match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g) ?? []) {
         expect(ip, t.id).toMatch(reservedIp);
       }
-      for (const phone of t.description.match(/\b\d{3}-\d{3}-\d{4}\b/g) ?? []) {
-        expect(phone, t.id).toMatch(/^\d{3}-555-01\d{2}$/);
+      for (const phone of phoneLike(t.description)) {
+        expect(isReservedPhone(phone), `${t.id} ${phone}`).toBe(true);
+      }
+    }
+  });
+
+  it("recognises real-looking phone formats as not reserved", () => {
+    for (const real of [
+      "415-867-5309",
+      "415.867.5309",
+      "(415) 867 5309",
+      "+61 412 345 678",
+      "0412 345 678",
+      "(02) 9876 5432",
+      "02 9876 5432",
+      "+44 20 7946 0958",
+    ]) {
+      expect(isReservedPhone(real), real).toBe(false);
+    }
+    for (const fake of ["415-555-0187", "415.555.0187", "(415) 555 0187", "+61 491 570 006"]) {
+      expect(isReservedPhone(fake), fake).toBe(true);
+    }
+  });
+
+  it("keeps forbidden phrases lower case and untouched by redaction", () => {
+    for (const t of tickets) {
+      for (const phrase of t.expected.forbiddenPhrases ?? []) {
+        expect(phrase, t.id).toBe(phrase.toLowerCase());
+        expect(redact(phrase).text, `${t.id} ${phrase}`).toBe(phrase);
       }
     }
   });
