@@ -64,24 +64,114 @@ export function canaryTicketText(runId: string): string {
   ].join("\n");
 }
 
-function countOf(text: string, needle: string): number {
-  return text.split(needle).length - 1;
+// Separators a digit group may carry: whitespace (incl. NBSP and line
+// breaks), dash, dot, and "+" (form encoding writes a space as "+"). Each run
+// is bounded so a long run cannot make the scan slow.
+const SEP = String.raw`[\s.\-+]{0,8}`;
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+const spaced = (digits: string) => digits.split("").join(SEP);
+
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: "\u00a0",
+};
+
+function decodeHtml(text: string): string {
+  return text.replace(
+    /&(?:#(\d{1,7})|#x([0-9a-f]{1,6})|([a-z]{2,4}));/gi,
+    (entity: string, dec?: string, hex?: string, name?: string) => {
+      if (name !== undefined) return NAMED_ENTITIES[name.toLowerCase()] ?? entity;
+      const code = dec === undefined ? Number.parseInt(hex ?? "", 16) : Number.parseInt(dec, 10);
+      return code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+    },
+  );
+}
+
+const utf8 = new TextDecoder();
+
+/** `%xx` URL-decoding that never throws: invalid UTF-8 becomes U+FFFD. */
+function decodePercent(text: string): string {
+  return text.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+    const bytes = new Uint8Array(run.length / 3);
+    for (let i = 0; i < bytes.length; i += 1) {
+      bytes[i] = Number.parseInt(run.slice(i * 3 + 1, i * 3 + 3), 16);
+    }
+    return utf8.decode(bytes);
+  });
+}
+
+/**
+ * The decoded view of `text`: HTML entities and `%xx` decoded (twice, for
+ * double encoding), the JSON escapes backslash-n, -r and -t read as a line
+ * break, lower case, and whitespace between two digits removed (a value split
+ * by a line break inside its digits joins up again).
+ */
+function decodedView(text: string): string {
+  let view = text;
+  for (let pass = 0; pass < 2; pass += 1) view = decodePercent(decodeHtml(view));
+  return view
+    .replace(/\\[nrt]/g, "\n")
+    .toLowerCase()
+    .replace(/(\d)\s+(?=\d)/g, "$1");
+}
+
+/** The pattern that finds one canary value in a lower-cased view. */
+function patternFor(type: CanaryType, value: string, runId: string): RegExp {
+  const digits = value.replace(/\D/g, "");
+  const lower = value.toLowerCase();
+  switch (type) {
+    case "card":
+    case "ssn":
+      return new RegExp(String.raw`(?<!\d)${spaced(digits)}(?!\d)`, "g");
+    case "phone": {
+      // The value is "+<2-digit country code> <subscriber>": also find the
+      // national form "0<subscriber>" and the "00" international prefix.
+      const country = spaced(digits.slice(0, 2));
+      const subscriber = spaced(digits.slice(2));
+      return new RegExp(
+        String.raw`(?<!\d)(?:(?:\+|00)?${country}|0)${SEP}${subscriber}(?!\d)`,
+        "g",
+      );
+    }
+    case "email":
+      // A sink that form-decodes turns the "+" into a space.
+      return new RegExp(escapeRegExp(lower).replace(String.raw`\+`, "[+ ]"), "g");
+    default:
+      // A value that ends with the run ID matches only as a whole token, so
+      // run "run0001" is not found in text made for run "run00012".
+      return new RegExp(escapeRegExp(lower) + (lower.endsWith(runId) ? "(?![a-z0-9])" : ""), "g");
+  }
+}
+
+function countIn(view: string, pattern: RegExp): number {
+  let count = 0;
+  pattern.lastIndex = 0;
+  while (pattern.exec(view) !== null) count += 1;
+  return count;
 }
 
 /**
  * The canary types of the run found in `text`, in plan order, with counts.
- * The card and the phone are also found with their spaces removed. Throws a
- * TypeError when `text` is not a string, so a missing sink body never reads
- * as "no canaries".
+ * Two views of the text are searched: the raw text lower-cased, and the
+ * decoded view (see `decodedView`). Card, phone and SSN digits match with any
+ * separators. Count rule: a type's count is the larger of its non-overlapping
+ * match counts in the two views, so one occurrence seen in both views counts
+ * once. Throws a TypeError when `text` is not a string, so a missing sink body
+ * never reads as "no canaries".
  */
 export function findCanaries(text: string, runId: string): CanaryHit[] {
   const canaries = buildCanaries(runId);
   if (typeof text !== "string") throw new TypeError("text must be a string");
+  const views = [text.toLowerCase(), decodedView(text)];
   return canaries
     .map(({ type, value }) => {
-      const compact = value.replaceAll(" ", "");
-      const count = countOf(text, value) + (compact === value ? 0 : countOf(text, compact));
-      return { type, count };
+      const pattern = patternFor(type, value, runId);
+      return { type, count: Math.max(...views.map((view) => countIn(view, pattern))) };
     })
     .filter((hit) => hit.count > 0);
 }
