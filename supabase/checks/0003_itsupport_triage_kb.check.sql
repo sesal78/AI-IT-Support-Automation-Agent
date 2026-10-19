@@ -13,10 +13,15 @@
 -- the grants held by roles other than its owner are exactly the expected ones,
 -- and it is the only function of that name in itsupport (no overloads).
 -- A numeric column carries its precision and scale (numeric(5,2) is not
--- numeric). `checks`, `columns` and `grants` rows list every check constraint,
--- column, or table and column privilege held by a role other than the owner,
--- so anything extra or missing fails; a grant with grant option ends in `*`.
--- `rls` means RLS on with no policies. `owner` means the same owner as
+-- numeric), a time or timestamp column any precision other than the default 6
+-- (timestamptz(3) is not timestamptz), and no column may use a domain.
+-- `checks`, `columns`, `grants`, `triggers` (user triggers), `rules` and
+-- `publications` rows list every check constraint, column, table and column
+-- privilege held by a role other than the owner, trigger, rewrite rule or
+-- publication of the table, so anything extra or missing fails; a grant with
+-- grant option ends in `*`. `indexes` means no index other than the listed
+-- ones (each listed one has its own `index` or `constraint` row).
+-- `rls` means RLS on, not forced, with no policies. `owner` means the same owner as
 -- itsupport.tickets (whichever role applied the migrations).
 -- 0003 runs on the SHARED Supabase stack; applying it there is human step H13.
 -- The up file is idempotent; the down file is destructive.
@@ -26,9 +31,11 @@ select e.object,
     when 'column' then exists (
       select 1 from information_schema.columns c
       where c.table_schema = 'itsupport' and c.table_name = e.tbl
-        and c.column_name = e.name and c.is_nullable = e.nullable
+        and c.column_name = e.name and c.is_nullable = e.nullable and c.domain_name is null
         and c.udt_name || case when c.data_type = 'numeric'
-          then coalesce('(' || c.numeric_precision || ',' || c.numeric_scale || ')', '') else '' end = e.udt
+          then coalesce('(' || c.numeric_precision || ',' || c.numeric_scale || ')', '')
+          when c.data_type like 'time%' and c.datetime_precision <> 6
+          then '(' || c.datetime_precision || ')' else '' end = e.udt
         and coalesce('generated ' || c.generation_expression, 'identity ' || c.identity_generation,
           c.column_default)
           is not distinct from e.def
@@ -59,7 +66,7 @@ select e.object,
     )
     when 'rls' then exists (
       select 1 from pg_catalog.pg_class r
-      where r.oid = to_regclass('itsupport.' || e.tbl) and r.relrowsecurity
+      where r.oid = to_regclass('itsupport.' || e.tbl) and r.relrowsecurity and not r.relforcerowsecurity
         and not exists (select 1 from pg_catalog.pg_policy y where y.polrelid = r.oid)
     )
     when 'columns' then e.def = (
@@ -69,6 +76,24 @@ select e.object,
     when 'checks' then e.def = (
       select coalesce(string_agg(k.conname, ', ' order by k.conname), '') from pg_catalog.pg_constraint k
       where k.conrelid = to_regclass('itsupport.' || e.tbl) and k.contype = 'c'
+    )
+    when 'indexes' then to_regclass('itsupport.' || e.tbl) is not null and not exists (
+      select 1 from pg_catalog.pg_index x join pg_catalog.pg_class r on r.oid = x.indexrelid
+      where x.indrelid = to_regclass('itsupport.' || e.tbl)
+        and r.relname <> all (string_to_array(e.def, ', '))
+    )
+    when 'triggers' then to_regclass('itsupport.' || e.tbl) is not null and e.def = (
+      select coalesce(string_agg(t.tgname, ', ' order by t.tgname), '') from pg_catalog.pg_trigger t
+      where t.tgrelid = to_regclass('itsupport.' || e.tbl) and not t.tgisinternal
+    )
+    when 'rules' then to_regclass('itsupport.' || e.tbl) is not null and e.def = (
+      select coalesce(string_agg(w.rulename, ', ' order by w.rulename), '') from pg_catalog.pg_rewrite w
+      where w.ev_class = to_regclass('itsupport.' || e.tbl)
+    )
+    when 'publications' then to_regclass('itsupport.' || e.tbl) is not null and e.def = (
+      select coalesce(string_agg(b.pubname, ', ' order by b.pubname), '')
+      from pg_catalog.pg_publication_tables b
+      where b.schemaname = 'itsupport' and b.tablename = e.tbl
     )
     when 'grants' then to_regclass('itsupport.' || e.tbl) is not null and e.def = (
       select coalesce(string_agg(w.who || ' ' || g.priv, ', ' order by w.who, g.priv), '')
@@ -157,7 +182,8 @@ from (
       || 'category text, assignment_group text, rank real) s f f {"search_path=\"\""} service_role=EXECUTE '
       || '23931aae659bf152717db289277f2288'),
     -- Exact lists: check constraints of every 0003 table; kb_articles columns,
-    -- privileges (no delete, nothing for anon or authenticated), RLS and slug collation.
+    -- privileges (no delete, nothing for anon or authenticated), RLS and slug collation;
+    -- its indexes, and no user trigger, rewrite rule or publication.
     ('checks itsupport.tickets', 'checks', 'tickets', null, null, null, 'tickets_source_check, tickets_status_check'),
     ('checks itsupport.triage_results', 'checks', 'triage_results', null, null, null,
       'triage_results_category_check, triage_results_grounding_score_check, '
@@ -168,6 +194,11 @@ from (
     ('grants itsupport.kb_articles', 'grants', 'kb_articles', null, null, null,
       'service_role INSERT, service_role SELECT, service_role UPDATE'),
     ('rls itsupport.kb_articles', 'rls', 'kb_articles', null, null, null, null),
+    ('indexes itsupport.kb_articles', 'indexes', 'kb_articles', null, null, null,
+      'kb_articles_pkey, kb_articles_search_idx, kb_articles_slug_key'),
+    ('triggers itsupport.kb_articles', 'triggers', 'kb_articles', null, null, null, ''),
+    ('rules itsupport.kb_articles', 'rules', 'kb_articles', null, null, null, ''),
+    ('publications itsupport.kb_articles', 'publications', 'kb_articles', null, null, null, ''),
     ('owner itsupport.kb_articles', 'owner', null, 'kb_articles', 'table', null, null),
     ('owner itsupport.kb_search', 'owner', null, 'kb_search(text, integer)', 'function', null, null),
     ('collation itsupport.kb_articles.slug', 'collation', 'kb_articles', 'slug', null, null, 'default'),

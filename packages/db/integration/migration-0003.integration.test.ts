@@ -59,6 +59,9 @@ const PART2_OBJECTS = [
   "index itsupport.kb_articles.kb_articles_search_idx",
   "function itsupport.kb_search",
   ...["checks", "columns", "grants", "owner", "rls"].map((kind) => `${kind} itsupport.kb_articles`),
+  ...["indexes", "triggers", "rules", "publications"].map(
+    (kind) => `${kind} itsupport.kb_articles`,
+  ),
   "owner itsupport.kb_search",
   "collation itsupport.kb_articles.slug",
 ];
@@ -550,6 +553,24 @@ describe("migration 0003_itsupport_triage_kb, check-query hardening", () => {
         fnSql?.replace("p_limit, 5), 20)", "p_limit, 5), 50)") ?? "",
         "function itsupport.kb_search",
       ],
+      [
+        "create domain itsupport.d_text as text; " +
+          "alter table itsupport.triage_results alter subcategory type itsupport.d_text",
+        "column itsupport.triage_results.subcategory",
+      ],
+      [
+        "alter table itsupport.triage_results alter triaged_at type timestamptz(3)",
+        "column itsupport.triage_results.triaged_at",
+      ],
+      [`alter table ${KB} force row level security`, `rls ${KB}`],
+      [`create index kb_articles_title_idx on ${KB} (title)`, `indexes ${KB}`],
+      [
+        "create function itsupport.t_noop() returns trigger language plpgsql as 'begin return new; end'; " +
+          `create trigger t_extra before insert on ${KB} for each row execute function itsupport.t_noop()`,
+        `triggers ${KB}`,
+      ],
+      [`create rule r_extra as on update to ${KB} do also notify kb_articles`, `rules ${KB}`],
+      [`create publication p_extra for table ${KB}`, `publications ${KB}`],
     ];
     for (const [sql, wrong] of variants) {
       await client().query("begin");
@@ -563,6 +584,29 @@ describe("migration 0003_itsupport_triage_kb, check-query hardening", () => {
       }
     }
     expect(await check()).toEqual(OBJECTS.map((object) => ({ object, ok: true })));
+  });
+
+  it("the correct database is all true as postgres and supabase_admin, with LF and CRLF", async () => {
+    const lf = read("checks/0003_itsupport_triage_kb.check.sql").replace(/\r\n/g, "\n");
+    expect(lf).not.toContain("\r");
+    for (const user of ["postgres", "supabase_admin"]) {
+      const as = await connect(user);
+      try {
+        expect((await as.query("select current_user as u")).rows).toEqual([{ u: user }]);
+        for (const sql of [lf, lf.replace(/\n/g, "\r\n")]) {
+          await as.query("begin transaction read only");
+          try {
+            const { rows } = await as.query<{ object: string; ok: boolean }>(sql);
+            rows.sort((a, b) => (a.object < b.object ? -1 : 1));
+            expect(rows, user).toEqual(OBJECTS.map((object) => ({ object, ok: true })));
+          } finally {
+            await as.query("rollback");
+          }
+        }
+      } finally {
+        await as.end();
+      }
+    }
   });
 });
 
