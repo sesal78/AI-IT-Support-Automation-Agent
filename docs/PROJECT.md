@@ -350,7 +350,9 @@ sizing is broken — fix that instead of granting a third.
       require explicit human approval; each table, sequence and function a
       migration creates in `itsupport` gets an explicit `revoke all ... from
       public, anon, authenticated`, because default privileges may grant them
-      (enforced by `migration-default-privileges.integration.test.ts`)
+      (`migration-default-privileges.integration.test.ts` checks the end state:
+      after all migrations, no itsupport object grants anon, authenticated or
+      public a right)
 - [ ] Privacy: no PII in logs or error tracking; personal data collected only
       per §2's purpose and §12's compliance constraints
 - [ ] Errors observable: error tracking receiving events; automations notify on failure

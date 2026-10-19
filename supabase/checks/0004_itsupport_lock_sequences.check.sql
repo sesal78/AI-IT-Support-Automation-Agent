@@ -10,9 +10,10 @@
 -- or authenticated a right beyond the Postgres built-in default (EXECUTE on
 -- functions and USAGE on types for public). `in schema itsupport` covers
 -- defaults set with IN SCHEMA itsupport, `in every schema` the defaults set
--- without IN SCHEMA, which also reach itsupport. A false row means objects that
--- a later migration creates in itsupport would start with such a right; every
--- migration revokes explicitly, but find and remove the default.
+-- without IN SCHEMA, which also reach itsupport. A false row means a default
+-- privilege grants anon, authenticated or public a right on objects created
+-- later in itsupport: report it to Seun. Do NOT change global or other-schema
+-- default privileges on the shared database; other apps use them.
 
 select e.object, case
   when e.kind = 'sequence' then coalesce(e.seq is null or to_regclass(e.seq) is not null, false)
