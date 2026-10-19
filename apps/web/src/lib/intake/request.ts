@@ -28,10 +28,13 @@ export function namespacedKey(namespace: KeyNamespace, raw: string): string {
 }
 
 /**
- * The form path's key, always under `web:`. The `Idempotency-Key` header when
- * set (hashed when over-long, so the stored key stays bounded), otherwise a hash
- * of email + title + description + UTC date. A prefix sent by the client is
- * neither trusted nor stripped: `email:abc` is stored as `web:email:abc`.
+ * The form path's key, always under `web:`, in one of three disjoint forms:
+ * `web:k:<header>` for an `Idempotency-Key` header of up to 200 characters,
+ * `web:h:<sha256 of header>` for a longer one (so the stored key stays bounded),
+ * and `web:b:<sha256 of email + title + description + UTC date>` without a
+ * header. The header is trimmed first. The form tag is fixed by the server, so
+ * no header value can produce an `h:` or `b:` key. A prefix sent by the client
+ * is neither trusted nor stripped: `email:abc` is stored as `web:k:email:abc`.
  */
 export function idempotencyKey(
   headers: Headers,
@@ -42,12 +45,12 @@ export function idempotencyKey(
   if (header) {
     return namespacedKey(
       "web",
-      header.length > MAX_HEADER_KEY_LENGTH ? `h:${sha256(header)}` : header,
+      header.length > MAX_HEADER_KEY_LENGTH ? `h:${sha256(header)}` : `k:${header}`,
     );
   }
   const day = at.toISOString().slice(0, 10);
   return namespacedKey(
     "web",
-    sha256(JSON.stringify([body.email.toLowerCase(), body.title, body.description, day])),
+    `b:${sha256(JSON.stringify([body.email.toLowerCase(), body.title, body.description, day]))}`,
   );
 }
