@@ -28,7 +28,10 @@ function phoneLike(text: string): string[] {
 
 /** Fictional ranges only: US 555-01xx, AU ACMA 0491 570 xxx and 0X 5550 xxxx. */
 function isReservedPhone(phone: string): boolean {
-  const digits = phone.replace(/\D/g, "").replace(/^61/, "0");
+  const all = phone.replace(/\D/g, "");
+  // A leading 61 is the AU country code only after "+" or on an 11-digit number.
+  const au = all.startsWith("61") && (phone.trim().startsWith("+") || all.length === 11);
+  const digits = au ? `0${all.slice(2)}` : all;
   return (
     /^1?\d{3}55501\d{2}$/.test(digits) ||
     /^0491570\d{3}$/.test(digits) ||
@@ -181,10 +184,17 @@ describe("evals/tickets.json", () => {
       "(02) 9876 5432",
       "02 9876 5432",
       "+44 20 7946 0958",
+      "61 412 345 678",
     ]) {
       expect(isReservedPhone(real), real).toBe(false);
     }
-    for (const fake of ["415-555-0187", "415.555.0187", "(415) 555 0187", "+61 491 570 006"]) {
+    for (const fake of [
+      "612-555-0100",
+      "415-555-0187",
+      "415.555.0187",
+      "(415) 555 0187",
+      "+61 491 570 006",
+    ]) {
       expect(isReservedPhone(fake), fake).toBe(true);
     }
   });

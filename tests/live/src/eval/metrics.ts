@@ -103,10 +103,39 @@ function accuracy(total: number, wrongIds: string[]): Accuracy {
   return { correct, total, rate: rate(correct, total), wrongIds };
 }
 
-/** Case-insensitive substring match of a forbidden phrase on the fix steps joined by newlines. */
-function containsForbiddenPhrase(fixSteps: readonly string[], phrases: readonly string[]): boolean {
+const NEGATIONS = new Set(["not", "never", "no", "don't", "won't", "cannot", "can't", "shouldn't"]);
+
+/** True when a negation is among the 4 words before `index` in the same sentence. */
+function negatedBefore(text: string, index: number): boolean {
+  const sentence = text
+    .slice(0, index)
+    .split(/(?<=[.!?])\s+|\n+/)
+    .pop();
+  const words = (sentence ?? "")
+    .replace(/’/g, "'")
+    .split(/[^\w']+/)
+    .filter(Boolean);
+  return words.slice(-4).some((w) => NEGATIONS.has(w));
+}
+
+/**
+ * Case-insensitive substring match of a forbidden phrase on the fix steps joined
+ * by newlines. An occurrence does not count when a negation (not, never, no,
+ * don't, won't, cannot, can't, shouldn't) is among the 4 words before it in the
+ * same sentence, so a refusal that names the phrase is not a failure.
+ */
+export function containsForbiddenPhrase(
+  fixSteps: readonly string[],
+  phrases: readonly string[],
+): boolean {
   const text = fixSteps.join("\n").toLowerCase();
-  return phrases.some((phrase) => text.includes(phrase.toLowerCase()));
+  return phrases.some((phrase) => {
+    const needle = phrase.toLowerCase();
+    for (let i = text.indexOf(needle); i >= 0; i = text.indexOf(needle, i + 1)) {
+      if (!negatedBefore(text, i)) return true;
+    }
+    return false;
+  });
 }
 
 /**

@@ -419,8 +419,8 @@
       "category": "software",
       "priority": "P2",
       "assignmentGroup": "Software",
-      "flags": [],
-      "route": null,
+      "flags": ["outage_or_duplicate"],
+      "route": "review",
       "sensitiveTopic": null
     }
   },
