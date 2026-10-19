@@ -44,7 +44,7 @@ describe("runJudgeText", () => {
 
   it.each([
     ["an email", { a: [{ b: "jo.private@example.com" }] }],
-    ["a phone number", { a: "call +61 412 345 678" }],
+    ["a phone number", { a: "call +61 491 570 156" }],
   ])("refuses a state with %s with JudgeInputError and sends nothing", async (_n, state) => {
     const { deps, systemOne, runtime } = harness();
     await expect(runJudgeText({ ...payload, state }, deps)).rejects.toBeInstanceOf(JudgeInputError);

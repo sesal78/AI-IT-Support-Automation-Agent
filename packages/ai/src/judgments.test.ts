@@ -153,7 +153,7 @@ describe("createTriageJudge", () => {
 
   it("redacts the department", async () => {
     const { judge, captured } = setup();
-    await judge.judge({ ...input, department: "Finance, call 0412 345 678" });
+    await judge.judge({ ...input, department: "Finance, call 0491 570 156" });
     expect(captured[0]!.body.state).toMatchObject({
       ticket: { department: "Finance, call [REDACTED_PHONE]" },
     });

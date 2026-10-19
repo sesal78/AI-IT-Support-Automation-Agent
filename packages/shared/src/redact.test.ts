@@ -17,7 +17,7 @@ const timing = it.skipIf(process.env.MUTATION_RUN === "1");
 // Obviously fake PII: the Visa test card, example.com / x.com mail, TEST-NET
 // IPs (RFC 5737), 555 phone numbers and the documented example TFN.
 const fixtures: string[] = [
-  "mail jo@x.com or call +61 412 345 678",
+  "mail jo@x.com or call +61 491 570 156",
   "card 4111 1111 1111 1111 ssn 123-45-6789",
   "card 4111-1111-1111-1111 or 4111111111111111",
   "amex 3782 822463 10005 expires soon",
@@ -27,7 +27,7 @@ const fixtures: string[] = [
   kv("client_secret", "=", "fake"),
   kv("token", ":", '"two words"'),
   "INC0012345 on 2026-09-28 at 10:15, version 1.2.3",
-  "call 0412 345 678 about my laptop",
+  "call 0491 570 156 about my laptop",
   "office (02) 9876 5432 or 1800 123 456",
   "US desk (555) 555-0199, 555-555-0123 or 1-800-555-0199",
   "server 192.0.2.10 and 198.51.100.255 are down.",
@@ -49,8 +49,8 @@ const fixtures: string[] = [
 // wherever it appears next to any other item.
 const sensitive: string[] = [
   "jo@x.com",
-  "+61 412 345 678",
-  "0412 345 678",
+  "+61 491 570 156",
+  "0491 570 156",
   "(02) 9876 5432",
   "1800 123 456",
   "(555) 555-0199",
@@ -83,7 +83,7 @@ const benign: string[] = [
 
 describe("redact", () => {
   it("redacts email and international phone with a per-type log", () => {
-    expect(redact("mail jo@x.com or call +61 412 345 678")).toEqual({
+    expect(redact("mail jo@x.com or call +61 491 570 156")).toEqual({
       text: "mail [REDACTED_EMAIL] or call [REDACTED_PHONE]",
       log: [
         { type: "EMAIL", count: 1 },
@@ -138,7 +138,7 @@ describe("redact", () => {
   });
 
   it("redacts AU and US phone formats", () => {
-    expect(redact("call 0412 345 678 about my laptop").text).toBe(
+    expect(redact("call 0491 570 156 about my laptop").text).toBe(
       "call [REDACTED_PHONE] about my laptop",
     );
     expect(redact("office (02) 9876 5432 or 1800 123 456").text).toBe(
@@ -718,7 +718,7 @@ describe("redact: sk- keys and Slack tokens", () => {
       [SKP + "1234 5678 1234 5670", SKP + "[REDACTED_CARD]", "CARD"],
       [SKP + "123-45-6789", SKP + "[REDACTED_SSN]", "SSN"],
       [SKP + "1.2.3.4", SKP + "[REDACTED_IPV4]", "IPV4"],
-      [SKP + "+61 412 345 678", SKP + "[REDACTED_PHONE]", "PHONE"],
+      [SKP + "+61 491 570 156", SKP + "[REDACTED_PHONE]", "PHONE"],
       [SKP + "4222222222222", SKP + "[REDACTED_CARD]", "CARD"],
       [XB + "10.0.0.1", XB + "[REDACTED_IPV4]", "IPV4"],
       [SKP + "[REDACTED_EMAIL]", SKP + "[REDACTED_EMAIL]", ""],
@@ -739,7 +739,7 @@ describe("redact: sk- keys and Slack tokens", () => {
   it("ends a key where its original run of body characters ends", () => {
     const rows: Array<[string, string]> = [
       [`${skKey}-7 2024 was`, AK + " 2024 was"],
-      [`${SKP}front-desk-line-77-0412 345 678`, AK + " 345 678"],
+      [`${SKP}front-desk-line-77-0491 570 156`, AK + " 570 156"],
       [`${slackKey("b")}_x`, SL + "_x"],
       [`${slackKey("b")}-1234_5678`, SL + "_5678"],
     ];

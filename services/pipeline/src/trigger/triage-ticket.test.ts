@@ -59,7 +59,7 @@ function ticket(status = "redacted", isTest = false): Ticket {
     id: ticketId,
     source: "web",
     raw_title: `${MARKERS.title} VPN drops`,
-    raw_description: `${MARKERS.description} call 0412 345 678`,
+    raw_description: `${MARKERS.description} call 0491 570 156`,
     requester_email: MARKERS.email,
     requester_name: MARKERS.name,
     department: "Finance",
@@ -410,7 +410,7 @@ describe("triage-ticket task", () => {
     expect(h.aiInputs).toHaveLength(5);
     const sent = JSON.stringify(h.aiInputs);
     for (const marker of Object.values(MARKERS)) expect(sent).not.toContain(marker);
-    expect(sent).not.toContain("0412 345 678");
+    expect(sent).not.toContain("0491 570 156");
     expect(vi.mocked(h.deps.judge.judge).mock.calls[0]![0]).toMatchObject({
       ticketId,
       title: REDACTED.title,

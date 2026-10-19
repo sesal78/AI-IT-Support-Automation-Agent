@@ -114,7 +114,7 @@ describe("createTextJudge", () => {
 
   it.each([
     ["an email", { a: { b: ["jo.private@example.com"] } }],
-    ["a phone number", { deep: [[{ x: "call +61 412 345 678" }]] }],
+    ["a phone number", { deep: [[{ x: "call +61 491 570 156" }]] }],
     ["a card number typed as a number", { n: 4111111111111111 }],
     ["an email in a key", { "jo@example.com": "x" }],
     ["an email split across fields", { a: "jane@", b: "example.com" }],

@@ -42,7 +42,7 @@ Risk: normal · Depends on: nothing
 Add `redact(text: string): { text: string; log: Array<{ type: string; count: number }> }` in `packages/shared`. Replace with `[REDACTED_<TYPE>]`: EMAIL, PHONE (international and AU/US formats), SSN (`ddd-dd-dddd`), CARD (13–19 digits with spaces or dashes, Luhn-valid only), IPV4, SECRET (`password`/`pwd`/`api key`/`token`/`secret` followed by `:` or `=` and a value), AU_TFN (9 digits with Luhn-style TFN check). Pure function, no network.
 Target repo: D:/Homebase/Sandbox/ai-it-support-agent
 ## Acceptance Criteria
-- [ ] `redact("mail jo@x.com or call +61 412 345 678")` returns text `"mail [REDACTED_EMAIL] or call [REDACTED_PHONE]"` and a log with `EMAIL:1, PHONE:1`.
+- [ ] `redact("mail jo@x.com or call +61 491 570 156")` returns text `"mail [REDACTED_EMAIL] or call [REDACTED_PHONE]"` and a log with `EMAIL:1, PHONE:1`.
 - [ ] `redact("card 4111 1111 1111 1111 ssn 123-45-6789")` redacts both (`[REDACTED_CARD]`, `[REDACTED_SSN]`).
 - [ ] A 16-digit number that fails the Luhn check is NOT redacted as CARD.
 - [ ] `redact("password: hunter2")` → `"[REDACTED_SECRET]"`; the log never contains the original value.
@@ -132,7 +132,7 @@ Risk: normal · Depends on: **P2-T2, P2-T3**
 Add task `intake-ticket` (schemaTask, input `{ ticketId: uuid }`) in `services/pipeline`. Steps: `getTicket` → `redact` title and description → `saveRedaction` + event `redacted` → sensitive-topic check on the REDACTED text only → `saveTriage({ sensitive, sensitive_flags, checker })` + event `sensitive_checked`. The check has 2 layers: (1) keyword list (legal, lawyer, lawsuit, HR, harassment, termination, fired, dismissal, executive, CEO, CFO, board, breach, ransomware, phishing, data leak) on title + description; (2) TypeSafe (`@typesafe-ai/sdk`, `systemOne`) with one Noul per topic (`legal`, `hr`, `termination`, `executive`, `security_incident`); flagged when a keyword hits OR a Noul ≥ `SENSITIVE_THRESHOLD` (default 0.5). TypeSafe sits behind a small `SensitiveChecker` interface in a new `packages/ai`. Env: `TYPESAFE_API_KEY`, `SENSITIVE_THRESHOLD`, plus the Supabase vars, validated at task start.
 Target repo: D:/Homebase/Sandbox/ai-it-support-agent
 ## Acceptance Criteria
-- [ ] Given a ticket with "call 0412 345 678 about my laptop" and a mocked checker returning all Nouls 0.1 → redaction saved with `[REDACTED_PHONE]`, triage saved with `sensitive: false`, events `redacted` then `sensitive_checked`.
+- [ ] Given a ticket with "call 0491 570 156 about my laptop" and a mocked checker returning all Nouls 0.1 → redaction saved with `[REDACTED_PHONE]`, triage saved with `sensitive: false`, events `redacted` then `sensitive_checked`.
 - [ ] Given "I am being terminated tomorrow, need my files" → `sensitive: true` with flag `termination` even when the mocked TypeSafe returns 0.0 (keyword layer).
 - [ ] Given no keyword hit and a mocked Noul `security_incident: 0.8` → `sensitive: true` with flag `security_incident`.
 - [ ] A spy on the checker shows it received only redacted text: no raw email/phone/SSN from the fixture reaches it.

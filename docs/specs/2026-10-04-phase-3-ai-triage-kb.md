@@ -245,7 +245,7 @@ Risk: **high-risk** (secret-scan config, approved by plan §9) · Depends on: **
 ## Description
 
 Add `packages/shared/src/canaries.ts` (plan §4.3). `buildCanaries(runId)` returns the 10 canaries. `canaryTicketText(runId)` returns one ticket description that contains all of them. `findCanaries(text, runId)` returns the canary types found in a text, never the values. Add `.gitleaks.toml` (root). It extends the default rules and allow-lists this one path only. Add the same path to `.semgrepignore`.
-Canary values: SSN `078-05-1120`; card `4111 1111 1111 1111`; email `canary+<run>@example.com`; phone `+61 412 345 678`; IPv4 `203.0.113.42`; IPv6 `2001:db8::42`; API key `sk-test-CANARY<run>`; AWS key `AKIAIOSFODNN7EXAMPLE`; GitHub token `ghp_` plus 36 characters that start with `CANARY<run>` and are padded with `0`; password value `Hunter2!Canary<run>` in the line `Password: Hunter2!Canary<run>`.
+Canary values: SSN `078-05-1120`; card `4111 1111 1111 1111`; email `canary+<run>@example.com`; phone `+61 491 570 156`; IPv4 `203.0.113.42`; IPv6 `2001:db8::42`; API key `sk-test-CANARY<run>`; AWS key `AKIAIOSFODNN7EXAMPLE`; GitHub token `ghp_` plus 36 characters that start with `CANARY<run>` and are padded with `0`; password value `Hunter2!Canary<run>` in the line `Password: Hunter2!Canary<run>`.
 Env: none.
 New dependency: none (or one small TOML parser, dev-only, if the test needs it).
 Target repo: D:/Homebase/Sandbox/ai-it-support-agent
@@ -255,7 +255,7 @@ Target repo: D:/Homebase/Sandbox/ai-it-support-agent
 - [ ] `buildCanaries("run0001")` returns exactly 10 entries with the types `ssn`, `card`, `email`, `phone`, `ipv4`, `ipv6`, `api_key`, `aws_key`, `github_token`, `password`, and the values above with `<run>` replaced by `run0001`.
 - [ ] `canaryTicketText("run0001")` contains every one of the 10 values and is between 10 and 5 000 characters long.
 - [ ] `findCanaries(canaryTicketText("run0001"), "run0001")` returns all 10 types; `findCanaries("printer is jammed", "run0001")` returns `[]`; `findCanaries("", "run0001")` returns `[]`.
-- [ ] `findCanaries` also finds the card and the phone with the separators removed (`4111111111111111`, `+61412345678`).
+- [ ] `findCanaries` also finds the card and the phone with the separators removed (`4111111111111111`, `+61491570156`).
 - [ ] The result of `findCanaries` has types and counts only. It never contains a canary value.
 - [ ] `buildCanaries("")`, `buildCanaries("A B")` and a run ID longer than 12 characters each throw a `TypeError` that names `runId`. A valid run ID is 4–12 lower-case letters or digits.
 - [ ] A Vitest test parses `.gitleaks.toml`: it extends the default rules, and its allow-list has exactly one path pattern. The pattern matches `packages/shared/src/canaries.ts` and does not match `packages/shared/src/redact.ts` or `packages/shared/src/canaries.test.ts`.
@@ -1147,7 +1147,7 @@ Target repo: D:/Homebase/Sandbox/ai-it-support-agent
 
 - [ ] The mocked host receives exactly one `POST /v1/systemone`. Its `state` is `{ ticket: { title, description, department } }` and nothing else. Its `questions` has exactly the 7 keys. The `category` criteria keys are the 6 categories, and the `assignment_group` criteria keys are `ASSIGNMENT_GROUPS`.
 - [ ] No question's `instructions` contains a word from the ticket text (tested with unique marker words).
-- [ ] A department of `Finance, call 0412 345 678` is sent as `Finance, call [REDACTED_PHONE]`.
+- [ ] A department of `Finance, call 0491 570 156` is sent as `Finance, call [REDACTED_PHONE]`.
 - [ ] Given valid answers, the result has `category.value`, `category.probability` equal to the probability of the chosen label, and `needsInfo = 0.8` for an `actionable` Noul of 0.2.
 - [ ] **T3.U.04**: a valid answer set parses. An unknown category label, an extra field in an answer, a wrong type (`noul: "0.9"`), a missing answer, a probability of 1.2, and a `probabilities` object that misses a label each throw `TriageParseError`.
 - [ ] **T3.U.04**: the `TriageParseError` message has field paths only. It has no answer value and no ticket text.

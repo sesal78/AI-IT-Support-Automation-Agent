@@ -37,7 +37,7 @@ export function buildCanaries(runId: string): Canary[] {
     ssn: "078-05-1120",
     card: "4111 1111 1111 1111",
     email: `canary+${runId}@example.com`,
-    phone: "+61 412 345 678",
+    phone: "+61 491 570 156",
     ipv4: "203.0.113.42",
     ipv6: "2001:db8::42",
     api_key: `sk-test-CANARY${runId}`,
