@@ -199,6 +199,88 @@ describe("findCanaries on clean text", () => {
   });
 });
 
+// Inputs the PR #104 review found missed (each returned []).
+const jsonEscape = (value: string, chars: string) =>
+  [...value]
+    .map((char) =>
+      chars.includes(char) ? `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}` : char,
+    )
+    .join("");
+
+describe("findCanaries on JSON escapes", () => {
+  it.each([
+    ["email", "a \\u002b escape", "+"],
+    ["email", "a \\u0040 escape", "@"],
+    ["password", "a \\u0021 escape", "!"],
+    ["aws_key", "escaped leading letters", "AK"],
+  ] as const)("finds the %s with %s", (type, _label, chars) => {
+    expect(findCanaries(`"body": "${jsonEscape(valueOf(type), chars)}"`, RUN)).toEqual(only(type));
+  });
+
+  it("finds an email whose \\u0040 escape was JSON-escaped again", () => {
+    const twice = JSON.stringify(jsonEscape(valueOf("email"), "@"));
+    expect(findCanaries(twice, RUN)).toEqual(only("email"));
+  });
+
+  it('decodes \\/ and \\" escapes', () => {
+    const email = valueOf("email");
+    expect(findCanaries(`\\"to\\": \\"${email}\\" \\/x`, RUN)).toEqual(only("email"));
+  });
+});
+
+describe("findCanaries on digits after unrelated digits", () => {
+  it.each([
+    ["the card after an order number", "card", `order 1234 ${valueOf("card")}`],
+    ["the SSN after a zip code", "ssn", `zip 12345 ${valueOf("ssn")}`],
+    ["the phone after a count", "phone", `3 calls ${valueOf("phone")}`],
+  ] as const)("finds %s when URL-encoded", (_label, type, text) => {
+    expect(findCanaries(encodeURIComponent(text), RUN)).toEqual(only(type));
+  });
+});
+
+describe("findCanaries with wider digit separators", () => {
+  const groups = ["4111", "1111", "1111", "1111"];
+
+  it.each([
+    ["commas", ","],
+    ["slashes", "/"],
+    ["underscores", "_"],
+    ["zero-width spaces", "​"],
+    ["zero-width joiners", "‍"],
+    ["word joiners", "⁠"],
+    ["BOMs", "﻿"],
+    ["narrow NBSPs", " "],
+  ])("finds the card with %s", (_label, separator) => {
+    expect(findCanaries(`card ${groups.join(separator)}.`, RUN)).toEqual(only("card"));
+  });
+
+  it.each([
+    ["a bracketed group", "+61 (491) 570 156"],
+    ["a (0) trunk prefix", "+61 (0)491 570 156"],
+    ["a bracketed national prefix", "(0491) 570 156"],
+  ])("finds the phone with %s", (_label, phone) => {
+    expect(findCanaries(`call ${phone} today`, RUN)).toEqual(only("phone"));
+  });
+
+  it("finds the SSN with slashes", () => {
+    expect(findCanaries(`SSN ${["078", "05", "1120"].join("/")}.`, RUN)).toEqual(only("ssn"));
+  });
+});
+
+describe("findCanaries on looser HTML entities", () => {
+  // Triple URL-encoding is out of scope: it is not guaranteed to be decoded.
+  it.each([
+    ["a numeric entity without its semicolon", "email", (v: string) => v.replace("@", "&#64")],
+    ["&commat;", "email", (v: string) => v.replace("@", "&commat;")],
+    ["&plus;", "email", (v: string) => v.replace("+", "&plus;")],
+    ["&period;", "ipv4", (v: string) => v.replaceAll(".", "&period;")],
+    ["a double-escaped &amp;#x40;", "email", (v: string) => v.replace("@", "&amp;#x40;")],
+    ["a double-escaped &amp;commat;", "email", (v: string) => v.replace("@", "&amp;commat;")],
+  ] as const)("finds the value with %s", (_label, type, encode) => {
+    expect(findCanaries(`x ${encode(valueOf(type))} y`, RUN)).toEqual(only(type));
+  });
+});
+
 describe("canaries-encodings.test.ts", () => {
   it("holds no canary value as a literal", () => {
     const source = readFileSync(fileURLToPath(import.meta.url), "utf8");

@@ -64,13 +64,16 @@ export function canaryTicketText(runId: string): string {
   ].join("\n");
 }
 
-// Separators a digit group may carry: whitespace (incl. NBSP and line
-// breaks), dash, dot, and "+" (form encoding writes a space as "+"). Each run
-// is bounded so a long run cannot make the scan slow.
-const SEP = String.raw`[\s.\-+]{0,8}`;
+// Separators a digit group may carry: whitespace (incl. line breaks, NBSP and
+// narrow NBSP), dash, dot, "+" (form encoding writes a space as "+"), comma,
+// slash, underscore and the zero-width characters. The phone may also carry
+// brackets. Each run is bounded so a long run cannot make the scan slow.
+const SEP_CHARS = String.raw`\s\u00a0\u202f\u200b-\u200d\u2060\ufeff.\-+,/_`;
+const SEP = `[${SEP_CHARS}]{0,8}`;
+const PHONE_SEP = `[${SEP_CHARS}()]{0,8}`;
 
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
-const spaced = (digits: string) => digits.split("").join(SEP);
+const spaced = (digits: string, separator = SEP) => digits.split("").join(separator);
 
 const NAMED_ENTITIES: Record<string, string> = {
   amp: "&",
@@ -79,11 +82,30 @@ const NAMED_ENTITIES: Record<string, string> = {
   quot: '"',
   apos: "'",
   nbsp: "\u00a0",
+  commat: "@",
+  plus: "+",
+  period: ".",
+  colon: ":",
+  excl: "!",
 };
 
+const JSON_ESCAPES: Record<string, string> = { n: "\n", r: "\n", t: "\t", b: " ", f: " " };
+
+/** JSON string escapes: `\uXXXX`, `\n` and the like, `\/`, `\"`, `\\`. */
+function decodeJson(text: string): string {
+  return text.replace(
+    /\\(?:u([0-9a-f]{4})|(["\\/bfnrt]))/gi,
+    (_escape: string, hex?: string, char?: string) =>
+      hex === undefined
+        ? (JSON_ESCAPES[char ?? ""] ?? char ?? "")
+        : String.fromCharCode(Number.parseInt(hex, 16)),
+  );
+}
+
+/** HTML entities: the named ones above, and numeric ones with or without `;`. */
 function decodeHtml(text: string): string {
   return text.replace(
-    /&(?:#(\d{1,7})|#x([0-9a-f]{1,6})|([a-z]{2,4}));/gi,
+    /&(?:#(\d{1,7});?|#x([0-9a-f]{1,6});?|([a-z]{2,8});)/gi,
     (entity: string, dec?: string, hex?: string, name?: string) => {
       if (name !== undefined) return NAMED_ENTITIES[name.toLowerCase()] ?? entity;
       const code = dec === undefined ? Number.parseInt(hex ?? "", 16) : Number.parseInt(dec, 10);
@@ -106,19 +128,22 @@ function decodePercent(text: string): string {
 }
 
 /**
- * The decoded view of `text`: HTML entities and `%xx` decoded (twice, for
- * double encoding), the JSON escapes backslash-n, -r and -t read as a line
- * break, lower case, and whitespace between two digits removed (a value split
- * by a line break inside its digits joins up again).
+ * The decoded view of `text`: JSON escapes, HTML entities and `%xx` decoded,
+ * in three passes so a value escaped twice (or escaped in two layers) is
+ * decoded too, then lower-cased.
  */
 function decodedView(text: string): string {
   let view = text;
-  for (let pass = 0; pass < 2; pass += 1) view = decodePercent(decodeHtml(view));
-  return view
-    .replace(/\\[nrt]/g, "\n")
-    .toLowerCase()
-    .replace(/(\d)\s+(?=\d)/g, "$1");
+  for (let pass = 0; pass < 3; pass += 1) view = decodePercent(decodeHtml(decodeJson(view)));
+  return view.toLowerCase();
 }
+
+/**
+ * The decoded view with whitespace between two digits removed, so a token
+ * split by a line break inside its digits joins up again. A separate view: in
+ * the decoded view, unrelated digits before a card stay apart from it.
+ */
+const joinedView = (decoded: string) => decoded.replace(/(\d)\s+(?=\d)/g, "$1");
 
 /** The pattern that finds one canary value in a lower-cased view. */
 function patternFor(type: CanaryType, value: string, runId: string): RegExp {
@@ -130,11 +155,12 @@ function patternFor(type: CanaryType, value: string, runId: string): RegExp {
       return new RegExp(String.raw`(?<!\d)${spaced(digits)}(?!\d)`, "g");
     case "phone": {
       // The value is "+<2-digit country code> <subscriber>": also find the
-      // national form "0<subscriber>" and the "00" international prefix.
-      const country = spaced(digits.slice(0, 2));
-      const subscriber = spaced(digits.slice(2));
+      // national form "0<subscriber>", the "00" international prefix, a "(0)"
+      // trunk prefix after the country code, and brackets around groups.
+      const country = spaced(digits.slice(0, 2), PHONE_SEP);
+      const subscriber = spaced(digits.slice(2), PHONE_SEP);
       return new RegExp(
-        String.raw`(?<!\d)(?:(?:\+|00)?${country}|0)${SEP}${subscriber}(?!\d)`,
+        String.raw`(?<!\d)(?:(?:\+|00)?${country}${PHONE_SEP}(?:0${PHONE_SEP})?|0${PHONE_SEP})${subscriber}(?!\d)`,
         "g",
       );
     }
@@ -157,17 +183,18 @@ function countIn(view: string, pattern: RegExp): number {
 
 /**
  * The canary types of the run found in `text`, in plan order, with counts.
- * Two views of the text are searched: the raw text lower-cased, and the
- * decoded view (see `decodedView`). Card, phone and SSN digits match with any
- * separators. Count rule: a type's count is the larger of its non-overlapping
- * match counts in the two views, so one occurrence seen in both views counts
- * once. Throws a TypeError when `text` is not a string, so a missing sink body
- * never reads as "no canaries".
+ * Three views of the text are searched: the raw text lower-cased, the decoded
+ * view (see `decodedView`) and the joined view (see `joinedView`). Card, phone
+ * and SSN digits match with any separators. Count rule: a type's count is the
+ * largest of its non-overlapping match counts in the three views, so one
+ * occurrence seen in several views counts once. Throws a TypeError when `text`
+ * is not a string, so a missing sink body never reads as "no canaries".
  */
 export function findCanaries(text: string, runId: string): CanaryHit[] {
   const canaries = buildCanaries(runId);
   if (typeof text !== "string") throw new TypeError("text must be a string");
-  const views = [text.toLowerCase(), decodedView(text)];
+  const decoded = decodedView(text);
+  const views = [text.toLowerCase(), decoded, joinedView(decoded)];
   return canaries
     .map(({ type, value }) => {
       const pattern = patternFor(type, value, runId);
