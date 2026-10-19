@@ -179,29 +179,26 @@ const isDigit = (char: string | undefined) => char !== undefined && char >= "0" 
 
 /**
  * Whether a card, SSN or phone match is part of a longer number or of a path
- * or identifier, judged from the one or two characters beside each end:
- * - a digit and then `.`, `_`, `/` or `-` beside it (`1.078.051.120`,
- *   `2026-10-07 8051 120`, `$…120.00`);
+ * or identifier, judged from the two characters before its start:
+ * - a digit and then `.`, `_`, `/` or `-` (`1.078.051.120`,
+ *   `2026-10-07 8051 120`);
  * - a digit and then `,`, when the match is grouped with commas too
  *   (`1,078,051,120`); a bare comma is a list delimiter, so a CSV row of
  *   numbers is still searched;
- * - `_` or `/` beside it, when the match is split by that same character
+ * - `_` or `/`, when the match is split by that same character
  *   (`file_078_05_1120.txt`, `build/078/05/1120`); a plain path segment such
  *   as `/cards/<card digits>` is still found.
- * Whitespace, NBSP and zero-width characters beside a match never reject it.
+ * Whitespace, NBSP and zero-width characters before a match never reject it.
+ * What follows a match never rejects it: an expiry, a CVV or a suffix after a
+ * card or SSN (`<card>-123`, `<card>/12/26`) is still a leak.
  */
 function insideLongerToken(view: string, start: number, match: string): boolean {
-  const end = start + match.length;
-  const sides: Array<[string | undefined, string | undefined]> = [
-    [view[start - 1], view[start - 2]],
-    [view[end], view[end + 1]],
-  ];
-  return sides.some(([near, far]) => {
-    if (near === undefined) return false;
-    if (".-_/".includes(near) && isDigit(far)) return true;
-    if (near === "," && isDigit(far) && match.includes(",")) return true;
-    return (near === "_" || near === "/") && match.includes(near);
-  });
+  const near = view[start - 1];
+  const far = view[start - 2];
+  if (near === undefined) return false;
+  if (".-_/".includes(near) && isDigit(far)) return true;
+  if (near === "," && isDigit(far) && match.includes(",")) return true;
+  return (near === "_" || near === "/") && match.includes(near);
 }
 
 function countIn(view: string, pattern: RegExp, digitType: boolean): number {

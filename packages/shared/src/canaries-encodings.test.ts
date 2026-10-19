@@ -303,6 +303,18 @@ describe("findCanaries on digits inside longer numbers", () => {
     expect(findCanaries(row, RUN)).toEqual([...only("ssn"), ...only("card")]);
   });
 
+  // Only the leading side rejects: what follows a card or SSN is often an
+  // expiry, a CVV or a suffix, and that is still a leak.
+  it.each([
+    ["card", `card ${valueOf("card")}-12/26`],
+    ["card", `${digitsOf("card")}/12/26`],
+    ["card", `${digitsOf("card")}-123`],
+    ["card", `${digitsOf("card")}.12`],
+    ["ssn", `ssn ${["078", "05", "1120", "1"].join("-")}`],
+  ] as const)("finds the %s followed by more digits in %j", (type, text) => {
+    expect(findCanaries(text, RUN)).toEqual(only(type));
+  });
+
   it("still finds a card that is a URL path segment", () => {
     expect(findCanaries(`/cards/${digitsOf("card")}`, RUN)).toEqual(only("card"));
   });
