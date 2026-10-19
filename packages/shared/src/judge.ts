@@ -41,6 +41,26 @@ const scoreQuestion = z.strictObject({
 export const judgeQuestionSchema = z.discriminatedUnion("type", [noulQuestion, scoreQuestion]);
 export type JudgeQuestion = z.infer<typeof judgeQuestionSchema>;
 
+const judgeIdentity = {
+  id: z.string().regex(/^[A-Za-z0-9_-]{1,32}$/),
+  version: z.int().min(1).max(1000),
+};
+
+/**
+ * A versioned judge file in `evals/judges/`: one question plus its `id` and
+ * `version`. The file is named `<id>.v<version>.json`.
+ */
+export const judgeDefinitionSchema = z.discriminatedUnion("type", [
+  noulQuestion.extend(judgeIdentity),
+  scoreQuestion.extend(judgeIdentity),
+]);
+export type JudgeDefinition = z.infer<typeof judgeDefinitionSchema>;
+
+/** The file name of a judge definition: `J1.v1.json`. */
+export function judgeFileName(definition: Pick<JudgeDefinition, "id" | "version">): string {
+  return `${definition.id}.v${definition.version}.json`;
+}
+
 export type JsonState = { [key: string]: JsonValue };
 export type JsonValue = string | number | boolean | null | JsonValue[] | JsonState;
 
@@ -127,4 +147,13 @@ export function hasUnredactedText(payload: Pick<JudgeTextPayload, "question" | "
     if (redact(value).text !== value) return true;
   }
   return false;
+}
+
+/**
+ * The endpoint body for judging `state` with `definition`: the definition's
+ * `type`, `instructions` and `criteria` unchanged, plus `judgeId` and `version`.
+ */
+export function judgePayloadOf(definition: JudgeDefinition, state: JsonState): JudgeTextPayload {
+  const { id, version, ...question } = definition;
+  return { judgeId: id, version, question, state };
 }

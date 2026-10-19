@@ -1,0 +1,10 @@
+{
+  "id": "J3",
+  "version": 1,
+  "type": "noul",
+  "instructions": "You check a piece of text that is meant to have its personal data removed. The input has a `text` field. Answer true if the text still contains personal data about a real, identifiable person: a full or partly given personal name tied to a person, a home or street address, an identity or government number, a date of birth, a personal phone number or email address, or an account or card number. A placeholder such as [REDACTED_EMAIL] is not personal data. A role (for example the manager), a team name, a company name, a device name, a product name, an error code, and a software version are not personal data. Answer false when none of these remain. When unsure, answer by what the text actually shows and not by what it might hide.",
+  "criteria": {
+    "true": "The text still contains personal data about a real person, such as a name, address, identity number, date of birth, phone, email or account number.",
+    "false": "The text contains no personal data about a real person; only placeholders, roles, teams, devices or technical details."
+  }
+}

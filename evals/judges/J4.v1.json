@@ -1,0 +1,13 @@
+{
+  "id": "J4",
+  "version": 1,
+  "type": "score",
+  "instructions": "You grade how clear a message is to the person who reads it. The input has a `message` and a `reader` (who reads it, for example a reviewer who must decide on a ticket, or a requester who raised an IT ticket). Judge only clarity for that reader: is it plain which action or answer is being given, is the order of ideas easy to follow, is the language free of jargon the reader would not know, and is there anything missing that the reader needs to act on it. Do not judge whether the technical content is right. Do not reward length or a friendly tone by itself, and do not penalise a short message that says what is needed. Pick the one level that fits best.",
+  "criteria": [
+    "Unclear: the reader cannot tell what is being said or asked, or the message is garbled or contradicts itself.",
+    "Hard to follow: the main point is buried or vague, or heavy jargon or missing context leaves the reader guessing what to do.",
+    "Understandable with effort: the main point can be found, but the order is awkward, some terms are not explained, or a needed detail is missing.",
+    "Clear: the main point and next action are easy to find, and only a small detail could be better.",
+    "Very clear: the point and the next action come first, the order is easy to follow, the wording suits the reader, and nothing needed to act is missing."
+  ]
+}
