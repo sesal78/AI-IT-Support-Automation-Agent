@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -43,6 +44,28 @@ export interface MockE2eOptions {
   readonly now?: () => number;
   /** Delay before each reply, so concurrency shows in `peakInFlight`. */
   readonly delayMs?: number;
+  /** Call counts the usage endpoint reports (default 0 and 0). */
+  readonly usage?: () => { readonly llm: number; readonly typesafe: number };
+  /**
+   * Status and triage of a created test ticket's view, by `testId` and the
+   * number of times the view was read (1 for the first read). Default: `new`, no triage.
+   */
+  readonly ticketView?: (testId: string, reads: number) => MockTicketView | undefined;
+}
+
+export interface MockTicketView {
+  readonly status: string;
+  readonly triage: unknown;
+}
+
+/** A ticket made through POST /api/internal/test-tickets, keyed by its `testId`. */
+export interface MockTestTicket {
+  readonly testId: string;
+  readonly ticketId: string;
+  readonly body: Record<string, unknown>;
+  reads: number;
+  /** True once a view with the status `failed` or with a triage was served. */
+  finished: boolean;
 }
 
 export interface MockE2e {
@@ -51,6 +74,10 @@ export interface MockE2e {
   readonly requests: MockRequest[];
   /** Most requests the mock was handling at one time. */
   readonly peakInFlight: number;
+  /** Test tickets by `testId`; a repeated `testId` is a duplicate, not a new ticket. */
+  readonly testTickets: Map<string, MockTestTicket>;
+  /** Most test tickets that were created and not yet finished at one time. */
+  readonly maxOpenTickets: () => number;
   close(): Promise<void>;
 }
 
@@ -79,8 +106,38 @@ const NOT_FOUND: MockReply = {
 /** Paths the Access application leaves open (the inbound-mail webhook). */
 const ACCESS_BYPASS = new Set(["/api/inbound/email"]);
 
-function createDefaultRoute(mode: MockSecurityEvents, now: () => number) {
+function parseObject(text: string): Record<string, unknown> {
+  try {
+    const value: unknown = JSON.parse(text);
+    return typeof value === "object" && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function createDefaultRoute(
+  options: MockE2eOptions,
+  testTickets: Map<string, MockTestTicket>,
+  onOpen: (open: number) => void,
+) {
+  const mode = options.securityEvents ?? "per-minute";
+  const now = options.now ?? Date.now;
   const events: StoredEvent[] = [];
+
+  function createTestTicket(request: MockRequest): MockReply {
+    const body = parseObject(request.body);
+    const testId = typeof body.testId === "string" ? body.testId : "";
+    const existing = testTickets.get(testId);
+    if (existing) {
+      return { status: 201, json: { ticketId: existing.ticketId, queued: true, duplicate: true } };
+    }
+    const ticketId = randomUUID();
+    testTickets.set(testId, { testId, ticketId, body, reads: 0, finished: false });
+    onOpen([...testTickets.values()].filter((t) => !t.finished).length);
+    return { status: 201, json: { ticketId, queued: true } };
+  }
 
   function record(kind: string): void {
     if (mode === "none") return;
@@ -125,10 +182,15 @@ function createDefaultRoute(mode: MockSecurityEvents, now: () => number) {
     }
 
     if (method === "GET" && path === "/api/internal/usage") {
-      const usage = { calls: 0, tokensIn: 0, tokensOut: 0, costUsd: null };
+      const calls = options.usage?.() ?? { llm: 0, typesafe: 0 };
+      const usage = (n: number) => ({ calls: n, tokensIn: 0, tokensOut: 0, costUsd: null });
       return {
         status: 200,
-        json: { month: request.query.get("month"), llm: usage, typesafe: usage },
+        json: {
+          month: request.query.get("month"),
+          llm: usage(calls.llm),
+          typesafe: usage(calls.typesafe),
+        },
       };
     }
     if (method === "GET" && path === "/api/internal/security-events") {
@@ -142,23 +204,27 @@ function createDefaultRoute(mode: MockSecurityEvents, now: () => number) {
       return { status: 200, json: { events: listed } };
     }
     if (method === "POST" && path === "/api/internal/test-tickets") {
-      return {
-        status: 201,
-        json: { ticketId: "00000000-0000-4000-8000-000000000001", queued: true },
-      };
+      return createTestTicket(request);
     }
     const ticket = /^\/api\/internal\/tickets\/([^/]+)$/.exec(path);
     if (method === "GET" && ticket && TICKET_ID.test(ticket[1]!)) {
+      const known = [...testTickets.values()].find((t) => t.ticketId === ticket[1]);
+      let view: MockTicketView | undefined;
+      if (known) {
+        known.reads += 1;
+        view = options.ticketView?.(known.testId, known.reads);
+        if (view && (view.status === "failed" || view.triage !== null)) known.finished = true;
+      }
       return {
         status: 200,
         json: {
           id: ticket[1],
-          status: "new",
+          status: view?.status ?? "new",
           isTest: true,
           source: "web",
           createdAt: "2026-10-10T00:00:00.000Z",
           redacted: null,
-          triage: null,
+          triage: view?.triage ?? null,
           aiCallCount: 0,
           events: [],
           reviews: [],
@@ -195,10 +261,11 @@ function reply(response: ServerResponse, answer: MockReply): void {
  */
 export async function startMockE2e(options: MockE2eOptions): Promise<MockE2e> {
   const requests: MockRequest[] = [];
-  const defaultRoute = createDefaultRoute(
-    options.securityEvents ?? "per-minute",
-    options.now ?? Date.now,
-  );
+  const testTickets = new Map<string, MockTestTicket>();
+  let maxOpen = 0;
+  const defaultRoute = createDefaultRoute(options, testTickets, (open) => {
+    maxOpen = Math.max(maxOpen, open);
+  });
   let inFlight = 0;
   let peakInFlight = 0;
   const server = createServer((incoming, response) => {
@@ -245,6 +312,8 @@ export async function startMockE2e(options: MockE2eOptions): Promise<MockE2e> {
     get peakInFlight() {
       return peakInFlight;
     },
+    testTickets,
+    maxOpenTickets: () => maxOpen,
     close: () =>
       new Promise<void>((closed, fail) => {
         server.closeAllConnections();
