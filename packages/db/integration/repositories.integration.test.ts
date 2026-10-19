@@ -198,6 +198,19 @@ describe("searchKb over supabase-js + PostgREST", () => {
     expect(hits[0]?.rank).toBeGreaterThan(0);
   });
 
+  it("finds an article that spells Wi-Fi with a hyphen from a Wi-Fi ticket", async () => {
+    const slug = `${SLUG}-wifi`;
+    await sql().query(
+      `insert into itsupport.kb_articles (slug, title, content, category, assignment_group)
+       values ($1, 'Wi-Fi keeps dropping', 'Forget the Wi-Fi network and join it again.', 'network', 'Network')`,
+      [slug],
+    );
+    for (const text of ["Wi-Fi keeps dropping", "my wifi is slow"]) {
+      const hits = await repos.searchKb(buildKbQuery(text), 20);
+      expect(hits.map((hit) => hit.slug)).toContain(slug);
+    }
+  });
+
   it("returns [] for a blank query and clamps the limit", async () => {
     expect(await repos.searchKb("")).toEqual([]);
     expect(await repos.searchKb(buildKbQuery("the and of it is"))).toEqual([]);

@@ -1,8 +1,14 @@
 // Builds the text passed to `itsupport.kb_search` (websearch_to_tsquery). Pure:
-// no I/O. The output is either "" or lower-case `[a-z0-9]` words joined by
-// " or ", so user text can never reach the query as an operator, quote, minus
-// sign or bracket. websearch_to_tsquery would otherwise require every word to
+// no I/O. The output is either "" or lower-case words (`[a-z0-9]`, with
+// a single - or . inside) joined by " or ", so user text can never reach the
+// query as an operator, quote, leading minus sign or bracket. websearch_to_tsquery would otherwise require every word to
 // match; `or` makes any word enough.
+//
+// A hyphenated or dotted word ("wi-fi", "802.11") gives its joined spelling
+// ("wifi", "80211") and itself, plus its parts. Postgres indexes "Wi-Fi" as
+// wi-fi/wi/fi, never "wifi", so the hyphenated form is what matches such text
+// and the joined one matches text that spells it "WiFi". A separator joins only
+// between letters or digits, so "restart. then" stays two words.
 //
 // Steps: lower-case, remove [REDACTED_*] placeholders (also lower-case ones)
 // and everything that is not a-z or 0-9 (accents are folded first, so "café"
@@ -34,7 +40,8 @@ const STOP_WORDS: ReadonlySet<string> = new Set(
 
 const PLACEHOLDER = /\[redacted_[a-z0-9_]*\]/g;
 const COMBINING_MARKS = /\p{M}+/gu;
-const WORD = /[a-z0-9]+/g;
+const WORD = /[a-z0-9]+(?:[-.][a-z0-9]+)*/g;
+const SEPARATOR = /[-.]/g;
 
 /**
  * Turns free text into a safe `or` query for the knowledge base search.
@@ -50,15 +57,21 @@ export function buildKbQuery(text: string): string {
     .normalize("NFKD")
     .replace(COMBINING_MARKS, "");
   const words = new Set<string>();
-  for (const match of cleaned.matchAll(WORD)) {
-    const word = match[0];
-    if (
-      word.length >= KB_QUERY_MIN_WORD_LENGTH &&
-      word.length <= KB_QUERY_MAX_WORD_LENGTH &&
-      !STOP_WORDS.has(word)
-    ) {
-      words.add(word);
-      if (words.size === KB_QUERY_MAX_WORDS) break;
+  outer: for (const match of cleaned.matchAll(WORD)) {
+    const token = match[0];
+    const candidates = [token];
+    if (/[-.]/.test(token)) {
+      candidates.push(token.replace(SEPARATOR, ""), ...token.split(SEPARATOR));
+    }
+    for (const word of candidates) {
+      if (
+        word.length >= KB_QUERY_MIN_WORD_LENGTH &&
+        word.length <= KB_QUERY_MAX_WORD_LENGTH &&
+        !STOP_WORDS.has(word)
+      ) {
+        words.add(word);
+        if (words.size === KB_QUERY_MAX_WORDS) break outer;
+      }
     }
   }
   return [...words].join(" or ");
