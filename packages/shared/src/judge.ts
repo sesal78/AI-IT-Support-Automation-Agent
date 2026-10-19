@@ -124,27 +124,39 @@ export const judgeTextOutputSchema = z.strictObject({
 });
 export type JudgeTextOutput = z.infer<typeof judgeTextOutputSchema>;
 
-function* strings(value: unknown): Generator<string> {
+function* strings(value: unknown, withKeys = true): Generator<string> {
   if (typeof value === "string") yield value;
   // A number is sent as its decimal form, so a phone or card number typed as
   // a number is checked like the same digits in a string.
   else if (typeof value === "number") yield String(value);
-  else if (Array.isArray(value)) for (const item of value) yield* strings(item);
+  else if (Array.isArray(value)) for (const item of value) yield* strings(item, withKeys);
   else if (typeof value === "object" && value !== null) {
     for (const [key, item] of Object.entries(value)) {
-      yield key;
-      yield* strings(item);
+      if (withKeys) yield key;
+      yield* strings(item, withKeys);
     }
   }
 }
 
 /**
  * True when redact() would change any key, string or number anywhere in the
- * question or the state: that text is not allowed to leave and is not judged.
+ * question or the state, on its own or once the state's fields are joined
+ * (with a space and with nothing, with and without the keys): personal data split across fields, like
+ * `jane@` + `example.com` or `415` + `555` + `1234`, is not allowed to leave.
+ * The joins are bounded by JUDGE_STATE_MAX_CHARS, which the state already obeys.
  */
 export function hasUnredactedText(payload: Pick<JudgeTextPayload, "question" | "state">): boolean {
-  for (const value of strings([payload.question, payload.state])) {
-    if (redact(value).text !== value) return true;
+  for (const part of [payload.question, payload.state]) {
+    const leaves = [...strings(part)];
+    if (leaves.some((value) => redact(value).text !== value)) return true;
+    // Once with the keys between the values, once with the values alone, as a
+    // key in between would break up `call 415` + `555 1234`.
+    for (const joinedLeaves of [leaves, [...strings(part, false)]]) {
+      for (const separator of [" ", ""]) {
+        const joined = joinedLeaves.join(separator);
+        if (redact(joined).text !== joined) return true;
+      }
+    }
   }
   return false;
 }

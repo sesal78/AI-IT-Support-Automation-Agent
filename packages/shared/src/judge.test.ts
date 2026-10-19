@@ -83,11 +83,31 @@ describe("hasUnredactedText", () => {
     expect(hasUnredactedText(valid as never)).toBe(false);
   });
 
+  it("is false for a realistic clean judge state", () => {
+    const state = {
+      ticket: {
+        title: "Printer offline",
+        description: "The office printer shows offline since Monday, on floor 3.",
+      },
+      fixSteps: [
+        "Turn the printer off and on again.",
+        "Check the cable is plugged in.",
+        "Ask IT if it stays offline after 2 tries.",
+      ],
+      label: "hardware",
+      attempts: 2,
+    };
+    expect(hasUnredactedText({ question: valid.question as never, state })).toBe(false);
+  });
+
   it.each([
     ["a deep email", { a: [{ b: [["jo@example.com"]] }] }],
     ["a phone number", { a: "call 0412 345 678" }],
     ["a card typed as a number", { a: [4111111111111111] }],
     ["an email key", { "jo@example.com": 1 }],
+    ["an email split across fields", { a: "jane@", b: "example.com" }],
+    ["a phone split across numbers", { n: [415, 555, 1234] }],
+    ["a phone split across strings", { x: "call 415", y: "555 1234" }],
   ])("is true for %s", (_name, state) => {
     expect(hasUnredactedText({ question: valid.question as never, state })).toBe(true);
   });

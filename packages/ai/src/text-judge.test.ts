@@ -117,6 +117,7 @@ describe("createTextJudge", () => {
     ["a phone number", { deep: [[{ x: "call +61 412 345 678" }]] }],
     ["a card number typed as a number", { n: 4111111111111111 }],
     ["an email in a key", { "jo@example.com": "x" }],
+    ["an email split across fields", { a: "jane@", b: "example.com" }],
   ])("refuses %s with JudgeInputError before the meter", async (_name, state) => {
     const { judge, repos, fetch } = setup();
     await expect(judge.judge({ ...noulPayload, state })).rejects.toBeInstanceOf(JudgeInputError);
