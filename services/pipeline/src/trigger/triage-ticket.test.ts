@@ -160,6 +160,9 @@ interface Options {
   e2eMode?: boolean;
   /** Thrown by the judge on every call. */
   judgeError?: () => Error;
+  /** Thrown by the reranker / grounding scorer on every call. */
+  rerankError?: () => Error;
+  groundingError?: () => Error;
   /** Thrown by the drafter when it returns an error for the input. */
   draftError?: (input: { capOverride?: number }) => Error | undefined;
 }
@@ -258,6 +261,7 @@ function harness(options: Options = {}) {
     reranker: {
       rerankKb: vi.fn(async (input: KbRerankInput) => {
         step("rerank", input);
+        if (options.rerankError) throw options.rerankError();
         return options.ranked
           ? options.ranked(input.candidates)
           : input.candidates
@@ -276,6 +280,7 @@ function harness(options: Options = {}) {
     grounding: {
       scoreGrounding: vi.fn(async (input) => {
         step("grounding", input);
+        if (options.groundingError) throw options.groundingError();
         return options.grounding ?? { score: 0.9, flagged: false };
       }),
     },
@@ -842,6 +847,161 @@ describe("triage-ticket TypeSafe cap at the judgments", () => {
 
     await expect(runTriageTicket({ ticketId }, h.deps)).rejects.toBeInstanceOf(BudgetExceededError);
     expect(h.writes()).toEqual([]);
+  });
+});
+
+describe("triage-ticket TypeSafe cap at the rerank or the grounding", () => {
+  it("cap at the rerank: triaged, review, cap_reached, event and alert once, no article, no draft, no grounding", async () => {
+    const h = harness({ rerankError: typesafeCap });
+
+    await expect(runTriageTicket({ ticketId }, h.deps)).resolves.toEqual({
+      ticketId,
+      skipped: false,
+      route: "review",
+      reasons: ["cap_reached"],
+    });
+    expect(types(h)).toEqual(["typesafe_cap_reached", "kb_matched", "policy_decided", "triaged"]);
+    expect(h.events.find((e) => e.type === "kb_matched")?.payload).toEqual({
+      articleIds: [],
+      count: 0,
+    });
+    expect(h.alerts).toEqual([["typesafe_cap_reached", { ticketId }]]);
+    expect(h.count("rerank")).toBe(1);
+    expect(h.deps.drafter.draft).not.toHaveBeenCalled();
+    expect(h.deps.grounding.scoreGrounding).not.toHaveBeenCalled();
+    expect(h.saved).toHaveLength(1);
+    expect(h.saved[0]).toMatchObject({
+      category: "network",
+      priority: "P3",
+      route: "review",
+      kbArticleIds: [],
+      suggestedFix: null,
+      groundingScore: null,
+      modelVersions: { typesafe: "jev-reported-1" },
+    });
+    expect(h.statuses).toEqual(["triaged"]);
+  });
+
+  it("cap at the grounding: triaged, review, ungrounded_fix and cap_reached, steps kept, event once", async () => {
+    const h = harness({ groundingError: typesafeCap });
+
+    await expect(runTriageTicket({ ticketId }, h.deps)).resolves.toEqual({
+      ticketId,
+      skipped: false,
+      route: "review",
+      reasons: ["ungrounded_fix", "cap_reached"],
+    });
+    expect(types(h)).toEqual([
+      "typesafe_cap_reached",
+      "kb_matched",
+      "fix_drafted",
+      "policy_decided",
+      "triaged",
+    ]);
+    expect(h.alerts).toEqual([["typesafe_cap_reached", { ticketId }]]);
+    expect(h.count("draft")).toBe(1);
+    expect(h.count("grounding")).toBe(1);
+    expect(h.saved[0]).toMatchObject({
+      route: "review",
+      flags: ["ungrounded_fix"],
+      groundingScore: null,
+      kbArticleIds: h.candidates.map((c) => c.id),
+      suggestedFix: { steps: draft.steps, caveats: draft.caveats },
+      modelVersions: { typesafe: "jev-reported-1", llm: "llm-reported-1" },
+    });
+    expect(h.statuses).toEqual(["triaged"]);
+  });
+
+  it.each([
+    ["rerank", { rerankError: typesafeCap }],
+    ["grounding", { groundingError: typesafeCap }],
+  ])("a sensitive ticket capped at the %s keeps sensitive first", async (_, failure) => {
+    const h = harness({ triage: triageRow(true), ...failure });
+
+    const result = await runTriageTicket({ ticketId }, h.deps);
+    expect(result).toMatchObject({ route: "review" });
+    expect((result as { reasons: string[] }).reasons[0]).toBe("sensitive");
+    expect((result as { reasons: string[] }).reasons).toContain("cap_reached");
+  });
+
+  it.each([
+    ["rerank", { rerankError: typesafeCap }, "rerank"],
+    ["grounding", { groundingError: typesafeCap }, "draft"],
+  ])(
+    "capped at the %s, a failed event write then a retry: one event, one alert",
+    async (_, failure, rerun) => {
+      const h = harness({ ...failure, fail: "event:typesafe_cap_reached", failOnce: true });
+
+      await expect(runTriageTicket({ ticketId }, h.deps, 1)).rejects.toThrow(
+        "event:typesafe_cap_reached failed",
+      );
+      expect(h.alerts).toEqual([]);
+      expect(h.saved).toEqual([]);
+      await expect(runTriageTicket({ ticketId }, h.deps, 2)).resolves.toMatchObject({
+        route: "review",
+      });
+
+      expect(types(h).filter((t) => t === "typesafe_cap_reached")).toHaveLength(1);
+      expect(h.alerts).toEqual([["typesafe_cap_reached", { ticketId }]]);
+      for (const type of new Set(types(h))) {
+        expect(types(h).filter((t) => t === type)).toHaveLength(1);
+      }
+      // Nothing was saved, so the retry runs the AI steps again (the LLM too after a grounding cap).
+      expect(h.count(rerun)).toBe(2);
+      expect(h.saved).toHaveLength(1);
+      expect(h.statuses).toEqual(["triaged"]);
+    },
+  );
+
+  it.each(["event:policy_decided", "event:triaged", "status:triaged"])(
+    "capped at the grounding, a failure at %s, then a resume: same reasons, no AI call, no duplicate",
+    async (fail) => {
+      const h = harness({ groundingError: typesafeCap, fail, failOnce: true });
+
+      await expect(runTriageTicket({ ticketId }, h.deps, 1)).rejects.toThrow(`${fail} failed`);
+      const aiBefore = h.aiCalls();
+      await expect(runTriageTicket({ ticketId }, h.deps, 2)).resolves.toMatchObject({
+        route: "review",
+        reasons: ["ungrounded_fix", "cap_reached"],
+      });
+
+      expect(h.aiCalls()).toBe(aiBefore);
+      expect(h.alerts).toHaveLength(1);
+      for (const type of new Set(types(h))) {
+        expect(types(h).filter((t) => t === type)).toHaveLength(1);
+      }
+      expect(h.statuses).toEqual(["triaged"]);
+    },
+  );
+
+  it("capped at the rerank, a failure at saveTriageResult, then a retry: fail-safe judgments-cap path, no duplicate", async () => {
+    const h = harness({ rerankError: typesafeCap, fail: "saveTriageResult", failOnce: true });
+
+    await expect(runTriageTicket({ ticketId }, h.deps, 1)).rejects.toThrow(
+      "saveTriageResult failed",
+    );
+    await expect(runTriageTicket({ ticketId }, h.deps, 2)).resolves.toMatchObject({
+      route: "review",
+      reasons: ["cap_reached"],
+    });
+    expect(h.count("judge")).toBe(1);
+    expect(h.count("rerank")).toBe(1);
+    expect(h.alerts).toHaveLength(1);
+    expect(types(h).filter((t) => t === "typesafe_cap_reached")).toHaveLength(1);
+    expect(h.saved).toHaveLength(1);
+  });
+
+  it.each([
+    ["rerank", "a plain error", { rerankError: () => new Error("rerank boom") }],
+    ["grounding", "a plain error", { groundingError: () => new Error("grounding boom") }],
+    ["rerank", "an LLM BudgetExceededError", { rerankError: llmCap }],
+    ["grounding", "an LLM BudgetExceededError", { groundingError: llmCap }],
+  ])("%s throwing %s still fails the run with no write and no alert", async (_, __, failure) => {
+    const h = harness(failure);
+
+    await expect(runTriageTicket({ ticketId }, h.deps)).rejects.toThrow();
+    expect(h.writes()).toEqual([]);
+    expect(h.alerts).toEqual([]);
   });
 });
 
