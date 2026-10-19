@@ -281,6 +281,33 @@ describe("findCanaries on looser HTML entities", () => {
   });
 });
 
+// False positives the PR #104 re-check found: canary digits inside a longer
+// number, or glued into a path or identifier.
+describe("findCanaries on digits inside longer numbers", () => {
+  it.each([
+    "Total: 1,078,051,120 bytes",
+    "$1,078,051,120.00",
+    "1.078.051.120",
+    "1,0491,570,156",
+    "ids 1,4111,1111,1111,1111",
+    "file_078_05_1120.txt",
+    "build/078/05/1120",
+    "2026-10-07 8051 120",
+  ])("returns [] for %j", (text) => {
+    expect(findCanaries(text, RUN)).toEqual([]);
+  });
+
+  it("still finds an SSN and a card in a CSV row", () => {
+    // A bare comma between two numbers is a list delimiter, not grouping.
+    const row = `ssn,card\n${digitsOf("ssn")},${digitsOf("card")}`;
+    expect(findCanaries(row, RUN)).toEqual([...only("ssn"), ...only("card")]);
+  });
+
+  it("still finds a card that is a URL path segment", () => {
+    expect(findCanaries(`/cards/${digitsOf("card")}`, RUN)).toEqual(only("card"));
+  });
+});
+
 describe("canaries-encodings.test.ts", () => {
   it("holds no canary value as a literal", () => {
     const source = readFileSync(fileURLToPath(import.meta.url), "utf8");

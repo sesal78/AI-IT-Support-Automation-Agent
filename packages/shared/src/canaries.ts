@@ -174,10 +174,46 @@ function patternFor(type: CanaryType, value: string, runId: string): RegExp {
   }
 }
 
-function countIn(view: string, pattern: RegExp): number {
+const DIGIT_TYPES: ReadonlySet<CanaryType> = new Set(["card", "ssn", "phone"]);
+const isDigit = (char: string | undefined) => char !== undefined && char >= "0" && char <= "9";
+
+/**
+ * Whether a card, SSN or phone match is part of a longer number or of a path
+ * or identifier, judged from the one or two characters beside each end:
+ * - a digit and then `.`, `_`, `/` or `-` beside it (`1.078.051.120`,
+ *   `2026-10-07 8051 120`, `$…120.00`);
+ * - a digit and then `,`, when the match is grouped with commas too
+ *   (`1,078,051,120`); a bare comma is a list delimiter, so a CSV row of
+ *   numbers is still searched;
+ * - `_` or `/` beside it, when the match is split by that same character
+ *   (`file_078_05_1120.txt`, `build/078/05/1120`); a plain path segment such
+ *   as `/cards/<card digits>` is still found.
+ * Whitespace, NBSP and zero-width characters beside a match never reject it.
+ */
+function insideLongerToken(view: string, start: number, match: string): boolean {
+  const end = start + match.length;
+  const sides: Array<[string | undefined, string | undefined]> = [
+    [view[start - 1], view[start - 2]],
+    [view[end], view[end + 1]],
+  ];
+  return sides.some(([near, far]) => {
+    if (near === undefined) return false;
+    if (".-_/".includes(near) && isDigit(far)) return true;
+    if (near === "," && isDigit(far) && match.includes(",")) return true;
+    return (near === "_" || near === "/") && match.includes(near);
+  });
+}
+
+function countIn(view: string, pattern: RegExp, digitType: boolean): number {
   let count = 0;
   pattern.lastIndex = 0;
-  while (pattern.exec(view) !== null) count += 1;
+  for (let found = pattern.exec(view); found !== null; found = pattern.exec(view)) {
+    if (digitType && insideLongerToken(view, found.index, found[0])) {
+      pattern.lastIndex = found.index + 1;
+    } else {
+      count += 1;
+    }
+  }
   return count;
 }
 
@@ -185,7 +221,8 @@ function countIn(view: string, pattern: RegExp): number {
  * The canary types of the run found in `text`, in plan order, with counts.
  * Three views of the text are searched: the raw text lower-cased, the decoded
  * view (see `decodedView`) and the joined view (see `joinedView`). Card, phone
- * and SSN digits match with any separators. Count rule: a type's count is the
+ * and SSN digits match with any separators, but not inside a longer number,
+ * path or identifier (see `insideLongerToken`). Count rule: a type's count is the
  * largest of its non-overlapping match counts in the three views, so one
  * occurrence seen in several views counts once. Throws a TypeError when `text`
  * is not a string, so a missing sink body never reads as "no canaries".
@@ -198,7 +235,9 @@ export function findCanaries(text: string, runId: string): CanaryHit[] {
   return canaries
     .map(({ type, value }) => {
       const pattern = patternFor(type, value, runId);
-      return { type, count: Math.max(...views.map((view) => countIn(view, pattern))) };
+      const digitType = DIGIT_TYPES.has(type);
+      const counts = views.map((view) => countIn(view, pattern, digitType));
+      return { type, count: Math.max(...counts) };
     })
     .filter((hit) => hit.count > 0);
 }
