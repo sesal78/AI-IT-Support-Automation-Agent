@@ -66,9 +66,12 @@ export interface InternalClient {
   securityEvents(since: Date): Promise<InternalSecurityEvents>;
   ticket(id: string): Promise<InternalTicketView>;
   createTestTicket(body: Record<string, unknown>): Promise<TestTicketCreated>;
+  /** The public form path, `POST /api/tickets`; sent with no bearer token. */
+  submitForm(body: Record<string, unknown>): Promise<TestTicketCreated>;
 }
 
-// No shared schemas exist for these two bodies yet; both mirror apps/web.
+// No shared schemas exist for these bodies yet; they mirror apps/web. The form
+// path and the test path answer with the same body.
 const healthSchema = z.strictObject({ status: z.literal("ok"), version: z.string() });
 const testTicketCreatedSchema = z.strictObject({
   ticketId: z.uuid(),
@@ -195,5 +198,11 @@ export function createInternalClient(
         201,
         { method: "POST", body },
       ),
+    submitForm: (body) =>
+      typed("POST /api/tickets", "/api/tickets", testTicketCreatedSchema, 201, {
+        method: "POST",
+        body,
+        token: null,
+      }),
   };
 }

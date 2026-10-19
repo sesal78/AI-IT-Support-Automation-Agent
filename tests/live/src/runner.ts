@@ -26,6 +26,10 @@ export interface ScenarioContext {
    */
   readonly fetch: (input: URL, init: RequestInit) => Promise<Response>;
   readonly now: () => number;
+  /** Waits; scenarios poll with it, so tests can pass a fake clock. */
+  readonly sleep: (ms: number) => Promise<void>;
+  /** This run's ID; scenarios build their test IDs from it. */
+  readonly runId: string;
 }
 
 export interface Scenario {
@@ -160,12 +164,16 @@ export async function runLive(options: RunLiveOptions): Promise<number> {
   }
 
   const startedAt = new Date(now()).toISOString();
+  const sleep =
+    options.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
   const context: ScenarioContext = {
     config,
     client: createInternalClient(config, { fetch: options.fetch }),
-    pacer: createFormPacer({ evidenceDir: options.evidenceDir, now, sleep: options.sleep }),
+    pacer: createFormPacer({ evidenceDir: options.evidenceDir, now, sleep }),
     fetch: options.fetch ?? ((input, init) => fetch(input, init)),
     now,
+    sleep,
+    runId,
   };
 
   const entries: ReportEntry[] = [];
