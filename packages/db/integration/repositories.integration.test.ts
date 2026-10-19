@@ -198,19 +198,19 @@ describe("searchKb over supabase-js + PostgREST", () => {
     expect(hits[0]?.rank).toBeGreaterThan(0);
   });
 
-  it("finds Wi-Fi and WiFi articles from a Wi-Fi ticket", async () => {
+  it("finds Wi-Fi and WiFi articles when the spelling is the only shared term", async () => {
     const spellings = [
-      ["wifi-hyphen", "Wi-Fi keeps dropping", "Forget the Wi-Fi network and join it again."],
-      ["wifi-joined", "WiFi keeps dropping", "Forget the WiFi network and join it again."],
+      ["wifi-hyphen", "Wi-Fi network forget rejoin"],
+      ["wifi-joined", "WiFi network forget rejoin"],
     ] as const;
-    for (const [suffix, title, content] of spellings) {
+    for (const [suffix, title] of spellings) {
       await sql().query(
         `insert into itsupport.kb_articles (slug, title, content, category, assignment_group)
-         values ($1, $2, $3, 'network', 'Network')`,
-        [`${SLUG}-${suffix}`, title, content],
+         values ($1, $2, 'Forget the network and rejoin it.', 'network', 'Network')`,
+        [`${SLUG}-${suffix}`, title],
       );
     }
-    const hits = await repos.searchKb(buildKbQuery("My Wi-Fi keeps dropping"), 20);
+    const hits = await repos.searchKb(buildKbQuery("wi-fi gone"), 20);
     expect(hits.map((hit) => hit.slug)).toEqual(
       expect.arrayContaining([`${SLUG}-wifi-hyphen`, `${SLUG}-wifi-joined`]),
     );
