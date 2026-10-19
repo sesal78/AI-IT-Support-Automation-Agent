@@ -20,6 +20,8 @@
     "eval:calibrate": "pnpm --filter @ai-it-support/shared run build && node tests/live/src/eval/calibrate-cli.ts",
     "test:e2e:docker": "node apps/web/scripts/docker-smoke.mjs",
     "deploy:pipeline": "pnpm --filter \"./packages/*\" run build && pnpm --filter @ai-it-support/pipeline exec trigger deploy",
+    "scan:traces": "pnpm --filter @ai-it-support/shared run build && node tests/live/src/scan-cli.ts traces",
+    "scan:logs": "pnpm --filter @ai-it-support/shared run build && node tests/live/src/scan-cli.ts logs",
     "scan:semgrep": "node packages/shared/scripts/semgrep-scan.mjs",
     "test:mutation": "node packages/shared/scripts/mutation-gate.mjs"
   },
