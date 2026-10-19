@@ -118,6 +118,8 @@ export interface MockE2eOptions {
 export interface MockTicketView {
   readonly status: string;
   readonly triage: unknown;
+  /** Redacted title and description; null when left out. */
+  readonly redacted?: { readonly title: string; readonly description: string } | null;
 }
 
 /** A ticket made through POST /api/internal/test-tickets, keyed by its `testId`. */
@@ -385,7 +387,7 @@ function createDefaultRoute(
           isTest: true,
           source: "web",
           createdAt: "2026-10-10T00:00:00.000Z",
-          redacted: null,
+          redacted: view?.redacted ?? null,
           triage: view?.triage ?? null,
           aiCallCount: 0,
           events: [],

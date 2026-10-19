@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import {
   EVAL_SETS,
   evalTicketSchema,
@@ -12,6 +12,7 @@ import {
 } from "@ai-it-support/shared";
 import { createInternalClient, errorClassName, type InternalClient } from "../client.ts";
 import { loadLiveConfig, LiveConfigError } from "../config.ts";
+import { runJudgePass } from "./judge-pass.ts";
 import { computeMetrics, evaluateTargets, writeReport, type EvalResult } from "./metrics.ts";
 
 /** Tickets in flight at one time; the usage guard runs after each batch. */
@@ -296,8 +297,25 @@ export interface RunEvalOptions {
  * above a maximum or the usage cannot be read. Exit 0 only when every DoD
  * target passes, 1 when one is missed, 2 when the run is incomplete.
  * Output carries ticket IDs, statuses and numbers, never ticket text.
+ *
+ * With `--judges` (`pnpm eval --run <id> --judges`) it runs the judge pass on
+ * the finished run instead (judge-pass.ts); the judge files are read from
+ * `judges/` next to the dataset.
  */
 export async function runEval(options: RunEvalOptions): Promise<number> {
+  if (options.argv.includes("--judges")) {
+    return runJudgePass({
+      argv: options.argv,
+      env: options.env,
+      datasetPath: options.datasetPath,
+      judgesDir: join(dirname(options.datasetPath), "judges"),
+      evidenceDir: options.evidenceDir,
+      stdout: options.stdout,
+      stderr: options.stderr,
+      fetch: options.fetch,
+      judge: { now: options.now, sleep: options.sleep, pollIntervalMs: options.pollIntervalMs },
+    });
+  }
   const now = options.now ?? Date.now;
   const sleep =
     options.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
