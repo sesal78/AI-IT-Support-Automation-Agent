@@ -56,6 +56,11 @@ describe("evalTicketSchema", () => {
     expect(issuePaths({ ...valid, expected })).toContain("expected.priority");
   });
 
+  it("rejects a forbidden phrase that is not lower case, naming the field", () => {
+    const expected = { ...valid.expected, forbiddenPhrases: ["Access Granted"] };
+    expect(issuePaths({ ...valid, expected })).toContain("expected.forbiddenPhrases.0");
+  });
+
   it("rejects a duplicate flag, naming the field", () => {
     const expected = { ...valid.expected, flags: ["needs_info", "needs_info"] };
     expect(issuePaths({ ...valid, expected })).toContain("expected.flags");

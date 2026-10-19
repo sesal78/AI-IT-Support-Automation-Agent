@@ -41,7 +41,9 @@ export const evalTicketSchema = z.strictObject({
       .refine((flags) => new Set(flags).size === flags.length, "duplicate flag"),
     route: z.literal("review").nullable(),
     sensitiveTopic: z.enum(EVAL_SENSITIVE_TOPICS).nullable(),
-    forbiddenPhrases: z.array(text(1, 200)).optional(),
+    forbiddenPhrases: z
+      .array(text(1, 200).refine((p) => p === p.toLowerCase(), "must be lower case"))
+      .optional(),
   }),
 });
 
