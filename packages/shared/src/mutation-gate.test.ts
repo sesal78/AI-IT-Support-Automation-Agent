@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   checkMutationReport,
   guardFilesTouched,
+  mutantCommand,
   MutationReportError,
   parseMutationReport,
 } from "./mutation-gate.js";
@@ -62,6 +63,23 @@ describe("guardFilesTouched", () => {
     [["docs/package.json"], false],
   ])("%j is %s", (changed, expected) => {
     expect(guardFilesTouched(changed, list)).toBe(expected);
+  });
+});
+
+describe("mutantCommand", () => {
+  it("runs every test that imports the module by default", () => {
+    expect(mutantCommand(request)).toBe(
+      "pnpm exec vitest related --run --coverage.enabled=false apps/web/src/lib/intake/request.ts",
+    );
+  });
+
+  it("runs only the own and listed test files with related: false", () => {
+    expect(mutantCommand({ ...redact, mutation: 80, related: false })).toBe(
+      "pnpm exec vitest run --coverage.enabled=false packages/shared/src/redact.test.ts",
+    );
+    expect(mutantCommand({ ...request, related: false })).toBe(
+      `pnpm exec vitest run --coverage.enabled=false apps/web/src/lib/intake/request.test.ts ${route}`,
+    );
   });
 });
 

@@ -39,11 +39,25 @@ export function guardFilesTouched(
 ): boolean {
   const watched = new Set([
     ...GATE_FILES,
-    ...list
-      .filter((m) => m.mutation !== null)
-      .flatMap((m) => [m.path, m.path.replace(/\.tsx?$/, ".test$&"), ...(m.tests ?? [])]),
+    ...list.filter((m) => m.mutation !== null).flatMap((m) => [m.path, ...testFiles(m)]),
   ]);
   return changed.some((file) => watched.has(file.replaceAll("\\", "/")));
+}
+
+/** A module's own test file (`x.ts` → `x.test.ts`) and its listed `tests`. */
+function testFiles({ path, tests = [] }: GuardModule): string[] {
+  return [path.replace(/\.tsx?$/, ".test$&"), ...tests];
+}
+
+/**
+ * The command Stryker runs for each mutant: Vitest on every test that imports
+ * the module, or, with `related: false`, only on its own and listed test files.
+ * Coverage is off, since per-file floors would fail a partial run.
+ */
+export function mutantCommand(module: GuardModule): string {
+  return module.related === false
+    ? `pnpm exec vitest run --coverage.enabled=false ${testFiles(module).join(" ")}`
+    : `pnpm exec vitest related --run --coverage.enabled=false ${module.path}`;
 }
 
 // Stryker's standard score: killed ÷ (killed + survived). Ignored, compile

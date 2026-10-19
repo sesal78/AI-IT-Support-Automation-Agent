@@ -1,5 +1,5 @@
 [
-  { "path": "packages/shared/src/redact.ts", "statements": 90, "mutation": null },
+  { "path": "packages/shared/src/redact.ts", "statements": 90, "mutation": 80, "related": false },
   {
     "path": "apps/web/src/lib/intake/request.ts",
     "statements": 90,

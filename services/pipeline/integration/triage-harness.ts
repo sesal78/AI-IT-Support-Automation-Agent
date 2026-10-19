@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createDbClient, createRepositories, type Repositories } from "@ai-it-support/db";
-import { buildCanaries, canaryTicketText, type TriageTicketPayload } from "@ai-it-support/shared";
+import { canaryTicketText, type TriageTicketPayload } from "@ai-it-support/shared";
 import { afterAll, beforeAll, beforeEach, expect } from "vitest";
 import { clientFor } from "../../../packages/db/integration/pg-container.js";
 import {
@@ -176,20 +176,7 @@ export async function ticketStatus(ticketId: string): Promise<string> {
   return (result.rows[0] as { status: string }).status;
 }
 
-/**
- * canaryTicketText without the IPv6 address: redact() does not cover IPv6
- * until P3-T3b (held), so the address would reach every provider. The
- * recorder still scans for the IPv6 canary. Remove this filter with P3-T3b.
- */
-function ticketCanaryText(): string {
-  const ipv6 = buildCanaries(egress.runId).find((canary) => canary.type === "ipv6")?.value;
-  if (ipv6 === undefined) throw new Error("no IPv6 canary");
-  const text = canaryTicketText(egress.runId);
-  expect(text).toContain(ipv6);
-  return text.replaceAll(ipv6, "an IPv6 address");
-}
-
-/** A ticket whose description holds every canary but IPv6; its name and email are forbidden. */
+/** A ticket whose description holds every canary; its name and email are forbidden. */
 export async function createCanaryTicket(options: { isTest?: boolean } = {}): Promise<string> {
   const suffix = randomUUID().slice(0, 8);
   const name = `Integration Requester ${suffix}`;
@@ -199,7 +186,7 @@ export async function createCanaryTicket(options: { isTest?: boolean } = {}): Pr
   const { ticket } = await testRepos().createTicket({
     source: "web",
     raw_title: "VPN not connecting",
-    raw_description: `${ticketCanaryText()}\nThe VPN client times out when I connect from home.`,
+    raw_description: `${canaryTicketText(egress.runId)}\nThe VPN client times out when I connect from home.`,
     requester_email: email,
     requester_name: name,
     department: "Finance",

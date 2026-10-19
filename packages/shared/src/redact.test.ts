@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { buildCanaries, canaryTicketText, findCanaries } from "./canaries.js";
 import { redact } from "./index.js";
 import { redactLegacy } from "./redact.js";
 
@@ -8,6 +9,10 @@ import { redactLegacy } from "./redact.js";
 // "keyword: value" text never appears in the repo (CI runs gitleaks over the
 // full history). All values below are obviously fake.
 const kv = (key: string, sep: string, value: string) => key + sep + value;
+
+// Timing and fuzz tests: skipped in mutation runs (the gate sets MUTATION_RUN),
+// where they only slow each mutant down; `pnpm test` always runs them.
+const timing = it.skipIf(process.env.MUTATION_RUN === "1");
 
 // Obviously fake PII: the Visa test card, example.com / x.com mail, TEST-NET
 // IPs (RFC 5737), 555 phone numbers and the documented example TFN.
@@ -238,7 +243,7 @@ describe("redact", () => {
     }
   });
 
-  it("completes quickly on long adversarial input", () => {
+  timing("completes quickly on long adversarial input", () => {
     const inputs = [
       "a".repeat(100_000),
       "1".repeat(100_000),
@@ -343,7 +348,7 @@ describe("redact: fixed-length key patterns", () => {
     expect(scan(readFileSync(fileURLToPath(import.meta.url), "utf8"))).toEqual([]);
   });
 
-  it("leaves no digit run or @domain that the legacy rules remove (generated)", () => {
+  timing("leaves no digit run or @domain that the legacy rules remove (generated)", () => {
     // Fixed-seed Lehmer generator, so the 5 000 inputs are the same every run.
     let seed = 20261004;
     const rnd = (n: number) => (seed = (seed * 48271) % 2147483647) % n;
@@ -395,7 +400,7 @@ describe("redact: fixed-length key patterns", () => {
     }
   });
 
-  it("stays linear on adversarial key-shaped input", () => {
+  timing("stays linear on adversarial key-shaped input", () => {
     const seeds = ["AKIA", "AKIA7", "AKIA-", "ghp_", "ghp_a-", awsKey, ghToken, ghToken + " "];
     for (const [size, limit] of [
       [5_000, 250],
@@ -482,7 +487,7 @@ describe("redact: a GitHub token whose prefix an email took", () => {
     expect(redact("ann@corp.example_ab12").text).toBe("[REDACTED_EMAIL]_ab12");
   });
 
-  it("stays linear on repeated email and token-body fragments", () => {
+  timing("stays linear on repeated email and token-body fragments", () => {
     for (const size of [5_000, 100_000]) {
       const start = performance.now();
       for (const unit of ["jo@x.ghp_" + "a1".repeat(18), "[REDACTED_EMAIL]_", "jo@x.ghp_a"]) {
@@ -544,7 +549,7 @@ describe("redact: glued keys", () => {
     }
   });
 
-  it("stays linear on glued key runs", () => {
+  timing("stays linear on glued key runs", () => {
     const units = [awsKey + ghToken, ghToken + awsKey, awsKey + awsKey, ghToken + ghToken];
     for (const size of [5_000, 100_000]) {
       for (const unit of [...units, ...units.map((u) => u + "Z"), "a" + ghToken]) {
@@ -615,7 +620,7 @@ describe("redact: glued runs split from their start", () => {
     }
   });
 
-  it("stays linear on seeded glued runs", () => {
+  timing("stays linear on seeded glued runs", () => {
     const units = [ghSeeded + awsSeeded, awsSeeded + ghMixed, H + P.repeat(19) + "Z", P, H + P];
     for (const size of [5_000, 100_000]) {
       const start = performance.now();
@@ -836,7 +841,7 @@ describe("redact: sk- keys and Slack tokens", () => {
     expect(readFileSync(fileURLToPath(import.meta.url), "utf8")).not.toMatch(spec);
   });
 
-  it("stays linear on long and repeated key-shaped input", () => {
+  timing("stays linear on long and repeated key-shaped input", () => {
     const units = [
       SKP,
       "xo" + "xb-",
@@ -997,7 +1002,7 @@ describe("redact: JWTs", () => {
     expect(readFileSync(fileURLToPath(import.meta.url), "utf8")).not.toMatch(spec);
   });
 
-  it("stays linear on long and repeated JWT-shaped input", () => {
+  timing("stays linear on long and repeated JWT-shaped input", () => {
     const units = [
       EYJ + ".",
       EYJ + "-",
@@ -1023,7 +1028,7 @@ describe("redact: JWTs", () => {
     }
   });
 
-  it("stays linear on an email whose domain holds many JWT-like labels", () => {
+  timing("stays linear on an email whose domain holds many JWT-like labels", () => {
     const input = "jo@" + (EYJ + "a".repeat(7) + ".").repeat(20_000) + "com x";
     const start = performance.now();
     redact(input);
@@ -1042,5 +1047,298 @@ describe("redact: JWTs", () => {
         { type: "CARD", count: 1 },
       ],
     });
+  });
+});
+
+// P3-T3b: IPv6. `:` joins hex groups into one run, judged whole.
+const V6 = "[REDACTED_IPV6]";
+const V4 = "[REDACTED_IPV4]";
+const v6Full = "2001:0db8:85a3:0000:0000:8a2e:0370:7334";
+const v6Canary = ["2001", "db8", "", "42"].join(":");
+const v6Addresses = [v6Full, v6Canary, "fe80::1", "::1"];
+const v6NearMisses = [
+  "10:15",
+  "10:15:30",
+  "2026-10-04T10:15:30Z",
+  "00:1A:2B:3C:4D:5E",
+  "std::vector",
+  "a::b",
+  "ratio 1:2",
+];
+const stable = (input: string, text: string) => {
+  expect(redact(input).text, input).toBe(text);
+  expect(redact(text).text, input).toBe(text);
+};
+
+describe("redact: IPv6", () => {
+  it("redacts full, compressed and IPv4-tail addresses with the log IPV6:1", () => {
+    const inputs = [...v6Addresses, "::ffff:192.0.2.1", "::FFFF:192.0.2.1", "2001:DB8::1"];
+    const max = "ffff:".repeat(6) + "255.255.255.255"; // 45 characters, the longest
+    for (const input of [...inputs, "FE80::1", max, "1:2:3:4:5:6:7::", "::1:2:3:4:5:6:7"]) {
+      for (const fn of [redact, redactLegacy]) {
+        expect(fn(input), input).toEqual({ text: V6, log: [{ type: "IPV6", count: 1 }] });
+      }
+    }
+    expect(redact("::1.2.3.4").text).toBe(V6);
+  });
+
+  it("leaves near-misses and colon runs without a digit unchanged", () => {
+    for (const input of [
+      ...v6NearMisses,
+      ...["::", "dead::beef", "a::b::c", "C::", "C:\\Users", "Foo::1", "ip::1"],
+      ...["10:15-11:30", "John 3:16", "12:34:56:789", "10:15:30.250", "+10:00"],
+    ]) {
+      expect(redact(input), input).toEqual({ text: input, log: [] });
+    }
+  });
+
+  it("leaves a run with no address in it unchanged", () => {
+    for (const input of [
+      "2001:db8:12345::1",
+      "1.2::3",
+      "::1.5",
+      "::ffff:192.0.2.1.5",
+      "::ffff:192.0.2.256",
+      "fe80::1g",
+      "fe80::1_x",
+    ]) {
+      expect(redact(input), input).toEqual({ text: input, log: [] });
+    }
+    stable("192.0.2.1::", V4 + "::");
+    // A port after an IPv4 tail ends the run's address; IPv4 takes the quad.
+    stable("::ffff:192.0.2.1:80", "::ffff:" + V4 + ":80");
+  });
+
+  // Review (P3-T3b, rounds 1 and 2): a hex key in front of a full address
+  // made one run too long for an address, and the whole run was left; then a
+  // port behind one kept the first group. A key or port glued by one `:`
+  // cannot be told from a group, so a run with an address goes as one.
+  it("replaces a run that holds an address as one, a key or port in it included", () => {
+    const full = v6Full;
+    const rows: Array<[string, string]> = [
+      ["db:" + full, V6],
+      ["add:" + full, V6],
+      ["a:" + full, V6],
+      ["dc 1:" + full, "dc " + V6],
+      ["1234:" + full, V6],
+      [full + ":443", V6],
+      ["2001:db8:85a3:0:0:8a2e:370:7334:443", V6],
+      [`see ${full}:8080 now`, `see ${V6} now`],
+      ["a:2001:db8:1:2:3:4:5:6", V6],
+      ["1:2:3:4:5:6:7:8:9", V6],
+      ["1:2:3:4::5:6:7:8", V6],
+      ["1:2:3:4:5:6:7:192.0.2.1", V6],
+      ["eth0:1:2:3:4:5:6:7:8:9", "eth0:" + V6],
+      ["1:2:3:4:5:6:7:8:9:10", V6],
+      ["fe80::1::", V6],
+      ["1::2::3", V6],
+      [`${v6Canary}:${v6Canary}`, V6],
+    ];
+    for (const [input, text] of rows) {
+      expect(redact(input), input).toEqual({ text, log: [{ type: "IPV6", count: 1 }] });
+      expect(redact(text).text, input).toBe(text);
+    }
+  });
+
+  it("redacts an address next to punctuation, brackets, a port or a zone ID", () => {
+    const rows: Array<[string, string]> = [
+      ["(::1)", `(${V6})`],
+      ["::1,", `${V6},`],
+      ["::1.", `${V6}.`],
+      ["fe80::1...", `${V6}...`],
+      ["fe80::1.Then", `${V6}.Then`],
+      ["fe80::1: timeout", `${V6}: timeout`],
+      ["1:2:3:4:5:6:7:8:", `${V6}:`],
+      ["fe80::", V6],
+      ["[2001:db8::1]:443", `[${V6}]:443`],
+      ["http://[::1]/", `http://[${V6}]/`],
+      ["http://[2001:db8::1]:8080/x", `http://[${V6}]:8080/x`],
+      ["fe80::1%eth0", `${V6}%eth0`],
+      ["-2001:db8::1", `-${V6}`],
+      ["fe80::1-x", `${V6}-x`],
+      ['"2001:db8::1"', `"${V6}"`],
+      ["ab:cd:2001:db8::1", V6],
+      ["abc:2001:db8::1", V6],
+    ];
+    for (const [input, text] of rows) stable(input, text);
+  });
+
+  // Review (P3-T3b, round 1): an address right after a dot was left.
+  it("redacts an address after a dot, as the IPv4 rule does", () => {
+    const rows: Array<[string, string]> = [
+      ["router.2001:db8::1", `router.${V6}`],
+      ["done.fe80::1 still down", `done.${V6} still down`],
+      ["IP is...fe80::1", `IP is...${V6}`],
+      ["x.2001:db8::1", `x.${V6}`],
+    ];
+    for (const [input, text] of rows) stable(input, text);
+  });
+
+  it("redacts an address after a key's colon, a `::` after it included", () => {
+    for (const key of ["ip:", "src:", "remote:", "eth0:", "IPv6:", "node=", " :", ":"]) {
+      stable(key + "2001:db8::1", key + V6);
+    }
+    // Review (P3-T3b, round 1): a key in front of a `::` address.
+    stable("ip:::ffff:c0a8:101", "ip:" + V6);
+    stable("src:::1", "src:" + V6);
+    stable("[REDACTED_EMAIL]:fe80::1", "[REDACTED_EMAIL]:" + V6);
+  });
+
+  // Review (P3-T3b, rounds 1 and 2): `x2001:[REDACTED_IPV6]` kept a possible
+  // first group, then `vlan100:fe80::1` was left whole. When 3 or more hex
+  // characters of the word, a digit among them, may start the address, the
+  // run goes from inside the word; a shorter end of a key stays in front.
+  it("never leaves an address, or a part of one, in a key that ends in digits", () => {
+    const rows: Array<[string, string]> = [
+      ["if0:fe80::1", "if0:" + V6],
+      ["eth10:fe80::1", "eth10:" + V6],
+      ["vlan100:fe80::1", "vlan" + V6],
+      ["port8080:fe80::1", "port" + V6],
+      ["x12345:fe80::1", "x" + V6],
+      ["x2001:db8::1", "x" + V6],
+      ["ip_2001:db8::1", "ip_" + V6],
+      ["xyz2001:db8::1", "xyz" + V6],
+      ["abc2001:db8::1", V6],
+      ["12345::1", V6],
+      ["x123:db8::1", "x" + V6],
+      ["xfe80:1::2", "x" + V6],
+      ["web01:fe80::1", "w" + V6],
+      ["x" + v6Full, "x" + V6],
+      // The digits cannot start the address here: 8 groups follow the key.
+      ["x2001:db8:1:2:3:4:5:6:7", "x2001:" + V6],
+    ];
+    for (const [input, text] of rows) {
+      expect(redact(input), input).toEqual({ text, log: [{ type: "IPV6", count: 1 }] });
+      expect(redact(text).text, input).toBe(text);
+    }
+  });
+
+  it("redacts an IPv6 address next to an IPv4 address", () => {
+    const rows: Array<[string, string]> = [
+      ["2001:db8::1 192.0.2.1", `${V6} ${V4}`],
+      ["192.0.2.1,2001:db8::1", `${V4},${V6}`],
+      ["192.0.2.1:2001:db8::1", `${V4}:${V6}`],
+      ["2001:db8::1/192.0.2.1", `${V6}/${V4}`],
+      ["1.2.3.4::1", V4 + V6],
+    ];
+    for (const [input, text] of rows) {
+      expect(redact(input), input).toEqual({
+        text,
+        log: [
+          { type: "IPV6", count: 1 },
+          { type: "IPV4", count: 1 },
+        ],
+      });
+      expect(redact(text).text, input).toBe(text);
+    }
+    expect(redact("2001:db8::1:192.0.2.1").text).toBe(V6);
+  });
+
+  timing("stays linear on long colon, hex and dot runs", () => {
+    const units = ["ab:", "1::", "1:", "x1:", "1.:", ":1.", "[::1]", "fe80::1%", "g:1:", "x2001:"];
+    for (const input of [...units.map((u) => u.repeat(30_000)), "f".repeat(100_000) + ":1"]) {
+      const start = performance.now();
+      redact(input);
+      expect(performance.now() - start, input.slice(0, 8)).toBeLessThan(2_000);
+    }
+  });
+});
+
+describe("redact: the six new rules (T3.U.06)", () => {
+  const one = (type: string) => [{ type, count: 1 }];
+  type Row = [string, string | null, Array<{ type: string; count: number }>];
+  // [input, output (null: unchanged), log]
+  const rows: Row[] = [
+    ["key " + awsKey, "key [REDACTED_AWS_KEY]", one("AWS_KEY")],
+    ["AK" + "IA" + "X7Q2X7Q2", null, []],
+    ["Z" + awsKey, null, []],
+    [awsKey.toLowerCase(), null, []],
+    ["key " + skKey, "key " + AK, one("API_KEY")],
+    [SKP + "1234", null, []],
+    ["risk-assessment-document-final", null, []],
+    ["task-force-alpha-bravo-charlie", null, []],
+    [`(${ghToken})`, "([REDACTED_GITHUB_TOKEN])", one("GITHUB_TOKEN")],
+    ["gh" + "p_" + "a".repeat(10), null, []],
+    ["x" + ghToken, null, []],
+    ...["a", "b", "p"].map((c): Row => [`(${slackKey(c)})`, `(${SL})`, one("SLACK_TOKEN")]),
+    [slackKey("z"), null, []],
+    ["xo" + "xb-short", null, []],
+    ["token " + jwt, "token " + JT, one("JWT")],
+    ["Authorization: Bearer " + jwt, "Authorization: Bearer " + JT, one("JWT")],
+    [jwt.split(".").slice(0, 2).join("."), null, []],
+    [EYJ, null, []],
+    ...v6Addresses.map((a): Row => [`addr ${a}.`, `addr ${V6}.`, one("IPV6")]),
+    ["::ffff:192.0.2.1", V6, one("IPV6")],
+    ["10:15:30", null, []],
+    ["00:1A:2B:3C:4D:5E", null, []],
+  ];
+
+  it("gives the exact text and log for a match and two near-misses of each rule", () => {
+    for (const [input, text, log] of rows) {
+      expect(redact(input), input).toEqual({ text: text ?? input, log });
+    }
+  });
+
+  it("is idempotent over every fixture and 200 seeded strings of their pieces", () => {
+    const pieces = [
+      ...fixtures,
+      ...keys,
+      ...keyNearMisses,
+      ...openKeys,
+      jwt,
+      ...rows.map(([input]) => input),
+      ...v6NearMisses,
+      "1:2:3:4:5:6:7:8:9",
+      "fe80::1%eth0",
+      "[2001:db8::1]:443",
+    ];
+    const joins = ["", " ", ":", "::", ".", "-", "%", "[", "]", "/", "@", "=", "\n"];
+    // Fixed-seed Lehmer generator, so the 200 inputs are the same every run.
+    let seed = 20261010;
+    const rnd = (n: number) => (seed = (seed * 48271) % 2147483647) % n;
+    const inputs = [...pieces];
+    for (let i = 0; i < 200; i++) {
+      let input = "";
+      for (let k = 2 + rnd(4); k > 0; k--) {
+        input += pieces[rnd(pieces.length)]! + joins[rnd(joins.length)]!;
+      }
+      inputs.push(input);
+    }
+    expect(new Set(inputs).size).toBeGreaterThan(pieces.length + 190);
+    for (const input of inputs) {
+      const once = redact(input).text;
+      expect(redact(once).text, input).toBe(once);
+    }
+  });
+
+  it("removes every plan canary of run t3u06, alone and in the canary ticket", () => {
+    const canaries = buildCanaries("t3u06");
+    expect(canaries).toHaveLength(10);
+    for (const { type, value } of canaries) {
+      // Accepted (orchestrator, P3-T3b review): a bare password has no keyword
+      // to find, so the password canary is tested as `Password: <value>`.
+      const input = type === "password" ? kv("Password", ": ", value) : value;
+      expect(redact(input).text, type).not.toContain(value);
+      expect(findCanaries(redact(input).text, "t3u06"), type).toEqual([]);
+    }
+    expect(findCanaries(redact(canaryTicketText("t3u06")).text, "t3u06")).toEqual([]);
+  });
+
+  it("finishes each 5 000-character hostile input in under 500 ms", () => {
+    for (const unit of [":", "a:", "1:", SKP, EYJ + "."]) {
+      const input = unit.repeat(5_000).slice(0, 5_000);
+      const start = performance.now();
+      redact(input);
+      expect(performance.now() - start, unit).toBeLessThan(500);
+    }
+  });
+
+  it("still throws a TypeError naming the input type, and maps '' to an empty result", () => {
+    expect(() => redact(null as unknown as string)).toThrow(
+      /^redact\(\) expects a string, got null$/,
+    );
+    expect(() => redact(42 as unknown as string)).toThrow(/got number$/);
+    expect(() => redact(undefined as unknown as string)).toThrow(TypeError);
+    expect(redact("")).toEqual({ text: "", log: [] });
   });
 });

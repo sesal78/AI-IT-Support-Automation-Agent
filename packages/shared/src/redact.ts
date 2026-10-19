@@ -7,8 +7,10 @@
 // always terminates: every match contains a digit, a lower-case letter, `@`,
 // `:`, `=` or the upper-case prefix `AKIA`, and placeholders contain none of
 // them (their brackets also stop an `AKIA` forming across an edge), so each
-// changing pass strictly shrinks the count of those (an `sk-` key or Slack
-// token holds lower-case letters in its prefix, a JWT in its `eyJ`). The one
+// changing pass strictly shrinks the count of those outside placeholders (an
+// `sk-` key or Slack token holds lower-case letters in its prefix, a JWT in its
+// `eyJ`, an IPv6 address a digit and a `:`; the digit in `IPV4` or `IPV6`
+// follows a letter, so no match starts there). The one
 // exception, a GitHub token body after an email placeholder, removes one
 // `EMAIL]_` pair and creates none (its placeholder starts with `[`); only an
 // EMAIL match, which shrinks the count above, can create such a pair. A JWT's
@@ -22,6 +24,18 @@
 // joined number, but it may sit right next to other digits across a space
 // (e.g. a card followed by its CVV). A candidate rejected by its checksum does
 // not consume text: scanning resumes one character later.
+// IPv6: hex digits, `:` and the dots of an IPv4 tail (a `.` between digits)
+// form a run. A run with a valid address tail at a group boundary (the start
+// or after a `:`) is replaced as one, in one pass: a key or port glued to
+// the address by one `:` cannot be told from a group (`db:2001:…:7334`,
+// `2001:…:7334:443`), so it goes too and no part of the address stays. A
+// run that starts right after a word character starts inside that word: it
+// is replaced from after the word's `:` (`eth0:`, `remote:`), or from inside
+// the word when 3 or more of its hex characters, a digit among them, may
+// start the address (`vlan100:fe80::1`, `x2001:db8::1`). A run that ends
+// right before a word character stays; a single trailing `:` is punctuation;
+// a zone ID (`%eth0`) stays. A run is read at most three times and only its
+// last 45 characters are tried, so this stays linear.
 // Every pattern is anchored with lookbehinds so a match can only start at the
 // beginning of a run, and all repetition is bounded or unambiguous, which
 // keeps matching linear on adversarial input.
@@ -75,6 +89,7 @@ const TYPES = [
   "JWT",
   "CARD",
   "SSN",
+  "IPV6",
   "IPV4",
   "PHONE",
   "AU_TFN",
@@ -248,6 +263,66 @@ function splitKeys(run: string, next: string): Array<[RedactionType, number]> {
 }
 
 const OCTET = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
+const IPV4_TAIL = new RegExp(`^(?:${OCTET}\\.){3}${OCTET}$`);
+
+/**
+ * An IPv6 address: 8 groups of 1–4 hex digits, or at most 7 with one `::`.
+ * The last group may be an IPv4 tail, which stands for two.
+ */
+function ipv6Valid(s: string): boolean {
+  const halves = s.split("::");
+  const groups = halves.flatMap((half) => (half === "" ? [] : half.split(":")));
+  if (!s.endsWith(":") && IPV4_TAIL.test(groups[groups.length - 1]!)) {
+    groups.splice(-1, 1, "0", "0");
+  }
+  return (
+    groups.every((group) => /^[\dA-Fa-f]{1,4}$/.test(group)) &&
+    (halves.length === 1 ? groups.length === 8 : halves.length === 2 && groups.length < 8)
+  );
+}
+
+/** Whether text[i] is in a run: a hex digit, `:`, or a `.` between digits. */
+function inRun(text: string, i: number): boolean {
+  const c = text.charAt(i);
+  return (
+    /[\dA-Fa-f:]/.test(c) || (c === "." && /^\d\d$/.test(text.charAt(i - 1) + text.charAt(i + 1)))
+  );
+}
+
+/**
+ * Reads the IPv6 address of the run around `at`: its end when it starts at
+ * `at`, else minus where to resume (its start, or the run's end).
+ */
+function ipv6End(text: string, at: number): number {
+  let start = at;
+  while (inRun(text, start - 1)) start--;
+  let end = start;
+  let colon = -1;
+  for (; inRun(text, end); end++) if (colon < 0 && text[end] === ":") colon = end;
+  if (colon < 0 || (/\w/.test(text.charAt(end)) && text[end - 1] !== ":")) return -end;
+  const stop = text[end - 1] === ":" && text[end - 2] !== ":" ? end - 1 : end;
+  const take = (from: number): number => (from === at ? stop : from > at ? -from : -end);
+  // The first group is in a word: glued to a letter, or longer than 4.
+  let word = colon;
+  while (/\w/.test(text.charAt(word - 1))) word--;
+  const inWord = word !== start || colon - start > 4;
+  // 3 or more of its hex characters, a digit among them, may start the
+  // address (`vlan100:`, `x2001:`): the run goes from inside the word.
+  const hex = text.slice(start, colon);
+  if (inWord && /^[\dA-Fa-f]{3,}$/.test(hex) && /\d/.test(hex)) {
+    if (ipv6Valid("0" + text.slice(colon, stop))) return take(start);
+  }
+  // Else the address starts after a word's `:` (`eth0:`) or a leading `:`.
+  const first = inWord || (colon === start && text[start + 1] !== ":") ? colon + 1 : start;
+  for (let i = Math.max(first, stop - 45); i < stop; i++) {
+    if (i !== first && text[i - 1] !== ":") continue;
+    const address = text.slice(i, stop);
+    // The run from `first` goes as one: a key or port in it cannot be told
+    // from a group, so no part of the address stays.
+    if (/\d/.test(address) && ipv6Valid(address)) return take(first);
+  }
+  return -end;
+}
 
 const RULES: Rule[] = [
   {
@@ -282,6 +357,12 @@ const RULES: Rule[] = [
   {
     type: "SSN",
     pattern: /(?<!\w|\d-)\d{3}-\d{2}-\d{4}(?!\w|-\d)/g,
+  },
+  {
+    // The first character of a run; ipv6End reads the run.
+    type: "IPV6",
+    pattern: /[\dA-Fa-f:]/g,
+    read: ipv6End,
   },
   {
     type: "IPV4",
@@ -433,7 +514,8 @@ export function redact(text: string): RedactionResult {
 }
 
 /**
- * The rule set as it was before the key rules. Not exported from the package
+ * The rule set without the key rules (IPv6 is not a key rule: it must run
+ * before IPv4 in the first stage). Not exported from the package
  * index: it exists so a test can compare redact() against it.
  */
 export function redactLegacy(text: string): RedactionResult {

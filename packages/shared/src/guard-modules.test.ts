@@ -14,6 +14,11 @@ describe("parseGuardModules", () => {
     expect(parseGuardModules([redact, withTests])).toEqual([redact, withTests]);
   });
 
+  it("keeps related: false, which scopes the mutation run to the module's own tests", () => {
+    const scoped = { ...redact, mutation: 80, related: false };
+    expect(parseGuardModules([scoped, request])).toEqual([scoped, request]);
+  });
+
   it("accepts an empty list", () => {
     expect(parseGuardModules([])).toEqual([]);
   });
@@ -32,6 +37,7 @@ describe("parseGuardModules", () => {
     ["a test with a back-slash", { ...redact, tests: ["a\\b.test.ts"] }, "tests: 0"],
     ["a test glob", { ...redact, tests: ["a/*.test.ts"] }, "tests: 0"],
     ["a repeated test", { ...redact, tests: ["a/b.test.ts", "a/b.test.ts"] }, "duplicate test"],
+    ["related: true (the default is left out)", { ...redact, related: true }, "related"],
     ["a missing mutation floor", { path: redact.path, statements: 90 }, "mutation"],
     ["an unknown key", { ...redact, lines: 90 }, '"lines"'],
     ["a duplicate path", { ...redact, statements: 95 }, "duplicate path"],

@@ -28,6 +28,11 @@ const guardModuleSchema = z.strictObject({
     .min(1)
     .refine((tests) => new Set(tests).size === tests.length, "duplicate test")
     .optional(),
+  /**
+   * false: each mutant runs only the module's own test file and its `tests`,
+   * not every test that imports it (keeps a large module inside CI's time limit).
+   */
+  related: z.literal(false).optional(),
 });
 
 const guardModulesSchema = z.array(guardModuleSchema).superRefine((list, ctx) => {
