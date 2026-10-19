@@ -297,3 +297,15 @@ describe("groundingEnvShape", () => {
     expect(() => parseEnv(groundingEnvShape, { GROUNDING_MIN: value })).toThrow(/GROUNDING_MIN/);
   });
 });
+
+describe("triggerProjectEnvShape project-ref rule", () => {
+  // Pinned with the copy in services/pipeline/src/project-ref.ts (see project-ref-parity.test.ts).
+  it.each(["proj_ABC", "xproj_abc", "proj_abc-1", "proj_", " proj_abc", "proj_abc\n", "   "])(
+    "rejects %j, naming the variable",
+    (value) => {
+      expect(() => parseEnv(triggerProjectEnvShape, { TRIGGER_PROJECT_REF: value })).toThrow(
+        /TRIGGER_PROJECT_REF/,
+      );
+    },
+  );
+});
