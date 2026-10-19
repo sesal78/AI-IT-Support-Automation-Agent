@@ -264,7 +264,7 @@ function createDefaultRoute(
 
   /** The form path dedupes like the app's day key; the description stands in for it. */
   function createFormTicket(body: Record<string, unknown>): MockReply {
-    const key = `web:${String(body["description"])}`;
+    const key = `web:b:${String(body["description"])}`;
     const existing = formKeys.get(key);
     if (existing !== undefined) {
       return { status: 201, json: { ticketId: existing, queued: true, duplicate: true } };

@@ -130,7 +130,7 @@ describe("POST /api/tickets", () => {
       requester_email: valid.email,
       requester_name: valid.name,
       department: valid.department,
-      idempotency_key: expect.stringMatching(/^web:[0-9a-f]{64}$/),
+      idempotency_key: expect.stringMatching(/^web:b:[0-9a-f]{64}$/),
       is_test: false,
     });
     expect(addEvent).toHaveBeenCalledTimes(1);
@@ -263,7 +263,7 @@ describe("POST /api/tickets", () => {
     expect((await second.json()).ticketId).toBe(id);
     expect(createTicket).toHaveBeenCalledTimes(2);
     for (const call of createTicket.mock.calls) {
-      expect(call[0].idempotency_key).toBe("web:key-1");
+      expect(call[0].idempotency_key).toBe("web:k:key-1");
     }
     expect(trigger).toHaveBeenCalledTimes(1);
     expect(addEvent).toHaveBeenCalledTimes(1);
@@ -275,8 +275,61 @@ describe("POST /api/tickets", () => {
     expect(res.status).toBe(201);
     expect(createTicket).toHaveBeenCalledTimes(1);
     expect(createTicket).toHaveBeenCalledWith(
-      expect.objectContaining({ source: "web", idempotency_key: "web:email:abc" }),
+      expect.objectContaining({ source: "web", idempotency_key: "web:k:email:abc" }),
     );
+  });
+
+  describe("P3-T4b: disjoint web key forms, against a keyed store", () => {
+    // A store that dedupes on idempotency_key the way the tickets table does.
+    beforeEach(() => {
+      const byKey = new Map<string, ReturnType<typeof ticketRow>>();
+      createTicket.mockImplementation(async (input: { idempotency_key: string }) => {
+        const existing = byKey.get(input.idempotency_key);
+        if (existing) return { ticket: existing, created: false };
+        const ticket = ticketRow(randomUUID(), input.idempotency_key);
+        byKey.set(input.idempotency_key, ticket);
+        return { ticket, created: true };
+      });
+    });
+
+    it("a header equal to another body's hash cannot claim that body's ticket", async () => {
+      const POST = await loadPost();
+      const first = await POST(request(valid));
+      expect(first.status).toBe(201);
+      const firstId = (await first.json()).ticketId;
+      const storedKey: string = createTicket.mock.calls[0][0].idempotency_key;
+      expect(storedKey).toMatch(/^web:b:[0-9a-f]{64}$/);
+      const bodyHash = storedKey.slice("web:b:".length);
+
+      const other = { ...valid, title: "A different problem" };
+      for (const header of [bodyHash, `b:${bodyHash}`]) {
+        const res = await POST(request(other, { headers: { "Idempotency-Key": header } }));
+        expect(res.status).toBe(201);
+        const json = await res.json();
+        expect(json.duplicate).toBeUndefined();
+        expect(json.ticketId).not.toBe(firstId);
+      }
+      expect(createTicket.mock.calls.map((call) => call[0].idempotency_key)).toEqual([
+        storedKey,
+        `web:k:${bodyHash}`,
+        `web:k:b:${bodyHash}`,
+      ]);
+      expect(trigger).toHaveBeenCalledTimes(3);
+    });
+
+    it("the same body and header twice return the same ticketId and trigger once", async () => {
+      const POST = await loadPost();
+      const headers = { "Idempotency-Key": "retry-7" };
+      const first = await (await POST(request(valid, { headers }))).json();
+      const second = await (await POST(request(valid, { headers }))).json();
+      expect(second.ticketId).toBe(first.ticketId);
+      expect(second.duplicate).toBe(true);
+      expect(createTicket.mock.calls.map((call) => call[0].idempotency_key)).toEqual([
+        "web:k:retry-7",
+        "web:k:retry-7",
+      ]);
+      expect(trigger).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("returns 201 queued:false and records enqueue_failed when the trigger call fails", async () => {
