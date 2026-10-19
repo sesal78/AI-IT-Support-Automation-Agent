@@ -39,3 +39,18 @@ describe("resolveProjectRef", () => {
     expect(source).not.toMatch(/^\s*import\s|\brequire\(/m);
   });
 });
+
+describe("resolveProjectRef edge cases", () => {
+  it.each(["proj_ABC", "xproj_abc", "proj_abc-1", "proj_", " proj_abc", "proj_abc\n"])(
+    "rejects TRIGGER_PROJECT_REF=%j, naming the variable",
+    (value) => {
+      expect(() => resolveProjectRef({ TRIGGER_PROJECT_REF: value })).toThrow(
+        /TRIGGER_PROJECT_REF/,
+      );
+    },
+  );
+
+  it("rejects a whitespace-only TRIGGER_PROJECT_REF instead of treating it as unset", () => {
+    expect(() => resolveProjectRef({ TRIGGER_PROJECT_REF: "   " })).toThrow(/TRIGGER_PROJECT_REF/);
+  });
+});
