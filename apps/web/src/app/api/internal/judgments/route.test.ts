@@ -93,7 +93,7 @@ describe("POST /api/internal/judgments with E2E_MODE=true", () => {
 
   it.each([
     ["an email", { a: [{ b: ["jo.private@example.com"] }] }],
-    ["a phone number", { a: { b: "call +61 412 345 678" } }],
+    ["a phone number", { a: { b: "call +61 491 570 156" } }],
     ["an email split across fields", { a: "jane@", b: "example.com" }],
   ])("answers 422 unredacted_input for a state with %s and triggers nothing", async (_n, state) => {
     const res = await post.POST(postReq({ ...valid, state }));

@@ -11,7 +11,7 @@ const EXPECTED: Array<[CanaryType, string]> = [
   ["ssn", ["078", "05", "1120"].join("-")],
   ["card", ["4111", "1111", "1111", "1111"].join(" ")],
   ["email", [`canary+${RUN}`, "example.com"].join("@")],
-  ["phone", ["+61", "412", "345", "678"].join(" ")],
+  ["phone", ["+61", "491", "570", "156"].join(" ")],
   ["ipv4", [203, 0, 113, 42].join(".")],
   ["ipv6", ["2001", "db8", "", "42"].join(":")],
   ["api_key", ["sk", "test", `CANARY${RUN}`].join("-")],

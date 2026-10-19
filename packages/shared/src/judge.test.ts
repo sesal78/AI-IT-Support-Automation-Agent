@@ -102,7 +102,7 @@ describe("hasUnredactedText", () => {
 
   it.each([
     ["a deep email", { a: [{ b: [["jo@example.com"]] }] }],
-    ["a phone number", { a: "call 0412 345 678" }],
+    ["a phone number", { a: "call 0491 570 156" }],
     ["a card typed as a number", { a: [4111111111111111] }],
     ["an email key", { "jo@example.com": 1 }],
     ["an email split across fields", { a: "jane@", b: "example.com" }],

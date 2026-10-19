@@ -21,7 +21,7 @@ window.turnstile = {
   remove: function () {},
 };`;
 
-const PHONE = "0412 345 678";
+const PHONE = "0491 570 156";
 const FORM = {
   Name: "Pat Pipeline",
   Email: "pat.pipeline@example.com",

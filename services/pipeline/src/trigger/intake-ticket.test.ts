@@ -159,7 +159,7 @@ describe("intake-ticket task", () => {
   });
 
   it("redacts, saves the redaction, checks and saves a non-sensitive triage", async () => {
-    const h = harness(ticket("Laptop", "call 0412 345 678 about my laptop"), lowScores);
+    const h = harness(ticket("Laptop", "call 0491 570 156 about my laptop"), lowScores);
 
     const result = await runIntakeTicket({ ticketId }, h.deps);
 
@@ -233,7 +233,7 @@ describe("intake-ticket task", () => {
 
   it("sends only redacted text to the checker", async () => {
     const rawEmail = "jo.bloggs@example.test";
-    const rawPhone = "+61 412 345 678";
+    const rawPhone = "+61 491 570 156";
     const rawSsn = "123-45-6789";
     const h = harness(
       ticket(`Locked out ${rawEmail}`, `mail ${rawEmail}, call ${rawPhone}, ssn ${rawSsn}`),
@@ -244,7 +244,7 @@ describe("intake-ticket task", () => {
 
     expect(h.check).toHaveBeenCalledTimes(1);
     const sent = JSON.stringify(h.check.mock.calls);
-    for (const raw of [rawEmail, rawPhone, rawSsn, "412 345 678"]) {
+    for (const raw of [rawEmail, rawPhone, rawSsn, "491 570 156"]) {
       expect(sent).not.toContain(raw);
     }
     expect(h.check).toHaveBeenCalledWith({
@@ -278,7 +278,7 @@ describe("intake-ticket task", () => {
   });
 
   it("does not put ticket text in event payloads", async () => {
-    const h = harness(ticket("Printer", "call 0412 345 678 about the printer"), lowScores);
+    const h = harness(ticket("Printer", "call 0491 570 156 about the printer"), lowScores);
 
     await runIntakeTicket({ ticketId }, h.deps, 2);
 
@@ -290,7 +290,7 @@ describe("intake-ticket task", () => {
   });
 
   it("throws when the checker throws, after the redaction but before any triage row", async () => {
-    const h = harness(ticket("Laptop", "call 0412 345 678"), async () => {
+    const h = harness(ticket("Laptop", "call 0491 570 156"), async () => {
       throw new Error("typesafe unavailable");
     });
 
