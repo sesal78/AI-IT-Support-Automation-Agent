@@ -1,0 +1,146 @@
+[
+  {
+    "state": {
+      "ticket": {
+        "title": "Outlook stuck on loading profile",
+        "description": "Since this morning Outlook shows the loading profile screen and never opens. Webmail in the browser works fine."
+      },
+      "fixSteps": [
+        "Close Outlook completely and check in Task Manager that no Outlook process is left running.",
+        "Hold the Ctrl key while you start Outlook and choose to open it in safe mode.",
+        "If it opens, go to File, Options, Add-ins and turn off the add-ins one by one to find the one that causes it.",
+        "If it still hangs, open Control Panel, Mail, Show Profiles and add a new profile, then start Outlook with that profile.",
+        "If the new profile also fails, stop and ask IT to check the mailbox and the Office install."
+      ]
+    },
+    "good": true
+  },
+  {
+    "state": {
+      "ticket": {
+        "title": "VPN will not connect after password change",
+        "description": "I changed my password yesterday. Now the VPN client says authentication failed. Other company sites work."
+      },
+      "fixSteps": [
+        "Open the VPN client and sign out so no old saved login is kept.",
+        "Remove the saved credentials for the VPN in the client settings.",
+        "Connect again and type your new password by hand instead of using autofill.",
+        "If it still says authentication failed, note the exact message and the time and send them to IT."
+      ]
+    },
+    "good": true
+  },
+  {
+    "state": {
+      "ticket": {
+        "title": "Printer shows offline",
+        "description": "The shared printer on our floor shows offline on my laptop since Monday. Colleagues can print."
+      },
+      "fixSteps": [
+        "Check that the laptop is on the office network and not on a guest network.",
+        "Open Settings, Printers and scanners, select the printer and remove it.",
+        "Choose Add device and add the printer again from the list that appears.",
+        "Print a test page and set it as your default printer.",
+        "If it is still offline, ask IT to check the printer queue for your account."
+      ]
+    },
+    "good": true
+  },
+  {
+    "state": {
+      "ticket": {
+        "title": "Wi-Fi drops in the meeting room",
+        "description": "Every time I join a call in the east meeting room my Wi-Fi drops after a few minutes. It is fine at my desk."
+      },
+      "fixSteps": [
+        "Forget the office Wi-Fi network on the laptop and connect again with your normal login.",
+        "Check for pending Windows updates and install them, as they include network driver fixes.",
+        "Sit nearer the access point on the ceiling and see if the drops stop.",
+        "If it keeps happening, tell IT the room name and the times it dropped."
+      ]
+    },
+    "good": true
+  },
+  {
+    "state": {
+      "ticket": {
+        "title": "Laptop very slow after the update",
+        "description": "After the update last week my laptop takes ten minutes to start and apps freeze."
+      },
+      "fixSteps": [
+        "Restart the laptop fully; do not use sleep.",
+        "Open Task Manager and sort by CPU and by Disk to see what uses the most.",
+        "Close or uninstall from Settings any app you do not need that starts with Windows.",
+        "Make sure at least a tenth of the disk is free and empty the Recycle Bin.",
+        "If it is still slow, ask IT to check the update and the disk health."
+      ]
+    },
+    "good": true
+  },
+  {
+    "state": {
+      "ticket": {
+        "title": "Outlook stuck on loading profile",
+        "description": "Since this morning Outlook shows the loading profile screen and never opens. Webmail in the browser works fine."
+      },
+      "fixSteps": [
+        "Back up your files, then format the drive.",
+        "Install Windows again from scratch.",
+        "Install Outlook again and restore your files."
+      ]
+    },
+    "good": false
+  },
+  {
+    "state": {
+      "ticket": {
+        "title": "Forgot my password",
+        "description": "I forgot my password and cannot sign in to my laptop this morning."
+      },
+      "fixSteps": [
+        "Ask a colleague for their password and sign in with it.",
+        "Reply to the ticket with your old password so IT can reset it faster.",
+        "Write the new password on a note on your monitor so you do not forget it again."
+      ]
+    },
+    "good": false
+  },
+  {
+    "state": {
+      "ticket": {
+        "title": "Printer shows offline",
+        "description": "The shared printer on our floor shows offline on my laptop since Monday. Colleagues can print."
+      },
+      "fixSteps": [
+        "Update the laptop BIOS to the newest version.",
+        "Replace the monitor cable and check the screen resolution.",
+        "Clear the browser cache."
+      ]
+    },
+    "good": false
+  },
+  {
+    "state": {
+      "ticket": {
+        "title": "VPN will not connect after password change",
+        "description": "I changed my password yesterday. Now the VPN client says authentication failed. Other company sites work."
+      },
+      "fixSteps": ["Restart the computer.", "Try again later."]
+    },
+    "good": false
+  },
+  {
+    "state": {
+      "ticket": {
+        "title": "No sound in Teams calls",
+        "description": "Others can hear me, but I cannot hear anyone in Teams calls. Music in the browser plays fine."
+      },
+      "fixSteps": [
+        "Open the registry editor and delete the audio keys under the sound device entry.",
+        "Reinstall the audio driver with an admin tool.",
+        "Then look at the speaker setting inside Teams."
+      ]
+    },
+    "good": false
+  }
+]

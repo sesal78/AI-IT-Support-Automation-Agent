@@ -3,10 +3,13 @@ import {
   internalSecurityEventsSchema,
   internalTicketViewSchema,
   internalUsageSchema,
+  judgeTextOutputSchema,
   type HealthConfig,
   type InternalSecurityEvents,
   type InternalTicketView,
   type InternalUsage,
+  type JudgeTextOutput,
+  type JudgeTextPayload,
 } from "@ai-it-support/shared";
 import { z } from "zod";
 import type { LiveConfig } from "./config.ts";
@@ -68,7 +71,16 @@ export interface InternalClient {
   createTestTicket(body: Record<string, unknown>): Promise<TestTicketCreated>;
   /** The public form path, `POST /api/tickets`; sent with no bearer token. */
   submitForm(body: Record<string, unknown>): Promise<TestTicketCreated>;
+  /** `POST /api/internal/judgments`: starts one test judgment. */
+  startJudgment(payload: JudgeTextPayload): Promise<{ runId: string }>;
+  /** `GET /api/internal/judgments/:runId`: the state of one judgment. */
+  judgment(runId: string): Promise<JudgmentState>;
 }
+
+export type JudgmentState =
+  | { readonly status: "pending" }
+  | { readonly status: "failed" }
+  | { readonly status: "completed"; readonly output: JudgeTextOutput };
 
 // No shared schemas exist for these bodies yet; they mirror apps/web. The form
 // path and the test path answer with the same body.
@@ -79,6 +91,12 @@ const testTicketCreatedSchema = z.strictObject({
   duplicate: z.literal(true).optional(),
 });
 export type TestTicketCreated = z.infer<typeof testTicketCreatedSchema>;
+const judgmentStartedSchema = z.strictObject({ runId: z.string().regex(/^run_[a-z0-9]{1,64}$/) });
+const judgmentStateSchema = z.discriminatedUnion("status", [
+  z.strictObject({ status: z.literal("pending") }),
+  z.strictObject({ status: z.literal("failed") }),
+  z.strictObject({ status: z.literal("completed"), output: judgeTextOutputSchema }),
+]);
 
 type FetchLike = (input: URL, init: RequestInit) => Promise<Response>;
 
@@ -204,5 +222,17 @@ export function createInternalClient(
         body,
         token: null,
       }),
+    startJudgment: (payload) =>
+      typed("POST /api/internal/judgments", "/api/internal/judgments", judgmentStartedSchema, 202, {
+        method: "POST",
+        body: payload,
+      }),
+    judgment: (runId) =>
+      typed(
+        "GET /api/internal/judgments/:runId",
+        `/api/internal/judgments/${encodeURIComponent(runId)}`,
+        judgmentStateSchema,
+        200,
+      ),
   };
 }

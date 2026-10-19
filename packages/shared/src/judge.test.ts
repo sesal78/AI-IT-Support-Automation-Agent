@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { JUDGE_STATE_MAX_CHARS, hasUnredactedText, judgeTextPayloadSchema } from "./judge.js";
+import {
+  JUDGE_STATE_MAX_CHARS,
+  hasUnredactedText,
+  judgeDefinitionSchema,
+  judgeFileName,
+  judgePayloadOf,
+  judgeTextPayloadSchema,
+} from "./judge.js";
 
 const valid = {
   judgeId: "J1",
@@ -83,5 +90,52 @@ describe("hasUnredactedText", () => {
     ["an email key", { "jo@example.com": 1 }],
   ])("is true for %s", (_name, state) => {
     expect(hasUnredactedText({ question: valid.question as never, state })).toBe(true);
+  });
+});
+
+describe("judgeDefinitionSchema", () => {
+  const score = {
+    id: "J1",
+    version: 1,
+    type: "score",
+    instructions: "Grade it.",
+    criteria: ["a", "b"],
+  };
+  const noul = {
+    id: "J2",
+    version: 1,
+    type: "noul",
+    instructions: "Is it so?",
+    criteria: { true: "yes", false: "no" },
+  };
+
+  it("accepts a Score and a Noul definition", () => {
+    expect(judgeDefinitionSchema.parse(score)).toEqual(score);
+    expect(judgeDefinitionSchema.parse(noul)).toEqual(noul);
+  });
+
+  it.each([
+    ["no id", { ...score, id: undefined }],
+    ["an unsafe id", { ...score, id: "../J1" }],
+    ["version 0", { ...score, version: 0 }],
+    ["a choice type", { ...score, type: "choice" }],
+    ["1 level", { ...score, criteria: ["a"] }],
+    ["11 levels", { ...score, criteria: Array(11).fill("l") }],
+    ["an extra key", { ...noul, extra: 1 }],
+  ])("refuses %s", (_name, body) => {
+    expect(judgeDefinitionSchema.safeParse(body).success).toBe(false);
+  });
+
+  it("names the file <id>.v<version>.json", () => {
+    expect(judgeFileName(score as never)).toBe("J1.v1.json");
+  });
+
+  it("builds an endpoint body the payload schema accepts, with the question unchanged", () => {
+    for (const definition of [score, noul]) {
+      const body = judgePayloadOf(judgeDefinitionSchema.parse(definition), { x: "y" });
+      const { id, version, ...question } = definition;
+      expect(body).toEqual({ judgeId: id, version, question, state: { x: "y" } });
+      expect(judgeTextPayloadSchema.safeParse(body).success).toBe(true);
+    }
   });
 });
