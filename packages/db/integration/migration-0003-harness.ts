@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type pg from "pg";
+import pg from "pg";
 import { expect } from "vitest";
 import {
   clientFor,
@@ -33,10 +33,16 @@ export function client(): pg.Client {
   return db;
 }
 
-/** Opens one more connection to the test database (for lock and race tests); the caller ends it. */
-export async function connect(): Promise<pg.Client> {
+/**
+ * Opens one more connection to the test database (for lock and race tests), as
+ * `postgres` or another login role of the image (same per-run password); the caller ends it.
+ */
+export async function connect(user = "postgres"): Promise<pg.Client> {
   if (!container) throw new Error("container not started");
-  const extra = clientFor(container);
+  const extra =
+    user === "postgres"
+      ? clientFor(container)
+      : new pg.Client({ ...clientFor(container), user, password: container.password });
   await extra.connect();
   return extra;
 }

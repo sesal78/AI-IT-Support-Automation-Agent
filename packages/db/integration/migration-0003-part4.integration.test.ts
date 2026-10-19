@@ -127,7 +127,7 @@ describe("migration 0003, T3.I.11 (whole up, down, up with phase-2 rows)", () =>
     try {
       applied(upSql);
       const rows = await check();
-      expect(rows).toHaveLength(82);
+      expect(rows).toHaveLength(86);
       expect(rows.filter((row) => !row.ok)).toEqual([]);
       expect(await anonRights()).toEqual([]);
     } finally {
