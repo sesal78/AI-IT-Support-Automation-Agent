@@ -16,6 +16,7 @@
     "test:integration": "pnpm -r --if-present run test:integration",
     "test:e2e": "pnpm --filter web test:e2e",
     "test:live": "pnpm --filter @ai-it-support/shared run build && node tests/live/src/cli.ts",
+    "test:live:browser": "pnpm --filter @ai-it-support/shared run build && pnpm --filter @ai-it-support/live-tests run test:browser",
     "eval": "pnpm --filter @ai-it-support/shared run build && node tests/live/src/eval/cli.ts",
     "eval:calibrate": "pnpm --filter @ai-it-support/shared run build && node tests/live/src/eval/calibrate-cli.ts",
     "test:e2e:docker": "node apps/web/scripts/docker-smoke.mjs",

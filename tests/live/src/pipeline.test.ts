@@ -12,6 +12,7 @@ import {
 } from "./pipeline.ts";
 import { runLive, type LiveReport, type ReportEntry } from "./runner.ts";
 import { scenarios } from "./scenarios.ts";
+import { securityScenarios } from "./security.ts";
 import { markerEnv } from "./testing/env.ts";
 import {
   defaultTicketOutcome,
@@ -310,7 +311,10 @@ describe("T3.S.04", () => {
 describe("pipeline suite", () => {
   it("sends one form-path ticket per run; every other ticket goes through test-tickets", async () => {
     const h = await setup();
-    const { code, report } = await h.run([]);
+    // The security and pipeline scenarios; the browser and Langfuse ones have
+    // their own tests (browser-form, observability).
+    const ids = [...securityScenarios, ...pipelineScenarios].map((s) => s.id);
+    const { code, report } = await h.run(["--only", ids.join(",")]);
     // T3.S.02-staging is not run: STAGING_BASE_URL is unset.
     expect(code).toBe(2);
     for (const entry of report.scenarios) {

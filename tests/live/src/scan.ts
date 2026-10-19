@@ -132,53 +132,76 @@ function hasNoContent(row: { input?: unknown; output?: unknown; metadata?: unkno
   return empty(row.input) && empty(row.output) && empty(row.metadata);
 }
 
-function asText(value: unknown): string {
+export function asText(value: unknown): string {
   if (value === undefined || value === null) return "";
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
-class TraceApiError extends Error {}
+/** Thrown for a failed or unusable Langfuse API answer; the message names the endpoint and a fixed reason. */
+export class TraceApiError extends Error {
+  override readonly name = "TraceApiError";
+}
+
+/** One observation; fields beyond these pass through unchecked (`looseObject`). */
+export type Observation = z.infer<typeof observationSchema>;
+
+/** The validated Langfuse variables (`langfuseEnvShape`). */
+export interface LangfuseKeys {
+  readonly LANGFUSE_PUBLIC_KEY: string;
+  readonly LANGFUSE_SECRET_KEY: string;
+  readonly LANGFUSE_BASE_URL: string;
+}
+
+export interface ObservationQuery {
+  /** Lower bound of the observation start time (`fromStartTime`). */
+  readonly since?: Date;
+  /** Upper bound of the observation start time (`toStartTime`). */
+  readonly until: Date;
+  /** Only the observations of this session; the sink sets it to the ticket ID. */
+  readonly sessionId?: string;
+  /** Field groups, for example `core,io,metadata`. */
+  readonly fields: string;
+}
+
+export interface ObservationPage {
+  readonly data: readonly Observation[];
+  /** The metadata keys the page was read with expanded. */
+  readonly expanded: ReadonlySet<string>;
+}
 
 /**
- * Reads every observation with a start time at or after `since` (up to the
- * scan start) from the Langfuse public API, page by page, and scans its input,
- * output and metadata. Returns the exit code.
+ * Reads observations from the Langfuse public API, page by page (cursor
+ * paging). A page whose metadata holds a long value under a key not yet
+ * expanded is read again once with that key in `expandMetadata`. Fails closed
+ * with TraceApiError: any status but 200, a page that is not JSON or does not
+ * match, a repeated cursor, more than 1000 pages, a request that fails, or a
+ * metadata key that cannot be expanded. Credentials go only to the origin of
+ * LANGFUSE_BASE_URL; redirects are never followed.
  */
-export async function scanTraces(
-  args: ScanArgs,
-  env: Record<string, string | undefined>,
-  out: ScanOutput,
-  options: { fetch?: FetchLike; now?: Date } = {},
-): Promise<number> {
-  if (args.since === undefined) throw new ScanUsageError("--since is required");
-  if (args.files.length > 0) throw new ScanUsageError("scan:traces takes no files");
-  let config;
-  try {
-    config = parseEnv(langfuseEnvShape, env);
-  } catch (error) {
-    // parseEnv names variables, never values.
-    out.stderr(`scan:traces: ${error instanceof Error ? error.message : "invalid environment"}`);
-    return EXIT_NOT_SCANNED;
-  }
+export async function* readObservations(
+  keys: LangfuseKeys,
+  query: ObservationQuery,
+  options: { fetch?: FetchLike } = {},
+): AsyncGenerator<ObservationPage> {
   const doFetch: FetchLike = options.fetch ?? ((input, init) => fetch(input, init));
-  const base = new URL(config.LANGFUSE_BASE_URL);
+  const base = new URL(keys.LANGFUSE_BASE_URL);
   const origin = base.origin;
   // Keep any base path (a self-hosted prefix); the result stays on the same origin.
   const endpointUrl = new URL(
     "api/public/v2/observations",
     `${origin}${base.pathname.endsWith("/") ? base.pathname : `${base.pathname}/`}`,
   );
-  const auth = `Basic ${Buffer.from(`${config.LANGFUSE_PUBLIC_KEY}:${config.LANGFUSE_SECRET_KEY}`).toString("base64")}`;
-  const until = (options.now ?? new Date()).toISOString();
+  const auth = `Basic ${Buffer.from(`${keys.LANGFUSE_PUBLIC_KEY}:${keys.LANGFUSE_SECRET_KEY}`).toString("base64")}`;
 
   async function page(
     cursor: string | undefined,
     expand: ReadonlySet<string>,
   ): Promise<z.infer<typeof pageSchema>> {
     const url = new URL(endpointUrl);
-    url.searchParams.set("fromStartTime", args.since!.toISOString());
-    url.searchParams.set("toStartTime", until);
-    url.searchParams.set("fields", "core,io,metadata");
+    if (query.since !== undefined) url.searchParams.set("fromStartTime", query.since.toISOString());
+    url.searchParams.set("toStartTime", query.until.toISOString());
+    if (query.sessionId !== undefined) url.searchParams.set("sessionId", query.sessionId);
+    url.searchParams.set("fields", query.fields);
     url.searchParams.set("limit", String(PAGE_LIMIT));
     url.searchParams.set("expandMetadata", [...expand].join(","));
     if (cursor !== undefined) url.searchParams.set("cursor", cursor);
@@ -209,6 +232,60 @@ export async function scanTraces(
     return parsed.data;
   }
 
+  const expand = new Set(KNOWN_METADATA_KEYS);
+  const seenCursors = new Set<string>();
+  let pages = 0;
+  let cursor: string | undefined;
+  do {
+    if (pages >= MAX_PAGES) throw new TraceApiError(`${ENDPOINT}: more than ${MAX_PAGES} pages`);
+    let result = await page(cursor, expand);
+    // Long metadata values under keys not yet expanded may be cut: add the
+    // keys and read the same page again, once.
+    const missing = result.data
+      .flatMap((row) => metadataEntries(row.metadata))
+      .filter(([key, value]) => value.length >= METADATA_LIMIT && !expand.has(key))
+      .map(([key]) => key);
+    if (missing.length > 0) {
+      if (missing.some((key) => !METADATA_KEY.test(key))) {
+        throw new TraceApiError(`${ENDPOINT}: metadata truncated (key cannot be expanded)`);
+      }
+      for (const key of missing) expand.add(key);
+      result = await page(cursor, expand);
+    }
+    pages++;
+    yield { data: result.data, expanded: new Set(expand) };
+    cursor = result.meta.cursor ?? undefined;
+    if (cursor !== undefined) {
+      // A repeated cursor would loop or skip pages: not proven clean.
+      if (seenCursors.has(cursor)) throw new TraceApiError(`${ENDPOINT}: cursor repeated`);
+      seenCursors.add(cursor);
+    }
+  } while (cursor !== undefined);
+}
+
+/**
+ * Reads every observation with a start time at or after `since` (up to the
+ * scan start) from the Langfuse public API, page by page, and scans its input,
+ * output and metadata. Returns the exit code.
+ */
+export async function scanTraces(
+  args: ScanArgs,
+  env: Record<string, string | undefined>,
+  out: ScanOutput,
+  options: { fetch?: FetchLike; now?: Date } = {},
+): Promise<number> {
+  if (args.since === undefined) throw new ScanUsageError("--since is required");
+  if (args.files.length > 0) throw new ScanUsageError("scan:traces takes no files");
+  let config;
+  try {
+    config = parseEnv(langfuseEnvShape, env);
+  } catch (error) {
+    // parseEnv names variables, never values.
+    out.stderr(`scan:traces: ${error instanceof Error ? error.message : "invalid environment"}`);
+    return EXIT_NOT_SCANNED;
+  }
+  const query = { since: args.since, until: options.now ?? new Date(), fields: "core,io,metadata" };
+
   let scanned = 0;
   let pages = 0;
   let hard = 0;
@@ -216,26 +293,8 @@ export async function scanTraces(
   let empty = 0;
   let truncated = 0;
   let failure: string | undefined;
-  const expand = new Set(KNOWN_METADATA_KEYS);
-  const seenCursors = new Set<string>();
   try {
-    let cursor: string | undefined;
-    do {
-      if (pages >= MAX_PAGES) throw new TraceApiError(`${ENDPOINT}: more than ${MAX_PAGES} pages`);
-      let result = await page(cursor, expand);
-      // Long metadata values under keys not yet expanded may be cut: add the
-      // keys and read the same page again, once.
-      const missing = result.data
-        .flatMap((row) => metadataEntries(row.metadata))
-        .filter(([key, value]) => value.length >= METADATA_LIMIT && !expand.has(key))
-        .map(([key]) => key);
-      if (missing.length > 0) {
-        if (missing.some((key) => !METADATA_KEY.test(key))) {
-          throw new TraceApiError(`${ENDPOINT}: metadata truncated (key cannot be expanded)`);
-        }
-        for (const key of missing) expand.add(key);
-        result = await page(cursor, expand);
-      }
+    for await (const result of readObservations(config, query, { fetch: options.fetch })) {
       pages++;
       for (const observation of result.data) {
         if (hasNoContent(observation)) {
@@ -244,7 +303,7 @@ export async function scanTraces(
           continue;
         }
         const cut = ([key, value]: [string, string]) =>
-          looksTruncated(value) || (value.length >= METADATA_LIMIT && !expand.has(key));
+          looksTruncated(value) || (value.length >= METADATA_LIMIT && !result.expanded.has(key));
         if (metadataEntries(observation.metadata).some(cut)) {
           out.stdout(`TRUNCATED observation ${observation.id} metadata truncated`);
           truncated++;
@@ -259,13 +318,7 @@ export async function scanTraces(
         soft += hits.soft.length;
         scanned++;
       }
-      cursor = result.meta.cursor ?? undefined;
-      if (cursor !== undefined) {
-        // A repeated cursor would loop or skip pages: not proven clean.
-        if (seenCursors.has(cursor)) throw new TraceApiError(`${ENDPOINT}: cursor repeated`);
-        seenCursors.add(cursor);
-      }
-    } while (cursor !== undefined);
+    }
   } catch (error) {
     failure =
       error instanceof TraceApiError ? error.message : `${ENDPOINT}: ${errorClassName(error)}`;

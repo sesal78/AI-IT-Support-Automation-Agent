@@ -6,10 +6,14 @@
   "scripts": {
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:browser": "playwright test"
   },
   "dependencies": {
     "@ai-it-support/shared": "workspace:*",
     "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
   }
 }

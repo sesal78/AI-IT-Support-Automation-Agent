@@ -69,7 +69,7 @@ const REQUESTER = { name: "Live Test", email: "live.test@example.com", departmen
 const ERIN = { name: "demo.erin", email: "demo.erin@example.com", department: "Operations" };
 
 /** A ticket body; the run ID makes the text unique, so a rerun is never a duplicate. */
-function ticketBody(
+export function ticketBody(
   context: ScenarioContext,
   text: TicketText,
   requester: typeof REQUESTER = REQUESTER,
@@ -81,7 +81,7 @@ function ticketBody(
   };
 }
 
-const testId = (context: ScenarioContext, part: string) => `${context.runId}:${part}`;
+export const testId = (context: ScenarioContext, part: string) => `${context.runId}:${part}`;
 
 const hasEvent = (view: InternalTicketView, type: string) =>
   view.events.some((event) => event.type === type);
@@ -89,14 +89,14 @@ const eventAt = (view: InternalTicketView, type: string): number | null => {
   const event = view.events.find((e) => e.type === type);
   return event === undefined ? null : Date.parse(event.at);
 };
-const isTriaged = (view: InternalTicketView | undefined): view is InternalTicketView =>
+export const isTriaged = (view: InternalTicketView | undefined): view is InternalTicketView =>
   view !== undefined && view.status !== "failed" && hasEvent(view, "triaged");
-const fixSteps = (view: InternalTicketView): number => {
+export const fixSteps = (view: InternalTicketView): number => {
   const steps = view.triage?.suggestedFix?.["steps"];
   return Array.isArray(steps) ? steps.length : 0;
 };
 
-interface Pending {
+export interface Pending {
   readonly id: string;
   readonly deadline: number;
 }
@@ -105,7 +105,7 @@ interface Pending {
  * Polls the tickets until each is triaged or failed, or past its deadline.
  * Returns the last view of every ticket.
  */
-async function waitForTriage(
+export async function waitForTriage(
   context: ScenarioContext,
   tickets: readonly Pending[],
 ): Promise<Map<string, InternalTicketView>> {
@@ -134,7 +134,7 @@ async function createAndWait(
   return { id: ticketId, view: views.get(ticketId)! };
 }
 
-const result = (failedChecks: readonly string[], evidence: Evidence): ScenarioResult => ({
+export const result = (failedChecks: readonly string[], evidence: Evidence): ScenarioResult => ({
   status: failedChecks.length === 0 ? "pass" : "fail",
   evidence: { ...evidence, failedChecks: [...failedChecks] },
 });
