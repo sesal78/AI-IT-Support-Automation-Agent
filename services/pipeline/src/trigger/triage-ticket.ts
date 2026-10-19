@@ -195,6 +195,14 @@ const statusLabel = (status: string) =>
  *   and alert llm_unavailable, no fix steps, no grounding.
  * - TypeSafe cap at the judgments: event and alert typesafe_cap_reached; no
  *   KB search, no LLM call, the judged fields stay null, reason cap_reached.
+ * - TypeSafe cap at the rerank: the same event and alert; the judgments are
+ *   kept, no KB article is kept (unreranked hits are not vetted), no fix is
+ *   drafted and no grounding runs, reason cap_reached.
+ * - TypeSafe cap at the grounding: the same event and alert; the fix steps
+ *   are kept but count as ungrounded, reasons ungrounded_fix and cap_reached.
+ * Only a `BudgetExceededError` of the matching provider degrades; any other
+ * error fails the run. When the save fails after a TypeSafe cap event was
+ * written, the retry takes the judgments-cap path (judged fields null).
  * A degraded event an earlier attempt wrote is not written again, its alert
  * is not raised again, and the step that hit it is not called again.
  *
@@ -265,6 +273,9 @@ export async function runTriageTicket(
     );
     const { degraded } = fresh.outcome;
     if (degraded !== null && !written.has(degraded)) {
+      // When this write fails nothing is saved, so the retry runs every AI step
+      // again: after a cap at the grounding (or an LLM 429) that means another
+      // LLM call, bounded by the run's retry count.
       await repos.addEvent(ticketId, degraded, {});
       written.add(degraded);
       // Raised once per ticket: only together with the first write of its event.
@@ -347,6 +358,7 @@ interface TriageInput {
 
 type Judgments = Awaited<ReturnType<TriageDeps["judge"]["judge"]>>;
 type Draft = Awaited<ReturnType<TriageDeps["drafter"]["draft"]>>;
+type Grounding = Awaited<ReturnType<TriageDeps["grounding"]["scoreGrounding"]>>;
 
 const isCap = (error: unknown, provider: "llm" | "typesafe") =>
   error instanceof BudgetExceededError && error.provider === provider;
@@ -369,18 +381,29 @@ async function triageWithAi(
     throw error;
   }
 
+  // The TypeSafe cap at the rerank or the grounding: the remaining TypeSafe
+  // steps are skipped and the route is review with cap_reached (decideRoute).
+  let typesafeCapReached = false;
   const candidates = await deps.repos.searchKb(buildKbQuery(`${text.title} ${text.description}`));
-  const ranked = await deps.reranker.rerankKb({ ticketId, ticket: text, candidates });
-  const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
-  const articles = [...new Set(ranked.map((r) => r.id))]
-    .map((id) => byId.get(id))
-    .filter((article) => article !== undefined)
-    .slice(0, MAX_KB_ARTICLES);
+  let articles: typeof candidates = [];
+  try {
+    const ranked = await deps.reranker.rerankKb({ ticketId, ticket: text, candidates });
+    const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+    articles = [...new Set(ranked.map((r) => r.id))]
+      .map((id) => byId.get(id))
+      .filter((article) => article !== undefined)
+      .slice(0, MAX_KB_ARTICLES);
+  } catch (error) {
+    if (!isCap(error, "typesafe")) throw error;
+    // Capped at the rerank: no article is kept (the unreranked search hits are
+    // not vetted), and no fix is drafted, since grounding could not check it.
+    typesafeCapReached = true;
+  }
 
   // An earlier attempt hit the LLM cap or a 429: the LLM is not asked again.
   let degraded: DegradedEvent | null = prior;
   let draft: Draft | null = null;
-  if (degraded === null) {
+  if (degraded === null && !typesafeCapReached) {
     const cap = overrides.llmCallCap;
     try {
       // Exactly one call: a 429 is never retried.
@@ -396,10 +419,20 @@ async function triageWithAi(
       else throw error;
     }
   }
-  const grounding =
-    draft === null
-      ? null
-      : await deps.grounding.scoreGrounding({ ticketId, steps: draft.steps, articles });
+  let grounding: Grounding | null = null;
+  if (draft !== null) {
+    try {
+      grounding = await deps.grounding.scoreGrounding({ ticketId, steps: draft.steps, articles });
+    } catch (error) {
+      if (!isCap(error, "typesafe")) throw error;
+      // Capped at the grounding: the fix steps are kept but count as
+      // ungrounded (fail safe), so the policy also adds ungrounded_fix.
+      typesafeCapReached = true;
+    }
+  }
+  // The capped step was the rerank or the grounding, so no LLM degraded path
+  // applies in this attempt: the event is typesafe_cap_reached.
+  if (typesafeCapReached && degraded === null) degraded = "typesafe_cap_reached";
 
   const probabilities = {
     category: judgments.category.probability,
@@ -412,8 +445,9 @@ async function triageWithAi(
   };
   const decision = decideRoute(
     policyInput(triage.sensitive, judgments.priority.value, probabilities, {
-      ungroundedFix: grounding?.flagged ?? false,
-      capReached: degraded === "llm_cap_reached",
+      // A drafted fix the capped grounding could not score counts as ungrounded.
+      ungroundedFix: grounding?.flagged ?? draft !== null,
+      capReached: degraded === "llm_cap_reached" || typesafeCapReached,
       llmUnavailable: degraded === "llm_unavailable",
     }),
     deps.thresholds,
@@ -518,12 +552,16 @@ function savedOutcome(
   }
   if (prior === "typesafe_cap_reached") {
     if (route !== "review") throw new Error("triage-ticket: a capped result must route review");
-    return typesafeCapped(triage.sensitive).outcome;
+    // Capped at the judgments: no probabilities were saved. Capped at the
+    // rerank or the grounding: the judgments were saved; the policy runs below.
+    if (Object.keys(triage.probabilities ?? {}).length === 0) {
+      return typesafeCapped(triage.sensitive).outcome;
+    }
   }
   const decision = decideRoute(
     policyInput(triage.sensitive, triage.priority as Priority, triage.probabilities ?? {}, {
       ungroundedFix: (triage.flags ?? []).includes("ungrounded_fix"),
-      capReached: prior === "llm_cap_reached",
+      capReached: prior === "llm_cap_reached" || prior === "typesafe_cap_reached",
       llmUnavailable: prior === "llm_unavailable",
     }),
     thresholds,
