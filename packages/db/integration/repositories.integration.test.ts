@@ -198,6 +198,24 @@ describe("searchKb over supabase-js + PostgREST", () => {
     expect(hits[0]?.rank).toBeGreaterThan(0);
   });
 
+  it("finds Wi-Fi and WiFi articles when the spelling is the only shared term", async () => {
+    const spellings = [
+      ["wifi-hyphen", "Wi-Fi network forget rejoin"],
+      ["wifi-joined", "WiFi network forget rejoin"],
+    ] as const;
+    for (const [suffix, title] of spellings) {
+      await sql().query(
+        `insert into itsupport.kb_articles (slug, title, content, category, assignment_group)
+         values ($1, $2, 'Forget the network and rejoin it.', 'network', 'Network')`,
+        [`${SLUG}-${suffix}`, title],
+      );
+    }
+    const hits = await repos.searchKb(buildKbQuery("wi-fi gone"), 20);
+    expect(hits.map((hit) => hit.slug)).toEqual(
+      expect.arrayContaining([`${SLUG}-wifi-hyphen`, `${SLUG}-wifi-joined`]),
+    );
+  });
+
   it("returns [] for a blank query and clamps the limit", async () => {
     expect(await repos.searchKb("")).toEqual([]);
     expect(await repos.searchKb(buildKbQuery("the and of it is"))).toEqual([]);

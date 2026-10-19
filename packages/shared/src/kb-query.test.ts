@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { buildKbQuery, KB_QUERY_MAX_WORDS } from "./kb-query.js";
 
-const SAFE = /^[a-z0-9]+( or [a-z0-9]+)*$/;
+const WORD = "[a-z0-9]+(?:[-.][a-z0-9]+)*";
+const SAFE = new RegExp(`^${WORD}( or ${WORD})*$`);
 
 describe("buildKbQuery", () => {
   it("builds an or query from the content words", () => {
@@ -27,6 +28,30 @@ describe("buildKbQuery", () => {
 
   it("removes duplicates and keeps the first occurrence", () => {
     expect(buildKbQuery("Printer printer PRINTER jam printer")).toBe("printer or jam");
+  });
+
+  it.each([
+    ["Wi-Fi keeps dropping", "wi-fi or wifi or keeps or dropping"],
+    ["my e-mail is broken", "e-mail or email or mail or broken"],
+    ["cannot log-in today", "log-in or login or log or today"],
+    ["card on 802.11 network", "card or 802.11 or 80211 or 802 or network"],
+  ])("keeps the hyphenated or dotted term in %j", (text, expected) => {
+    expect(buildKbQuery(text)).toBe(expected);
+  });
+
+  it("does not join words across a sentence-ending dot or a spaced hyphen", () => {
+    expect(buildKbQuery("restart. then retry")).toBe("restart or retry");
+    expect(buildKbQuery("vpn - down -- router")).toBe("vpn or down or router");
+  });
+
+  it("handles URL and path-like tokens (a joined form over 15 characters is dropped)", () => {
+    expect(buildKbQuery("see https://portal.example.com/vpn-help now")).toBe(
+      "see or https or portal or example or com or vpn-help or vpnhelp or vpn or help",
+    );
+  });
+
+  it("drops a joined or hyphenated form over 15 characters but keeps its parts", () => {
+    expect(buildKbQuery("printer-configuration")).toBe("printer or configuration");
   });
 
   it("keeps digit-only words of length 3 or more", () => {
@@ -70,7 +95,7 @@ describe("buildKbQuery", () => {
   it.each(attacks)("returns only a-z0-9 words joined by or for %j", (text) => {
     const out = buildKbQuery(text);
     if (out !== "") expect(out).toMatch(SAFE);
-    expect(out).not.toMatch(/[^a-z0-9 ]/);
+    expect(out).not.toMatch(/[^a-z0-9 .-]|(^|[ ])[-.]|[-.]($|[ ])|[-.][-.]/);
   });
 
   it("never lets a user word act as an operator", () => {
