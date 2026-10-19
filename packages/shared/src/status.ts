@@ -1,7 +1,10 @@
 // Ticket status model (plan §2.6). Pure: no I/O, no stored state.
 
-/** The 12 ticket statuses, in spec order. */
-export const TICKET_STATUSES = [
+/**
+ * The 12 ticket statuses, in spec order. Frozen, so a run-time write throws
+ * instead of changing which values canTransition accepts.
+ */
+export const TICKET_STATUSES = Object.freeze([
   "new",
   "redacted",
   "triaged",
@@ -14,7 +17,7 @@ export const TICKET_STATUSES = [
   "rejected",
   "escalated_manual",
   "failed",
-] as const;
+] as const);
 
 export type TicketStatus = (typeof TICKET_STATUSES)[number];
 
