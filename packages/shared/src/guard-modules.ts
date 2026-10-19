@@ -1,5 +1,5 @@
-import { statSync } from "node:fs";
-import { resolve } from "node:path";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
 
 // Guard modules (redaction, policy, internal-API auth, idempotency) carry
@@ -19,9 +19,9 @@ const repoPath = z
 const guardModuleSchema = z.strictObject({
   path: repoPath,
   /** Statement coverage floor in whole percent. */
-  statements: z.int().min(90),
+  statements: z.int().min(90).max(100),
   /** Mutation score floor in whole percent; null until it is switched on. */
-  mutation: z.int().min(80).nullable(),
+  mutation: z.int().min(80).max(100).nullable(),
   /** Other test files that kill the module's mutants; a change to one re-runs the mutation gate. */
   tests: z
     .array(repoPath.regex(/\.test\.tsx?$/, "must be a .test.ts or .test.tsx file"))
@@ -76,9 +76,27 @@ export function coverageThresholds(
   return Object.fromEntries(list.map(({ path, statements }) => [path, { statements }]));
 }
 
-/** The listed paths, modules and their tests, that are not a file under `repoRoot`. */
+/**
+ * The listed paths, modules and their tests, that are not a file under `repoRoot`.
+ * Each segment must equal a directory entry name exactly, so a wrong-case path
+ * is missing on a case-insensitive file system too (it would match no coverage key).
+ */
 export function missingGuardModules(list: ReadonlyArray<GuardModule>, repoRoot: string): string[] {
   return list
     .flatMap(({ path, tests = [] }) => [path, ...tests])
-    .filter((path) => !statSync(resolve(repoRoot, path), { throwIfNoEntry: false })?.isFile());
+    .filter((path) => !isExactFile(repoRoot, path.split("/")));
+}
+
+function isExactFile(dir: string, [name, ...rest]: string[]): boolean {
+  if (name === undefined) return false;
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  const entry = entries.find((candidate) => candidate.name === name);
+  if (entry === undefined) return false;
+  if (rest.length === 0) return entry.isFile();
+  return entry.isDirectory() && isExactFile(join(dir, name), rest);
 }

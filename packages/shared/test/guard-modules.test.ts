@@ -17,13 +17,26 @@ const coverage = rootConfig.test?.coverage;
 
 describe("guard-modules.json", () => {
   // Floors are only ever raised (docs/PROJECT.md §9), so an entry never leaves the list.
-  it("lists redaction and the intake request module", () => {
+  it("keeps every listed guard module", () => {
     expect(guardModules.map((module) => module.path)).toEqual(
       expect.arrayContaining([
         "packages/shared/src/redact.ts",
         "apps/web/src/lib/intake/request.ts",
+        "apps/web/src/lib/internal/auth.ts",
+        "packages/shared/src/policy.ts",
+        "packages/shared/src/status.ts",
       ]),
     );
+  });
+
+  // P3-T15e: the ticket status guard, coverage floor only until its mutation gate is on.
+  it("lists the ticket status guard with a 90 % statements floor", () => {
+    const status = guardModules.find(({ path }) => path === "packages/shared/src/status.ts");
+    expect(status).toEqual({
+      path: "packages/shared/src/status.ts",
+      statements: 90,
+      mutation: null,
+    });
   });
 
   // T3.S.06: `pnpm test:mutation` proves this floor.
@@ -68,6 +81,14 @@ describe("guard-modules.json", () => {
       const measured = coverage?.include?.some((glob) => posix.matchesGlob(path, glob));
       expect(measured, path).toBe(true);
     }
+  });
+
+  // An excluded file is not in the coverage report either, so its floor would be skipped.
+  it("lists no file that the coverage run excludes", () => {
+    const excluded = guardModules
+      .map(({ path }) => path)
+      .filter((path) => coverage?.exclude?.some((glob) => posix.matchesGlob(path, glob)));
+    expect(excluded).toEqual([]);
   });
 });
 

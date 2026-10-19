@@ -1,5 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { coverageThresholds, GuardModulesError, parseGuardModules } from "./guard-modules.js";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
+import {
+  coverageThresholds,
+  GuardModulesError,
+  missingGuardModules,
+  parseGuardModules,
+} from "./guard-modules.js";
 
 const redact = { path: "packages/shared/src/redact.ts", statements: 90, mutation: null };
 const request = { path: "apps/web/src/lib/intake/request.ts", statements: 95, mutation: 80 };
@@ -19,6 +27,11 @@ describe("parseGuardModules", () => {
     expect(parseGuardModules([scoped, request])).toEqual([scoped, request]);
   });
 
+  it("accepts floors of 100", () => {
+    const full = { ...redact, statements: 100, mutation: 100 };
+    expect(parseGuardModules([full, request])).toEqual([full, request]);
+  });
+
   it("accepts an empty list", () => {
     expect(parseGuardModules([])).toEqual([]);
   });
@@ -26,6 +39,8 @@ describe("parseGuardModules", () => {
   it.each([
     ["statements below 90", { ...redact, statements: 89.9 }, "statements"],
     ["mutation below 80", { ...redact, mutation: 79.9 }, "mutation"],
+    ["statements above 100", { ...redact, statements: 101 }, "statements"],
+    ["mutation above 100", { ...redact, mutation: 101 }, "mutation"],
     // Whole numbers, so only the minimum can reject them.
     ["whole statements below 90", { ...redact, statements: 89 }, "statements"],
     ["whole mutation below 80", { ...redact, mutation: 79 }, "mutation"],
@@ -92,4 +107,57 @@ describe("coverageThresholds", () => {
 
   // no failure-path test: the list is the typed output of parseGuardModules,
   // which rejects every invalid entry before it gets here.
+});
+
+describe("missingGuardModules", () => {
+  const root = mkdtempSync(join(tmpdir(), "guard-modules-"));
+  mkdirSync(join(root, "packages/shared/src"), { recursive: true });
+  writeFileSync(join(root, "packages/shared/src/redact.ts"), "");
+  writeFileSync(join(root, "packages/shared/src/redact.test.ts"), "");
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+  const entry = (path: string, tests?: string[]) => ({
+    path,
+    statements: 90,
+    mutation: null,
+    ...(tests && { tests }),
+  });
+
+  it("reports nothing for a file and test that exist with the listed case", () => {
+    const list = [entry("packages/shared/src/redact.ts", ["packages/shared/src/redact.test.ts"])];
+    expect(missingGuardModules(list, root)).toEqual([]);
+  });
+
+  // A case-insensitive file system (Windows, macOS) finds these, but no
+  // coverage key matches them, so the per-file floor would be skipped.
+  it.each([
+    "packages/shared/src/REDACT.ts",
+    "packages/Shared/src/redact.ts",
+    "Packages/shared/src/redact.ts",
+  ])("reports the wrong-case path %s", (path) => {
+    expect(missingGuardModules([entry(path)], root)).toEqual([path]);
+  });
+
+  it("reports a wrong-case test file", () => {
+    const tests = ["packages/shared/src/Redact.test.ts"];
+    expect(missingGuardModules([entry("packages/shared/src/redact.ts", tests)], root)).toEqual(
+      tests,
+    );
+  });
+
+  it("reports a missing file, a folder, and a path through a file", () => {
+    const paths = [
+      "packages/shared/src/no-such.ts",
+      "packages/shared/src",
+      "packages/shared/src/redact.ts/x.ts",
+      "packages/no-such/src/x.ts",
+    ];
+    expect(
+      missingGuardModules(
+        paths.map((path) => entry(path)),
+        root,
+      ),
+    ).toEqual(paths);
+  });
 });
