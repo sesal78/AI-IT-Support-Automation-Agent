@@ -347,7 +347,10 @@ sizing is broken — fix that instead of granting a third.
       new dependency
 - [ ] Migrations: every schema change has a migration AND a tested rollback;
       applied to staging before prod; destructive migrations (drops, truncates)
-      require explicit human approval
+      require explicit human approval; each table, sequence and function a
+      migration creates in `itsupport` gets an explicit `revoke all ... from
+      public, anon, authenticated`, because default privileges may grant them
+      (enforced by `migration-default-privileges.integration.test.ts`)
 - [ ] Privacy: no PII in logs or error tracking; personal data collected only
       per §2's purpose and §12's compliance constraints
 - [ ] Errors observable: error tracking receiving events; automations notify on failure
