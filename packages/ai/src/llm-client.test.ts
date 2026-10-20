@@ -189,6 +189,65 @@ describe("createFixDrafter", () => {
     expect(String((error as Error).message)).not.toContain("Try a restart");
   });
 
+  describe("with the recorded live completion envelope (P3-T10i)", () => {
+    // Field set recorded from the live router on 2026-10-20; content fictional.
+    function liveCompletion(content: string) {
+      return {
+        id: "gen-1",
+        object: "chat.completion",
+        created: 1_790_000_000,
+        model: "deepseek/deepseek-v4.1-flash",
+        provider: "ExampleHost",
+        system_fingerprint: null,
+        service_tier: null,
+        choices: [
+          {
+            index: 0,
+            finish_reason: "stop",
+            message: {
+              role: "assistant",
+              content,
+              refusal: null,
+              reasoning: "REASONING-MARKER: the article says to restart the client.",
+              reasoning_details: [
+                { type: "reasoning.text", text: "REASONING-MARKER", format: "unknown", index: 0 },
+              ],
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 570,
+          completion_tokens: 249,
+          total_tokens: 819,
+          completion_tokens_details: { reasoning_tokens: 133 },
+        },
+      };
+    }
+
+    it("returns the steps from content only, never the reasoning", async () => {
+      const content =
+        '{"steps": ["Close the VPN client completely and open it again."], "caveats": []}';
+      const { drafter } = setup({ reply: () => HttpResponse.json(liveCompletion(content)) });
+      const result = await drafter.draft(input);
+      expect(result).toEqual({
+        steps: ["Close the VPN client completely and open it again."],
+        caveats: [],
+        model: "deepseek/deepseek-v4.1-flash",
+        usage: { tokensIn: 570, tokensOut: 249 },
+      });
+      expect(JSON.stringify(result)).not.toContain("REASONING-MARKER");
+    });
+
+    it("throws FixParseError for the recorded 0-step no-article reply", async () => {
+      const content = '{"steps": [], "caveats": ["No knowledge-base articles were provided."]}';
+      const { drafter } = setup({ reply: () => HttpResponse.json(liveCompletion(content)) });
+      const error = await rejection(drafter.draft(input));
+      expect(error).toBeInstanceOf(FixParseError);
+      expect((error as Error).message).toBe("Fix-step reply rejected: unexpected shape at steps");
+      expect(egress.requests()).toHaveLength(1);
+    });
+  });
+
   it("throws LlmError of kind timeout when no answer arrives in time", async () => {
     const { drafter } = setup({
       timeoutMs: 50,
