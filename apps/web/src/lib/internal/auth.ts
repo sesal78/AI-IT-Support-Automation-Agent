@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createDbClient, createRepositories, type Repositories } from "@ai-it-support/db";
+import { after } from "next/server";
 import { env } from "@/env";
 
 type RefusalKind = "missing_token" | "bad_token" | "token_in_query";
@@ -49,19 +50,67 @@ function checkHeader(header: string | null): "ok" | "missing_token" | "bad_token
   return tokenMatches(token) ? "ok" : "bad_token";
 }
 
-// Error class name only: messages and stacks can carry request data.
+// Error class name and code only: messages and stacks can carry request data.
 const errorName = (error: unknown) => (error instanceof Error ? error.name : "unknown");
+function errorCode(error: unknown): string | undefined {
+  const code: unknown = error instanceof Error ? Reflect.get(error, "code") : undefined;
+  return typeof code === "string" ? code : undefined;
+}
 
-async function refuse(kind: RefusalKind, url: URL, method: string): Promise<Response> {
+/** One JSON line per failed write: source, kind, attempt, error class and code. */
+function logWriteFailure(kind: string, attempt: 1 | 2, error: unknown): void {
+  const line = JSON.stringify({
+    level: attempt === 1 ? "warn" : "error",
+    scope: "internal-api",
+    msg: attempt === 1 ? "security event write failed, retrying" : "security event lost",
+    source: SOURCE,
+    kind,
+    attempt,
+    error: errorName(error),
+    code: errorCode(error),
+  });
+  if (attempt === 1) console.warn(line);
+  else console.error(line);
+}
+
+/**
+ * Counts one internal-API security event; never throws. The sample is the
+ * path without the query string and the method: no token, header or IP. The
+ * first write is awaited, so a caller that reads the counts after its answer
+ * sees the event. A failed write is retried once after the response, via
+ * after(): the answer is not delayed or changed, and Next.js keeps the work
+ * alive until it ends (graceful shutdown included). Without a request scope
+ * (after() throws there) the retry runs before returning. Each failure is
+ * logged; a failed retry is logged as "security event lost".
+ */
+export async function countSecurityEvent(kind: string, request: Request): Promise<void> {
+  const sample = {
+    path: new URL(request.url).pathname.slice(0, MAX_PATH_LENGTH),
+    method: request.method,
+  };
+  const write = () => repos().recordSecurityEvent(SOURCE, kind, sample);
   try {
-    // Path without the query string and the method: no token, header or IP.
-    await repos().recordSecurityEvent(SOURCE, kind, {
-      path: url.pathname.slice(0, MAX_PATH_LENGTH),
-      method,
-    });
+    await write();
+    return;
   } catch (error) {
-    console.error(`[internal-api] security event not recorded: ${errorName(error)}`);
+    logWriteFailure(kind, 1, error);
   }
+  const retry = async () => {
+    try {
+      await write();
+    } catch (error) {
+      logWriteFailure(kind, 2, error);
+    }
+  };
+  try {
+    after(retry);
+  } catch {
+    await retry();
+  }
+}
+
+async function refuse(kind: RefusalKind, request: Request): Promise<Response> {
+  await countSecurityEvent(kind, request);
   // Same status, body and headers for every kind.
   return Response.json({ error: "unauthorized" }, { status: 401 });
 }
@@ -72,9 +121,8 @@ async function refuse(kind: RefusalKind, url: URL, method: string): Promise<Resp
  * valid header is also present, so tokens never reach URLs or access logs.
  */
 export async function requireInternalAuth(request: Request): Promise<Response | null> {
-  const url = new URL(request.url);
-  if (hasQueryToken(url)) return refuse("token_in_query", url, request.method);
+  if (hasQueryToken(new URL(request.url))) return refuse("token_in_query", request);
   const result = checkHeader(request.headers.get("authorization"));
   if (result === "ok") return null;
-  return refuse(result, url, request.method);
+  return refuse(result, request);
 }

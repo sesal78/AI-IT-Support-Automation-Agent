@@ -1,4 +1,4 @@
-import { errorName, repos } from "@/lib/internal/respond";
+import { countSecurityEvent } from "@/lib/internal/auth";
 
 // The same stable copy of Next's unknown-route 404 as the test-tickets route.
 const NOT_FOUND_HTML =
@@ -8,18 +8,11 @@ const NOT_FOUND_HTML =
 /**
  * Outside E2E mode an e2e-only route does not exist: the same 404 as an
  * unknown route, before the token is looked at. The probe is counted as a
- * security event (path and method only); if counting fails the answer is
- * still 404.
+ * security event (path and method only, retried once on failure); if counting
+ * fails the answer is still 404.
  */
 export async function e2eOnlyNotFound(request: Request, kind: string): Promise<Response> {
-  try {
-    await repos().recordSecurityEvent("internal_api", kind, {
-      path: new URL(request.url).pathname.slice(0, 200),
-      method: request.method,
-    });
-  } catch (error) {
-    console.error(`[internal-api] security event not recorded: ${errorName(error)}`);
-  }
+  await countSecurityEvent(kind, request);
   return new Response(NOT_FOUND_HTML, {
     status: 404,
     headers: {
