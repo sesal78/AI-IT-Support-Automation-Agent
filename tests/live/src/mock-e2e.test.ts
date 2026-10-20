@@ -38,6 +38,26 @@ describe("startMockE2e", () => {
     }
   });
 
+  it("with accessDenial redirect, refuses with a 302 to the Access login page", async () => {
+    const started = await startMockE2e({
+      token,
+      accessClientId: id,
+      accessClientSecret: secret,
+      accessDenial: "redirect",
+    });
+    open.push(started);
+    for (const path of ["/", "/api/health", "/api/internal/usage"]) {
+      const response = await fetch(new URL(path, started.origin), { redirect: "manual" });
+      expect(response.status, path).toBe(302);
+      const location = new URL(response.headers.get("location") ?? "");
+      expect(location.protocol).toBe("https:");
+      expect(location.hostname.endsWith(".cloudflareaccess.com")).toBe(true);
+      expect(location.pathname.startsWith("/cdn-cgi/access/login")).toBe(true);
+    }
+    const open404 = await fetch(new URL("/api/inbound/email", started.origin));
+    expect(open404.status).toBe(404);
+  });
+
   it("refuses an internal request without the right bearer token with 401", async () => {
     const m = await mock();
     for (const authorization of [undefined, "Bearer wrong", `Basic ${token}`, `Bearer ${token}x`]) {
