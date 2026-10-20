@@ -165,6 +165,8 @@ interface Options {
   groundingError?: () => Error;
   /** Thrown by the drafter when it returns an error for the input. */
   draftError?: (input: { capOverride?: number }) => Error | undefined;
+  /** Milliseconds each call waits on the (fake) clock: a step name, or `event` for every event. */
+  latency?: Partial<Record<string, number>>;
 }
 
 const AI_STEPS = ["judge", "searchKb", "rerank", "draft", "grounding"];
@@ -193,26 +195,35 @@ function harness(options: Options = {}) {
   const log = (...args: unknown[]) => {
     logs.push(args);
   };
+  const pause = async (name: string) => {
+    const ms = options.latency?.[name.startsWith("event:") ? "event" : name];
+    if (ms !== undefined) await new Promise((resolve) => setTimeout(resolve, ms));
+  };
   const deps: TriageDeps = {
     repos: {
       getTicket: vi.fn(async () => {
         calls.push("getTicket");
+        await pause("getTicket");
         return options.found === undefined ? ticket(status, options.isTest) : options.found;
       }),
       getRedaction: vi.fn(async () => {
         calls.push("getRedaction");
+        await pause("getRedaction");
         return options.redaction === undefined ? redaction : options.redaction;
       }),
       getTriage: vi.fn(async () => {
         calls.push("getTriage");
+        await pause("getTriage");
         return triageState;
       }),
       searchKb: vi.fn(async (query: string) => {
         step("searchKb", query);
+        await pause("searchKb");
         return candidates;
       }),
       saveTriageResult: vi.fn(async (id: string, result: TriageResult) => {
         step("saveTriageResult");
+        await pause("saveTriageResult");
         // The real repository validates the same way before any database call.
         const r = triageResultSchema.parse(result);
         saved.push(r);
@@ -237,15 +248,18 @@ function harness(options: Options = {}) {
       }),
       listEventTypes: vi.fn(async (_id: string, types: readonly string[]) => {
         calls.push("listEventTypes");
+        await pause("listEventTypes");
         return [...new Set(events.map((e) => e.type))].filter((t) => types.includes(t));
       }),
       addEvent: vi.fn(async (id: string, type: string, payload: Record<string, unknown> = {}) => {
         step(`event:${type}`);
+        await pause(`event:${type}`);
         events.push({ type, payload });
         return { id: events.length, ticket_id: id, type, payload, at: now };
       }),
       setTicketStatus: vi.fn(async (_id: string, to: string) => {
         step(`status:${to}`);
+        await pause("status");
         statuses.push(to);
         status = to;
         return { changed: true };
@@ -254,6 +268,7 @@ function harness(options: Options = {}) {
     judge: {
       judge: vi.fn(async (input) => {
         step("judge", input);
+        await pause("judge");
         if (options.judgeError) throw options.judgeError();
         return judgments;
       }),
@@ -261,6 +276,7 @@ function harness(options: Options = {}) {
     reranker: {
       rerankKb: vi.fn(async (input: KbRerankInput) => {
         step("rerank", input);
+        await pause("rerank");
         if (options.rerankError) throw options.rerankError();
         return options.ranked
           ? options.ranked(input.candidates)
@@ -272,6 +288,7 @@ function harness(options: Options = {}) {
     drafter: {
       draft: vi.fn(async (input) => {
         step("draft", input);
+        await pause("draft");
         const error = options.draftError?.(input);
         if (error) throw error;
         return draft;
@@ -280,6 +297,7 @@ function harness(options: Options = {}) {
     grounding: {
       scoreGrounding: vi.fn(async (input) => {
         step("grounding", input);
+        await pause("grounding");
         if (options.groundingError) throw options.groundingError();
         return options.grounding ?? { score: 0.9, flagged: false };
       }),
@@ -811,8 +829,9 @@ describe("triage-ticket TypeSafe cap at the judgments", () => {
     expect(types(h)).toEqual(["typesafe_cap_reached", "policy_decided", "triaged"]);
     expect(h.alerts).toEqual([["typesafe_cap_reached", { ticketId }]]);
     expect(h.deps.drafter.draft).not.toHaveBeenCalled();
-    expect(h.deps.repos.searchKb).not.toHaveBeenCalled();
-    expect(h.deps.reranker.rerankKb).not.toHaveBeenCalled();
+    // The KB match ran beside the judgments (P3-T10k); its result is dropped:
+    // no kb_matched event and no article in the saved result below.
+    expect(h.deps.reranker.rerankKb).toHaveBeenCalledTimes(1);
     expect(h.deps.grounding.scoreGrounding).not.toHaveBeenCalled();
     expect(h.saved).toEqual([
       {
@@ -1447,5 +1466,154 @@ describe("createTriageDeps", () => {
     expect(run).toThrow(/GROUNDING_MIN/);
     expect(run).toThrow(/TRIAGE_CONFIDENCE_MIN/);
     expect(run).not.toThrow(new RegExp(env.LLM_API_KEY));
+  });
+});
+
+describe("triage-ticket latency (P3-T10k)", () => {
+  // Every call waits on the fake clock; a sequential run would take 6700 ms.
+  const latency = {
+    getTicket: 100,
+    getRedaction: 300,
+    getTriage: 200,
+    listEventTypes: 250,
+    judge: 1500,
+    searchKb: 200,
+    rerank: 1000,
+    draft: 2000,
+    grounding: 800,
+    saveTriageResult: 100,
+    event: 50,
+    status: 50,
+  };
+
+  async function onFakeClock<T>(body: () => Promise<T>): Promise<T> {
+    vi.useFakeTimers();
+    try {
+      return await body();
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  const triagedLog = (h: ReturnType<typeof harness>) =>
+    h.logs.find((line) => line[0] === "triage-ticket: triaged")?.[1] as Record<string, unknown>;
+
+  it("overlaps the three reads and the judgments with the KB match, and logs the step timings", async () => {
+    await onFakeClock(async () => {
+      const h = harness({ latency });
+      const run = runTriageTicket({ ticketId }, h.deps);
+      await vi.runAllTimersAsync();
+      await expect(run).resolves.toMatchObject({ route: "auto" });
+
+      expect(triagedLog(h).timings).toEqual({
+        // getTicket, then the slowest of the three parallel reads.
+        loadMs: 100 + 300,
+        judgeMs: 1500,
+        kbMs: 200 + 1000,
+        draftMs: 2000,
+        groundingMs: 800,
+        // saveTriageResult, four events, the status.
+        writeMs: 100 + 4 * 50 + 50,
+        // The KB match is hidden behind the slower judgments.
+        totalMs: 400 + 1500 + 2000 + 800 + 350,
+      });
+    });
+  });
+
+  it("starts the KB match while the judgments are still running", async () => {
+    await onFakeClock(async () => {
+      const h = harness({ latency: { judge: 1500, searchKb: 200, rerank: 300 } });
+      const run = runTriageTicket({ ticketId }, h.deps);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(h.calls).toContain("rerank");
+      expect(h.calls).not.toContain("draft");
+
+      await vi.runAllTimersAsync();
+      await run;
+      expect(h.calls.filter((c) => AI_STEPS.includes(c))).toEqual(AI_STEPS);
+    });
+  });
+
+  it("drafts only after both the judgments and the rerank have settled", async () => {
+    await onFakeClock(async () => {
+      const h = harness({ latency: { judge: 100, searchKb: 100, rerank: 3000 } });
+      const run = runTriageTicket({ ticketId }, h.deps);
+
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(h.calls).not.toContain("draft");
+
+      await vi.advanceTimersByTimeAsync(1200);
+      expect(h.calls).toContain("draft");
+      await vi.runAllTimersAsync();
+      await run;
+    });
+  });
+
+  it("starts the three reads together after the ticket check", async () => {
+    await onFakeClock(async () => {
+      const h = harness({ latency: { getRedaction: 500, getTriage: 500, listEventTypes: 500 } });
+      const run = runTriageTicket({ ticketId }, h.deps);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(h.calls).toEqual(["getTicket", "getRedaction", "getTriage", "listEventTypes"]);
+      expect(h.calls).not.toContain("judge");
+
+      await vi.runAllTimersAsync();
+      await run;
+    });
+  });
+
+  it("checks the reads in the same order: no redaction is named before no triage row", async () => {
+    const h = harness({ redaction: null, triage: null });
+    await expect(runTriageTicket({ ticketId }, h.deps)).rejects.toThrow(/no redaction/);
+    expect(h.aiInputs).toEqual([]);
+  });
+
+  it("a capped judgment wins over a failed KB match: still triaged, route review", async () => {
+    const h = harness({ judgeError: typesafeCap, rerankError: () => new Error("rerank boom") });
+
+    await expect(runTriageTicket({ ticketId }, h.deps)).resolves.toMatchObject({
+      route: "review",
+      reasons: ["cap_reached"],
+    });
+    expect(types(h)).toEqual(["typesafe_cap_reached", "policy_decided", "triaged"]);
+    expect(h.saved[0]).toMatchObject({ category: null, kbArticleIds: [] });
+  });
+
+  it("a failed judgment wins over a capped rerank: the run throws the judgment error", async () => {
+    const h = harness({ judgeError: () => new Error("judge boom"), rerankError: typesafeCap });
+
+    await expect(runTriageTicket({ ticketId }, h.deps)).rejects.toThrow("judge boom");
+    expect(h.writes()).toEqual([]);
+    expect(h.alerts).toEqual([]);
+  });
+
+  it("waits for the KB match to settle before a failed judgment fails the run", async () => {
+    await onFakeClock(async () => {
+      const h = harness({ judgeError: () => new Error("judge boom"), latency: { rerank: 2000 } });
+      let settled = false;
+      const run = runTriageTicket({ ticketId }, h.deps).finally(() => {
+        settled = true;
+      });
+      run.catch(() => undefined);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(settled).toBe(false);
+
+      await vi.runAllTimersAsync();
+      await expect(run).rejects.toThrow("judge boom");
+    });
+  });
+
+  it("logs the timings as names and numbers only, without the AI steps on a resumed run", async () => {
+    const h = harness({ fail: "status:triaged", failOnce: true });
+    await expect(runTriageTicket({ ticketId }, h.deps)).rejects.toThrow();
+
+    await runTriageTicket({ ticketId }, h.deps, 2);
+
+    const timings = triagedLog(h).timings as Record<string, unknown>;
+    expect(Object.keys(timings).sort()).toEqual(["loadMs", "totalMs", "writeMs"]);
+    for (const value of Object.values(timings)) expect(typeof value).toBe("number");
   });
 });

@@ -164,18 +164,30 @@ export const canaryTraceScenario: Scenario = {
 const positive = (value: unknown) =>
   typeof value === "number" && Number.isFinite(value) && value > 0;
 
+/**
+ * A failed attempt, such as an LLM request the drafter retried (P3-T10k): the
+ * sink marks its span level ERROR and sends no token counts.
+ */
+const failedAttempt = (row: Observation) => row["level"] === "ERROR";
+
 /** The check names one ticket fails, each ending in the ticket ID. */
 function ticketChecks(view: InternalTicketView, rows: readonly Observation[], canaryRun: string) {
   const id = view.id;
   const checks: string[] = [];
   if (view.aiCallCount < 1) checks.push(`ai-calls:${id}`);
+  // Every reserved call has a span, failed attempts included.
   if (rows.length !== view.aiCallCount) checks.push(`count:${id}`);
   const each = (ok: (row: Observation) => boolean) => rows.every(ok);
-  if (!each((row) => typeof row["model"] === "string" && row["model"] !== "")) {
+  // The model and the token counts are checked on the calls that succeeded only.
+  const succeeded = rows.filter((row) => !failedAttempt(row));
+  const eachSucceeded = (ok: (row: Observation) => boolean) => succeeded.every(ok);
+  if (!eachSucceeded((row) => typeof row["model"] === "string" && row["model"] !== "")) {
     checks.push(`model:${id}`);
   }
   const usage = (row: Observation) => row["usageDetails"] as Record<string, unknown> | undefined;
-  if (!each((row) => positive(usage(row)?.["input"]) && positive(usage(row)?.["output"]))) {
+  if (
+    !eachSucceeded((row) => positive(usage(row)?.["input"]) && positive(usage(row)?.["output"]))
+  ) {
     checks.push(`tokens:${id}`);
   }
   if (!each((row) => row["environment"] === "e2e")) checks.push(`environment:${id}`);
@@ -187,9 +199,10 @@ function ticketChecks(view: InternalTicketView, rows: readonly Observation[], ca
 
 /**
  * T3.O.01: for 5 triaged test tickets, Langfuse has, by `sessionId` = ticket
- * ID, as many observations as the ticket's `aiCallCount`; each has a model
- * name, input and output token counts above 0 and the environment `e2e`, and
- * no input has a hard hit. A failed check names the ticket ID.
+ * ID, as many observations as the ticket's `aiCallCount`; each has the
+ * environment `e2e` and no input has a hard hit, and each that did not fail
+ * (level ERROR, a retried attempt) has a model name and input and output token
+ * counts above 0. A failed check names the ticket ID.
  */
 export const langfuseObservationsScenario: Scenario = {
   id: "T3.O.01",

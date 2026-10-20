@@ -65,12 +65,11 @@ describe("triage pipeline on the local REST stack", () => {
     expect((row?.kb_article_ids as string[]).length).toBeGreaterThan(0);
     expect(await ticketStatus(ticketId)).toBe("triaged");
     expect(await eventsAfterCheck(ticketId)).toEqual(TRIAGE_EVENTS);
-    expect(typesafeKinds()).toEqual([
-      "sensitive_check",
-      "triage_judgments",
-      "kb_rerank",
-      "grounding",
-    ]);
+    // The judgments and the KB rerank run in parallel (P3-T10k): either may go first.
+    const kinds = typesafeKinds();
+    expect(kinds[0]).toBe("sensitive_check");
+    expect(kinds.slice(1, 3).sort()).toEqual(["kb_rerank", "triage_judgments"]);
+    expect(kinds.slice(3)).toEqual(["grounding"]);
     expect(requestsTo(ORIGINS.llm)).toHaveLength(1);
   });
 

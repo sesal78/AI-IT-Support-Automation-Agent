@@ -30,7 +30,7 @@ Decisions used: plan D2 (Seun applies migrations), D4 (Langfuse Cloud), D5 (Open
 - Triage flags (`triage_results.flags`): `injection_suspected`, `needs_info`, `ungrounded_fix`, `outage_or_duplicate`.
 - Policy reasons: `sensitive`, `injection_suspected`, `needs_info`, `low_confidence`, `p1`, `outage_or_duplicate`, `ungrounded_fix`, `cap_reached`, `llm_unavailable`.
 - `security_events`: source `internal_api` with kinds `missing_token`, `bad_token`, `token_in_query`, `test_tickets_disabled`; source `pipeline` with kinds `alert:llm_unavailable`, `alert:llm_cap_80`, `alert:typesafe_cap_80`, `alert:typesafe_cap_reached`, `alert:triage_failed`, `alert:triage_enqueue_failed`.
-- `ai_calls.kind` and its call count: `sensitive_check` (5), `triage_judgments` (7), `kb_rerank` (1 per candidate, at most 5), `grounding` (1), `fix_steps` (1), `judge:<id>` (1). A TypeSafe "call" is one question. An LLM "call" is one request. So a ticket uses at most 18 TypeSafe calls and 1 LLM call.
+- `ai_calls.kind` and its call count: `sensitive_check` (5), `triage_judgments` (7), `kb_rerank` (1 per candidate, at most 5), `grounding` (1), `fix_steps` (1), `judge:<id>` (1). A TypeSafe "call" is one question. An LLM "call" is one request. So a ticket uses at most 18 TypeSafe calls and 2 LLM calls (one request plus one in-call retry, P3-T10k).
 - `environment`: `e2e` when `E2E_MODE=true`, else `staging`.
 
 ## Resolved points (orchestrator, 2026-10-04)
@@ -1321,7 +1321,7 @@ Risk: normal · Depends on: **P3-T8a, P3-T6c**
 
 ## Description
 
-Add `packages/ai/src/llm-client.ts`: `createFixDrafter({ apiKey, baseUrl, model, runtime })` with `draft({ ticketId, ticket, articles, capOverride })`. It uses the Vercel AI SDK with the OpenAI-compatible provider, plain text generation, no tools, the SDK's retries switched off and a 20-second timeout. The reply text goes through `parseFixSteps`. HTTP 429 becomes `LlmUnavailableError` (the task turns it into `llm_unavailable`); any other 4xx fails loudly as `LlmError`, and so does any other failed call. The client sends an honest custom `User-Agent`: `ai-it-support-agent/<APP_VERSION>`. It adds a stable per-ticket `x-opencode-session` header only if the OpenCode Go docs require it for API clients. It never imitates another client. The call runs through `runtime.call` with provider `llm`, kind `fix_steps` and 1 call, so the budget is reserved before the request.
+Add `packages/ai/src/llm-client.ts`: `createFixDrafter({ apiKey, baseUrl, model, runtime })` with `draft({ ticketId, ticket, articles, capOverride })`. It uses the Vercel AI SDK with the OpenAI-compatible provider, plain text generation, no tools and the SDK's retries switched off. Each request has a 10-second timeout; a transient failure (timeout, network, 408 or 5xx, unreadable 2xx, `FixParseError`) is retried once inside `draft`, and each request is metered and traced on its own. A 429 or any other 4xx is never retried (P3-T10k). The reply text goes through `parseFixSteps`. HTTP 429 becomes `LlmUnavailableError` (the task turns it into `llm_unavailable`); any other 4xx fails loudly as `LlmError`, and so does any other failed call. The client sends an honest custom `User-Agent`: `ai-it-support-agent/<APP_VERSION>`. It adds a stable per-ticket `x-opencode-session` header only if the OpenCode Go docs require it for API clients. It never imitates another client. The call runs through `runtime.call` with provider `llm`, kind `fix_steps` and 1 call, so the budget is reserved before the request.
 Env: `LLM_API_KEY`, `LLM_BASE_URL` (a URL), `LLM_MODEL` (new, pipeline; add to `.env.example`).
 New dependency: `ai` and `@ai-sdk/openai-compatible`.
 Target repo: D:/Homebase/Sandbox/ai-it-support-agent
@@ -1331,11 +1331,11 @@ Target repo: D:/Homebase/Sandbox/ai-it-support-agent
 - [ ] Given a mocked `POST <LLM_BASE_URL>/chat/completions` that answers with valid JSON, `draft` returns `{ steps, caveats, model, usage }`. The request has `model` equal to `LLM_MODEL`, the bearer key, the system and user messages from `buildFixPrompt`, and no `tools` key.
 - [ ] `usage: { prompt_tokens: 120, completion_tokens: 45 }` in the response ends up as `tokensIn: 120` and `tokensOut: 45` in the `ai_calls` completion and in the span.
 - [ ] Given a 429, `draft` throws `LlmUnavailableError`, and the host has received exactly 1 request.
-- [ ] Given a 500, `draft` throws `LlmError` with the status 500, and the host has received exactly 1 request.
+- [ ] Given a 500 twice, `draft` throws `LlmError` with the status 500, and the host has received exactly 2 requests.
 - [ ] Given a 400, a 401 or a 403, `draft` throws `LlmError` with that status, never `LlmUnavailableError`, and the host has received exactly 1 request.
 - [ ] With `APP_VERSION=1.2.3`, the request has the header `User-Agent: ai-it-support-agent/1.2.3`. The header does not name another client or an SDK.
-- [ ] Given a reply that is not valid JSON, `draft` throws `FixParseError` and returns no fix text.
-- [ ] Given no answer inside the timeout (50 ms in the test), `draft` throws `LlmError` with the kind `timeout`.
+- [ ] Given two replies that are not valid JSON, `draft` throws `FixParseError` and returns no fix text.
+- [ ] Given no answer inside the timeout (50 ms in the test) to either request, `draft` throws `LlmError` with the kind `timeout`.
 - [ ] A call-order check shows the budget reservation happens before the HTTP request. With `capOverride: 0`, `draft` throws `BudgetExceededError` and the host receives 0 requests.
 - [ ] With the API key set to a marker string, the marker is in no log line, error message or span.
 - [ ] A missing `LLM_API_KEY`, or an `LLM_BASE_URL` that is not a URL, fails env validation, naming the variable.
@@ -1473,7 +1473,7 @@ Risk: normal · Depends on: **P3-T10a, P3-T6d, P3-T7b, P3-T13, P3-T9**
 
 ## Description
 
-Add the Trigger.dev task `triage-ticket` in `services/pipeline/src/trigger/triage-ticket.ts` (a `schemaTask`, payload `{ ticketId, testOverrides? }`, task ID constant `TRIAGE_TICKET_TASK_ID` in `packages/shared`). The body `runTriageTicket(payload, deps, attempt)` is exported for tests, like `runIntakeTicket`. Steps: load the ticket, its redaction and its triage row; run the judgments; build the KB query, search, rerank; draft the fix steps; score the grounding; decide the route; then write, in this order: `saveTriageResult`, the events `kb_matched`, `fix_drafted`, `policy_decided`, `triaged`, and the status `triaged`. All AI work happens before the first write, so a failed attempt leaves no partial result. `createTriageDeps(env)` validates the env at task start and builds the real dependencies.
+Add the Trigger.dev task `triage-ticket` in `services/pipeline/src/trigger/triage-ticket.ts` (a `schemaTask`, payload `{ ticketId, testOverrides? }`, task ID constant `TRIAGE_TICKET_TASK_ID` in `packages/shared`). The body `runTriageTicket(payload, deps, attempt)` is exported for tests, like `runIntakeTicket`. Steps: load the ticket, its redaction and its triage row; run the judgments and, in parallel, build the KB query, search, rerank (the judgments still decide first: when they fail or hit the cap, the KB result is dropped; P3-T10k); draft the fix steps; score the grounding; decide the route; then write, in this order: `saveTriageResult`, the events `kb_matched`, `fix_drafted`, `policy_decided`, `triaged`, and the status `triaged`. All AI work happens before the first write, so a failed attempt leaves no partial result. `createTriageDeps(env)` validates the env at task start and builds the real dependencies.
 Env: none new (it validates the names from P3-T6b, P3-T6c, P3-T8b, P3-T9, P3-T13).
 New dependency: none.
 Target repo: D:/Homebase/Sandbox/ai-it-support-agent
@@ -1984,7 +1984,7 @@ Risk: normal · Depends on: **P3-T11b**
 
 ## Description
 
-Add the root script `eval` and `tests/live/src/eval/run.ts`. `pnpm eval --run <id>` submits the tickets of `evals/tickets.json` through `POST /api/internal/test-tickets` (`testId` = `<run>:<ticket id>`, 4 at a time), polls each ticket view until `triaged` or `failed` (180-second limit each), then writes `results.json`, `metrics.json` and `report.md` under `.loop-evidence/eval/<run>/`. Options: `--set <name>`, `--limit <n>`, `--max-llm-calls` (default 150) and `--max-typesafe-calls` (default 2 500). Budget guard: before the start it reads `GET /api/internal/usage` and refuses to start when the estimate (1 LLM call and 18 TypeSafe calls per ticket) is above a maximum; after each batch it reads the usage again and stops when the growth since the start is above a maximum. The exit code is 0 only when every DoD target passes.
+Add the root script `eval` and `tests/live/src/eval/run.ts`. `pnpm eval --run <id>` submits the tickets of `evals/tickets.json` through `POST /api/internal/test-tickets` (`testId` = `<run>:<ticket id>`, 4 at a time), polls each ticket view until `triaged` or `failed` (180-second limit each), then writes `results.json`, `metrics.json` and `report.md` under `.loop-evidence/eval/<run>/`. Options: `--set <name>`, `--limit <n>`, `--max-llm-calls` (default 150) and `--max-typesafe-calls` (default 2 500). Budget guard: before the start it reads `GET /api/internal/usage` and refuses to start when the estimate (1 LLM call and 18 TypeSafe calls per ticket; a drafter retry can add a second LLM call, which the usage check after each batch counts) is above a maximum; after each batch it reads the usage again and stops when the growth since the start is above a maximum. The exit code is 0 only when every DoD target passes.
 Env: none new.
 New dependency: none.
 Target repo: D:/Homebase/Sandbox/ai-it-support-agent

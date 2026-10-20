@@ -115,8 +115,13 @@ describe("triage failures on the local REST stack", () => {
       expect(lastError, `attempt ${attempt}`).toBeInstanceOf(Error);
       expect(await ticketStatus(ticketId)).toBe("redacted");
     }
-    // The SDK's 2 retries per attempt: 3 judgments requests per attempt, nothing after them.
-    expect(typesafeKinds(from)).toEqual(Array(MAX_ATTEMPTS * 3).fill("triage_judgments"));
+    // The SDK's 2 retries per attempt: 3 judgments requests per attempt. The KB
+    // rerank runs beside them (P3-T10k), one request per attempt; nothing after.
+    const kinds = typesafeKinds(from);
+    expect(kinds.filter((kind) => kind === "triage_judgments")).toHaveLength(MAX_ATTEMPTS * 3);
+    expect(kinds.filter((kind) => kind !== "triage_judgments")).toEqual(
+      Array(MAX_ATTEMPTS).fill("kb_rerank"),
+    );
     expect(requestsTo(ORIGINS.llm, from)).toHaveLength(0);
 
     await onTriageFailure(

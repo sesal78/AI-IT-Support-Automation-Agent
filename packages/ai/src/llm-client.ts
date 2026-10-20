@@ -1,11 +1,22 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { APICallError, RetryError, generateText } from "ai";
-import { buildFixPrompt, parseFixSteps, type FixPromptInput, type FixSteps } from "./fix-steps.js";
+import {
+  FixParseError,
+  buildFixPrompt,
+  parseFixSteps,
+  type FixPromptInput,
+  type FixSteps,
+} from "./fix-steps.js";
 import type { createAiRuntime } from "./trace.js";
 
-/** Whole-request limit for one fix-step call. */
-export const LLM_TIMEOUT_MS = 20_000;
-/** Calls reserved per draft: one chat completion. */
+/**
+ * Whole-request limit for one fix-step request. With one retry a draft still
+ * ends within about 20 s, the single-request limit before P3-T10k.
+ */
+export const LLM_TIMEOUT_MS = 10_000;
+/** Requests per draft at most: the first, and one retry after a transient failure. */
+export const LLM_MAX_ATTEMPTS = 2;
+/** Calls reserved per request: one chat completion. */
 const FIX_STEPS_CALLS = 1;
 
 /** The provider refused the call for quota or rate reasons (HTTP 429). */
@@ -76,10 +87,27 @@ function toLlmError(error: unknown): Error {
 }
 
 /**
+ * A failure that a second request may not repeat: a timeout, a network error,
+ * an HTTP 408 or 5xx, a 2xx body the SDK could not read, or a reply that fails
+ * `parseFixSteps`. Never a 429 (`LlmUnavailableError`), another 4xx, or a
+ * refused budget (`BudgetExceededError`).
+ */
+export function isTransientLlmError(error: unknown): boolean {
+  if (error instanceof FixParseError) return true;
+  if (!(error instanceof LlmError)) return false;
+  if (error.kind !== "http" || error.status === null) return true;
+  return error.status === 408 || error.status < 400 || error.status >= 500;
+}
+
+/**
  * Fix-step drafts from an OpenAI-compatible chat model (OpenCode Go). Plain
- * text, no tools, SDK retries off, one request per draft. The budget is
- * reserved through `runtime.call` (provider `llm`, kind `fix_steps`) before
- * the request. The reply must pass `parseFixSteps`; there is no repair.
+ * text, no tools, SDK retries off. Each request has its own `LLM_TIMEOUT_MS`
+ * limit and its own `runtime.call` (provider `llm`, kind `fix_steps`), so the
+ * budget is reserved before every request and every request counts toward
+ * the cap and gets its own span. A transient failure (`isTransientLlmError`)
+ * is retried once inside the draft, so one slow or broken reply does not fail
+ * the whole triage run; any other failure, and a second failure, is thrown.
+ * The reply must pass `parseFixSteps`; there is no repair.
  */
 export function createFixDrafter(deps: FixDrafterDeps) {
   const { apiKey, baseUrl, model, runtime } = deps;
@@ -99,49 +127,60 @@ export function createFixDrafter(deps: FixDrafterDeps) {
   });
   const chatModel = provider.chatModel(model);
 
+  /** One metered, traced request. */
+  async function request(input: FixDraftInput, system: string, user: string): Promise<FixDraft> {
+    const { output } = await runtime.call(
+      {
+        provider: "llm",
+        kind: "fix_steps",
+        calls: FIX_STEPS_CALLS,
+        ticketId: input.ticketId,
+        ...(input.capOverride === undefined ? {} : { capOverride: input.capOverride }),
+        model,
+        input: { model, system, user },
+      },
+      async () => {
+        let result: Awaited<ReturnType<typeof generateText>>;
+        try {
+          result = await generateText({
+            model: chatModel,
+            system,
+            prompt: user,
+            maxRetries: 0,
+            timeout: timeoutMs,
+          });
+        } catch (error) {
+          throw toLlmError(error);
+        }
+        const fix = parseFixSteps(result.text);
+        const usage = {
+          tokensIn: result.usage.inputTokens ?? 0,
+          tokensOut: result.usage.outputTokens ?? 0,
+        };
+        return {
+          ...usage,
+          output: {
+            steps: fix.steps,
+            caveats: fix.caveats,
+            model: result.response.modelId,
+            usage,
+          },
+        };
+      },
+    );
+    return output;
+  }
+
   return {
     async draft(input: FixDraftInput): Promise<FixDraft> {
       const { system, user } = buildFixPrompt({ ticket: input.ticket, articles: input.articles });
-      const { output } = await runtime.call(
-        {
-          provider: "llm",
-          kind: "fix_steps",
-          calls: FIX_STEPS_CALLS,
-          ticketId: input.ticketId,
-          ...(input.capOverride === undefined ? {} : { capOverride: input.capOverride }),
-          model,
-          input: { model, system, user },
-        },
-        async () => {
-          let result: Awaited<ReturnType<typeof generateText>>;
-          try {
-            result = await generateText({
-              model: chatModel,
-              system,
-              prompt: user,
-              maxRetries: 0,
-              timeout: timeoutMs,
-            });
-          } catch (error) {
-            throw toLlmError(error);
-          }
-          const fix = parseFixSteps(result.text);
-          const usage = {
-            tokensIn: result.usage.inputTokens ?? 0,
-            tokensOut: result.usage.outputTokens ?? 0,
-          };
-          return {
-            ...usage,
-            output: {
-              steps: fix.steps,
-              caveats: fix.caveats,
-              model: result.response.modelId,
-              usage,
-            },
-          };
-        },
-      );
-      return output;
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          return await request(input, system, user);
+        } catch (error) {
+          if (attempt >= LLM_MAX_ATTEMPTS || !isTransientLlmError(error)) throw error;
+        }
+      }
     },
   };
 }
