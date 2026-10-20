@@ -7,6 +7,7 @@ import { scenarios } from "./scenarios.ts";
 import {
   ACCESS_BYPASS_PATH,
   ACCESS_GUARDED_PATHS,
+  isAccessDenied,
   FLOOD_CONCURRENCY,
   FLOOD_REQUESTS,
   securityScenarios,
@@ -310,6 +311,103 @@ describe("T3.S.05", () => {
       status: "fail",
       evidence: { inboundStatus: 403, failedPaths: [ACCESS_BYPASS_PATH] },
     });
+  });
+
+  it("passes when Access answers with the 302 login redirect, and records no Location", async () => {
+    const h = await setup({ mock: { accessDenial: "redirect" } });
+    const { code, entry } = await h.one("T3.S.05");
+    expect(code).toBe(0);
+    expect(entry).toMatchObject({
+      status: "pass",
+      evidence: {
+        statuses: ACCESS_GUARDED_PATHS.map(() => 302),
+        inboundStatus: 404,
+        failedPaths: [],
+      },
+    });
+    expect(JSON.stringify(entry)).not.toContain("cloudflareaccess");
+  });
+
+  it("fails naming the path when a guarded path redirects somewhere that is not Access", async () => {
+    const h = await setup({
+      mock: {
+        override: (r) =>
+          r.path === "/api/tickets"
+            ? { status: 302, headers: { Location: "https://cloudflareaccess.com.evil.example/x" } }
+            : undefined,
+      },
+    });
+    const { entry } = await h.one("T3.S.05");
+    expect(entry).toMatchObject({ status: "fail", evidence: { failedPaths: ["/api/tickets"] } });
+  });
+
+  it("fails when the inbound path answers with the Access login redirect", async () => {
+    const h = await setup({
+      mock: {
+        accessDenial: "redirect",
+        override: (r) =>
+          r.path === ACCESS_BYPASS_PATH
+            ? {
+                status: 302,
+                headers: { Location: "https://team.cloudflareaccess.com/cdn-cgi/access/login/h" },
+              }
+            : undefined,
+      },
+    });
+    const { entry } = await h.one("T3.S.05");
+    expect(entry).toMatchObject({
+      status: "fail",
+      evidence: { inboundStatus: 302, failedPaths: [ACCESS_BYPASS_PATH] },
+    });
+  });
+});
+
+describe("isAccessDenied", () => {
+  const ok = "https://team.cloudflareaccess.com/cdn-cgi/access/login/e2e.example.test?kid=1";
+  const res = (status: number, location: string | null, text = "", contentType = "") => ({
+    status,
+    contentType,
+    text,
+    location,
+  });
+
+  it("accepts the 403 non-JSON page and the 302/303 login redirect", () => {
+    expect(isAccessDenied(res(403, null, "<html>no</html>", "text/html"))).toBe(true);
+    expect(isAccessDenied(res(302, ok))).toBe(true);
+    expect(isAccessDenied(res(303, ok))).toBe(true);
+    expect(isAccessDenied(res(302, "https://a.b.cloudflareaccess.com/cdn-cgi/access/login"))).toBe(
+      true,
+    );
+  });
+
+  it.each([
+    ["the e2e app itself", "https://e2e.example.test/cdn-cgi/access/login/x"],
+    ["a lookalike suffix host", "https://cloudflareaccess.com.evil.example/cdn-cgi/access/login/x"],
+    [
+      "a host that merely ends in the name",
+      "https://evilcloudflareaccess.com/cdn-cgi/access/login/x",
+    ],
+    ["the bare apex host", "https://cloudflareaccess.com/cdn-cgi/access/login/x"],
+    ["http", "http://team.cloudflareaccess.com/cdn-cgi/access/login/x"],
+    ["another path", "https://team.cloudflareaccess.com/other"],
+    [
+      "a path that only starts with the prefix",
+      "https://team.cloudflareaccess.com/cdn-cgi/access/loginx",
+    ],
+    ["a garbled Location", "not a url"],
+    ["no Location", null],
+  ])("rejects a 302 to %s", (_name, location) => {
+    expect(isAccessDenied(res(302, location))).toBe(false);
+  });
+
+  it("rejects other statuses and the app's own JSON", () => {
+    expect(isAccessDenied(res(200, ok))).toBe(false);
+    expect(isAccessDenied(res(301, ok))).toBe(false);
+    expect(isAccessDenied(res(307, ok))).toBe(false);
+    expect(isAccessDenied(res(401, null, '{"error":"unauthorized"}', "application/json"))).toBe(
+      false,
+    );
+    expect(isAccessDenied(res(403, null, '{"error":"forbidden"}', "application/json"))).toBe(false);
   });
 });
 

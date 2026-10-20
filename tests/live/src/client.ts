@@ -58,6 +58,8 @@ export interface RawResponse {
   readonly status: number;
   readonly contentType: string;
   readonly text: string;
+  /** The `Location` header of a redirect (never followed), else null. */
+  readonly location: string | null;
 }
 
 export interface InternalClient {
@@ -157,6 +159,7 @@ export function createInternalClient(
       status: response.status,
       contentType: response.headers.get("content-type") ?? "",
       text,
+      location: response.headers.get("location"),
     };
   }
 

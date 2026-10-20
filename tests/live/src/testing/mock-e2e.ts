@@ -97,6 +97,11 @@ export interface MockE2eOptions {
   readonly accessClientSecret: string;
   /** Runs before the Access gate; a reply short-circuits the default routes. */
   readonly override?: (request: MockRequest) => MockReply | undefined;
+  /**
+   * How the Access gate refuses: `forbidden` is the 403 HTML page (default),
+   * `redirect` is the 302 to the Access login page.
+   */
+  readonly accessDenial?: "forbidden" | "redirect";
   /** Default `per-minute`. */
   readonly securityEvents?: MockSecurityEvents;
   /** Clock for security-event windows. Default `Date.now`. */
@@ -160,6 +165,15 @@ const ACCESS_DENIED: MockReply = {
   status: 403,
   text: "<!DOCTYPE html><html><body><h1>Forbidden</h1><p>Cloudflare Access</p></body></html>",
   contentType: "text/html; charset=utf-8",
+};
+/** The other form of the refusal: a 302 to the Access login page of an example team. */
+const ACCESS_LOGIN_REDIRECT: MockReply = {
+  status: 302,
+  text: "",
+  headers: {
+    Location:
+      "https://team.cloudflareaccess.com/cdn-cgi/access/login/e2e.example.test?kid=0000&redirect_url=%2F",
+  },
 };
 const NOT_FOUND: MockReply = {
   status: 404,
@@ -305,7 +319,9 @@ function createDefaultRoute(
   return function defaultRoute(request: MockRequest): MockReply {
     const { method, path } = request;
     if (ACCESS_BYPASS.has(path)) return NOT_FOUND;
-    if (!request.accessOk) return ACCESS_DENIED;
+    if (!request.accessOk) {
+      return options.accessDenial === "redirect" ? ACCESS_LOGIN_REDIRECT : ACCESS_DENIED;
+    }
     if (method === "GET" && path === "/api/health") {
       return { status: 200, json: { status: "ok", version: "0.0.0-mock" } };
     }

@@ -89,6 +89,16 @@ describe("createInternalClient", () => {
     expect(mock.requests.map((r) => r.path)).toEqual(["/api/health"]);
   });
 
+  it("returns a redirect as-is: status and Location readable, nothing followed", async () => {
+    const location = "https://team.cloudflareaccess.com/cdn-cgi/access/login/e2e.example.test";
+    const { mock, client } = await setup((request) =>
+      request.path === "/api/health" ? { status: 302, headers: { Location: location } } : undefined,
+    );
+    const response = await client.send("GET /api/health", "/api/health");
+    expect(response).toMatchObject({ status: 302, location });
+    expect(mock.requests.map((r) => r.path)).toEqual(["/api/health"]);
+  });
+
   it("refuses a path that resolves to another origin before sending", async () => {
     const calls: URL[] = [];
     const { config } = await setup();

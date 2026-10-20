@@ -45,9 +45,33 @@ function isJson(response: RawResponse): boolean {
   }
 }
 
-/** The Cloudflare Access refusal: 403 with a body that is not the app's JSON. */
-const isAccessDenied = (response: RawResponse): boolean =>
-  response.status === 403 && !isJson(response);
+const ACCESS_LOGIN_HOST_SUFFIX = ".cloudflareaccess.com";
+const ACCESS_LOGIN_PATH = "/cdn-cgi/access/login";
+
+/** True for a redirect to the Cloudflare Access login page (https, a team host). */
+function isAccessLoginRedirect(response: RawResponse): boolean {
+  if (response.status !== 302 && response.status !== 303) return false;
+  if (response.location === null) return false;
+  let url: URL;
+  try {
+    url = new URL(response.location);
+  } catch {
+    return false;
+  }
+  return (
+    url.protocol === "https:" &&
+    url.hostname.endsWith(ACCESS_LOGIN_HOST_SUFFIX) &&
+    url.hostname.length > ACCESS_LOGIN_HOST_SUFFIX.length &&
+    (url.pathname === ACCESS_LOGIN_PATH || url.pathname.startsWith(`${ACCESS_LOGIN_PATH}/`))
+  );
+}
+
+/**
+ * The Cloudflare Access refusal: a 403 with a body that is not the app's JSON,
+ * or a 302/303 to the Access login page on a `*.cloudflareaccess.com` host.
+ */
+export const isAccessDenied = (response: RawResponse): boolean =>
+  (response.status === 403 && !isJson(response)) || isAccessLoginRedirect(response);
 
 async function rowsSince(context: ScenarioContext, since: number) {
   const { events } = await context.client.securityEvents(new Date(since));
@@ -149,7 +173,7 @@ export const ACCESS_BYPASS_PATH = "/api/inbound/email";
 
 /**
  * T3.S.05: without the Access headers (and without a token), every guarded
- * path gets Cloudflare's 403, and the inbound-mail path does not.
+ * path gets Cloudflare's refusal (403 or the login redirect), and the inbound-mail path does not.
  */
 export const accessGateScenario: Scenario = {
   id: "T3.S.05",
