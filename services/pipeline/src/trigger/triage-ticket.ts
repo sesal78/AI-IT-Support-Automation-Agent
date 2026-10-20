@@ -88,6 +88,8 @@ export interface TriageDeps {
   /** Test switch `langfuseDown`: every later trace export of this run fails. */
   setTraceSinkDown(down: boolean): void;
   logger: { info: LogFn; warn: LogFn; error: LogFn };
+  /** Milliseconds, for the step timings in the `triaged` log line. Default Date.now. */
+  now?: () => number;
 }
 
 /**
@@ -180,21 +182,31 @@ const statusLabel = (status: string) =>
 /**
  * The task body, exported so tests can call it without the Trigger.dev runtime.
  *
- * Order: load the ticket, its redaction, its triage row and the triage events
- * already written; judgments, KB search, rerank, fix draft, grounding, policy;
- * then the writes: a degraded-path event (and its alert) when one applies,
- * saveTriageResult, the events kb_matched, fix_drafted, policy_decided and
- * triaged, and last the status `triaged`. Every AI step runs before the first
- * write, so a failed AI step leaves no triage result, no event and the status
- * `redacted`. A ticket already `triaged` (or later) is skipped with no call.
+ * Order: load the ticket, then its redaction, its triage row and the triage
+ * events already written (these three reads in parallel); judgments, KB
+ * search, rerank, fix draft, grounding, policy; then the writes: a
+ * degraded-path event (and its alert) when one applies, saveTriageResult, the
+ * events kb_matched, fix_drafted, policy_decided and triaged, and last the
+ * status `triaged`. Every AI step runs before the first write, so a failed AI
+ * step leaves no triage result, no event and the status `redacted`. A ticket
+ * already `triaged` (or later) is skipped with no call.
+ *
+ * Latency (P3-T10k): the judgments and the KB match (search, then rerank)
+ * read only the redacted text, so they run in parallel. Both settle before
+ * anything is decided, and the judgments decide first: when they fail or hit
+ * the TypeSafe cap, whatever the KB branch did is dropped. The drafter retries
+ * one transient LLM failure itself (packages/ai), so a slow reply no longer
+ * fails the run and repeats every AI call. The `triaged` log line carries the
+ * step timings in milliseconds (names and numbers only).
  *
  * Degraded paths, each still ending `triaged` with the route `review`:
  * - LLM cap (`BudgetExceededError` from the drafter): event llm_cap_reached,
  *   no fix steps, no grounding, reason cap_reached.
- * - LLM 429 (`LlmUnavailableError`): one drafter call, never retried; event
- *   and alert llm_unavailable, no fix steps, no grounding.
- * - TypeSafe cap at the judgments: event and alert typesafe_cap_reached; no
- *   KB search, no LLM call, the judged fields stay null, reason cap_reached.
+ * - LLM 429 (`LlmUnavailableError`): one drafter call, a 429 is never
+ *   retried; event and alert llm_unavailable, no fix steps, no grounding.
+ * - TypeSafe cap at the judgments: event and alert typesafe_cap_reached; the
+ *   KB match that ran beside them is dropped (no article, no kb_matched), no
+ *   LLM call, the judged fields stay null, reason cap_reached.
  * - TypeSafe cap at the rerank: the same event and alert; the judgments are
  *   kept, no KB article is kept (unreranked hits are not vetted), no fix is
  *   drafted and no grounding runs, reason cap_reached.
@@ -225,6 +237,17 @@ export async function runTriageTicket(
 ): Promise<TriageTicketResult> {
   const { ticketId } = payload;
   const { repos, logger: log } = deps;
+  const clock = deps.now ?? (() => Date.now());
+  const started = clock();
+  const timings: StepTimings = {};
+  const timed: Timed = async (name, fn) => {
+    const start = clock();
+    try {
+      return await fn();
+    } finally {
+      timings[name] = clock() - start;
+    }
+  };
 
   const ticket = await repos.getTicket(ticketId);
   if (!ticket) {
@@ -242,24 +265,30 @@ export async function runTriageTicket(
       `triage-ticket: ticket ${ticketId} has status ${status}, expected redacted`,
     );
   }
-  const redaction = await repos.getRedaction(ticketId);
+  // Three independent reads in parallel; they are checked in the same order.
+  const [redaction, triage, writtenTypes] = await Promise.all([
+    repos.getRedaction(ticketId),
+    repos.getTriage(ticketId),
+    repos.listEventTypes(ticketId, KNOWN_EVENTS),
+  ]);
   if (!redaction) {
     log.error("triage-ticket: no redaction", { ticketId });
     throw new AbortTaskRunError(`triage-ticket: ticket ${ticketId} has no redaction`);
   }
-  const triage = await repos.getTriage(ticketId);
   if (!triage) {
     log.error("triage-ticket: no sensitive check", { ticketId });
     throw new AbortTaskRunError(`triage-ticket: ticket ${ticketId} has no triage row`);
   }
+  timings.loadMs = clock() - started;
 
   const overrides = testOverrides(payload, ticket.is_test, deps.e2eMode);
   if (overrides.langfuseDown === true) deps.setTraceSinkDown(true);
   // Events an earlier attempt already wrote: none of them is written twice.
-  const written = new Set(await repos.listEventTypes(ticketId, KNOWN_EVENTS));
+  const written = new Set(writtenTypes);
   const prior = degradedFrom(written);
 
   let outcome: TriageOutcome;
+  let writesStart = clock();
   if (triage.triaged_at !== null) {
     // Resume: an earlier attempt saved the result but failed before the status
     // write. No AI step runs again; only the missing events and the status are
@@ -270,7 +299,9 @@ export async function runTriageTicket(
     const fresh = await triageWithAi(
       { ticketId, department: ticket.department, redaction, triage, prior, overrides },
       deps,
+      timed,
     );
+    writesStart = clock();
     const { degraded } = fresh.outcome;
     if (degraded !== null && !written.has(degraded)) {
       // When this write fails nothing is saved, so the retry runs every AI step
@@ -296,12 +327,15 @@ export async function runTriageTicket(
     if (!written.has(type)) await repos.addEvent(ticketId, type, data);
   }
   await repos.setTicketStatus(ticketId, "triaged");
+  timings.writeMs = clock() - writesStart;
+  timings.totalMs = clock() - started;
   log.info("triage-ticket: triaged", {
     ticketId,
     attempt,
     route,
     reasons,
     articles: articleIds?.length ?? 0,
+    timings,
   });
 
   return { ticketId, skipped: false, route, reasons };
@@ -336,6 +370,13 @@ function testOverrides(
   }
 }
 
+/** Milliseconds per step, for the `triaged` log line; a step that did not run is absent. */
+type StepTimings = Partial<
+  Record<"loadMs" | "judgeMs" | "kbMs" | "draftMs" | "groundingMs" | "writeMs" | "totalMs", number>
+>;
+/** Runs `fn` and records its duration under `name`, also when it throws. */
+type Timed = <T>(name: keyof StepTimings, fn: () => Promise<T>) => Promise<T>;
+
 /** What the event payloads need: IDs, counts and names only. */
 interface TriageOutcome {
   route: Route;
@@ -357,48 +398,66 @@ interface TriageInput {
 }
 
 type Judgments = Awaited<ReturnType<TriageDeps["judge"]["judge"]>>;
+type KbArticle = Awaited<ReturnType<TriageDeps["repos"]["searchKb"]>>[number];
 type Draft = Awaited<ReturnType<TriageDeps["drafter"]["draft"]>>;
 type Grounding = Awaited<ReturnType<TriageDeps["grounding"]["scoreGrounding"]>>;
 
 const isCap = (error: unknown, provider: "llm" | "typesafe") =>
   error instanceof BudgetExceededError && error.provider === provider;
 
+/**
+ * KB search, then rerank: the KB half of the parallel phase. A TypeSafe cap
+ * at the rerank keeps no article; any other failure throws.
+ */
+async function matchKb(
+  ticketId: string,
+  text: { title: string; description: string },
+  deps: TriageDeps,
+): Promise<{ articles: KbArticle[]; capped: boolean }> {
+  const candidates = await deps.repos.searchKb(buildKbQuery(`${text.title} ${text.description}`));
+  try {
+    const ranked = await deps.reranker.rerankKb({ ticketId, ticket: text, candidates });
+    const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+    const articles = [...new Set(ranked.map((r) => r.id))]
+      .map((id) => byId.get(id))
+      .filter((article) => article !== undefined)
+      .slice(0, MAX_KB_ARTICLES);
+    return { articles, capped: false };
+  } catch (error) {
+    if (!isCap(error, "typesafe")) throw error;
+    // Capped at the rerank: no article is kept (the unreranked search hits are
+    // not vetted), and no fix is drafted, since grounding could not check it.
+    return { articles: [], capped: true };
+  }
+}
+
 /** Runs every AI step and the policy. Writes nothing itself. */
 async function triageWithAi(
   input: TriageInput,
   deps: TriageDeps,
+  timed: Timed,
 ): Promise<{ result: TriageResult; outcome: TriageOutcome }> {
   const { ticketId, department, redaction, triage, prior, overrides } = input;
   // Redacted text only; the judge redacts the department itself.
   const text = { title: redaction.redacted_title, description: redaction.redacted_description };
 
   if (prior === "typesafe_cap_reached") return typesafeCapped(triage.sensitive);
-  let judgments: Judgments;
-  try {
-    judgments = await deps.judge.judge({ ticketId, ...text, department });
-  } catch (error) {
-    if (isCap(error, "typesafe")) return typesafeCapped(triage.sensitive);
-    throw error;
+  // Independent inputs, so in parallel; allSettled, so neither is left running.
+  const [judged, matched] = await Promise.allSettled([
+    timed("judgeMs", () => deps.judge.judge({ ticketId, ...text, department })),
+    timed("kbMs", () => matchKb(ticketId, text, deps)),
+  ]);
+  // The judgments decide first, as when they ran alone before the KB match.
+  if (judged.status === "rejected") {
+    if (isCap(judged.reason, "typesafe")) return typesafeCapped(triage.sensitive);
+    throw judged.reason;
   }
-
+  if (matched.status === "rejected") throw matched.reason;
+  const judgments: Judgments = judged.value;
+  const { articles } = matched.value;
   // The TypeSafe cap at the rerank or the grounding: the remaining TypeSafe
   // steps are skipped and the route is review with cap_reached (decideRoute).
-  let typesafeCapReached = false;
-  const candidates = await deps.repos.searchKb(buildKbQuery(`${text.title} ${text.description}`));
-  let articles: typeof candidates = [];
-  try {
-    const ranked = await deps.reranker.rerankKb({ ticketId, ticket: text, candidates });
-    const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
-    articles = [...new Set(ranked.map((r) => r.id))]
-      .map((id) => byId.get(id))
-      .filter((article) => article !== undefined)
-      .slice(0, MAX_KB_ARTICLES);
-  } catch (error) {
-    if (!isCap(error, "typesafe")) throw error;
-    // Capped at the rerank: no article is kept (the unreranked search hits are
-    // not vetted), and no fix is drafted, since grounding could not check it.
-    typesafeCapReached = true;
-  }
+  let typesafeCapReached = matched.value.capped;
 
   // An earlier attempt hit the LLM cap or a 429: the LLM is not asked again.
   let degraded: DegradedEvent | null = prior;
@@ -406,13 +465,15 @@ async function triageWithAi(
   if (degraded === null && !typesafeCapReached) {
     const cap = overrides.llmCallCap;
     try {
-      // Exactly one call: a 429 is never retried.
-      draft = await deps.drafter.draft({
-        ticketId,
-        ticket: text,
-        articles,
-        ...(cap === undefined ? {} : { capOverride: cap }),
-      });
+      // One drafter call: it retries a transient failure itself, never a 429.
+      draft = await timed("draftMs", () =>
+        deps.drafter.draft({
+          ticketId,
+          ticket: text,
+          articles,
+          ...(cap === undefined ? {} : { capOverride: cap }),
+        }),
+      );
     } catch (error) {
       if (isCap(error, "llm")) degraded = "llm_cap_reached";
       else if (error instanceof LlmUnavailableError) degraded = "llm_unavailable";
@@ -422,7 +483,10 @@ async function triageWithAi(
   let grounding: Grounding | null = null;
   if (draft !== null) {
     try {
-      grounding = await deps.grounding.scoreGrounding({ ticketId, steps: draft.steps, articles });
+      const steps = draft.steps;
+      grounding = await timed("groundingMs", () =>
+        deps.grounding.scoreGrounding({ ticketId, steps, articles }),
+      );
     } catch (error) {
       if (!isCap(error, "typesafe")) throw error;
       // Capped at the grounding: the fix steps are kept but count as

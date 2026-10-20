@@ -2,7 +2,14 @@ import { delay, HttpResponse } from "msw";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEgressRecorder } from "../../shared/test-support/egress-recorder.js";
 import { FixParseError, buildFixPrompt } from "./fix-steps.js";
-import { LlmError, LlmUnavailableError, createFixDrafter } from "./llm-client.js";
+import {
+  LLM_MAX_ATTEMPTS,
+  LLM_TIMEOUT_MS,
+  LlmError,
+  LlmUnavailableError,
+  createFixDrafter,
+  isTransientLlmError,
+} from "./llm-client.js";
 import { BudgetExceededError, createMeter, type MeterRepos } from "./meter.js";
 import { createAiRuntime, type TraceSpan } from "./trace.js";
 
@@ -38,7 +45,15 @@ beforeEach(() => egress.reset());
 
 type Reply = () => Response | Promise<Response>;
 
-function setup(options: { reply?: Reply; timeoutMs?: number; appVersion?: string } = {}) {
+interface SetupOptions {
+  reply?: Reply;
+  timeoutMs?: number;
+  appVersion?: string;
+  /** Reservations allowed before the budget refuses; default unlimited. */
+  allowedReservations?: number;
+}
+
+function setup(options: SetupOptions = {}) {
   const order: string[] = [];
   const auth: (string | null)[] = [];
   const reply = options.reply ?? (() => HttpResponse.json(completion(JSON.stringify(FIX))));
@@ -47,10 +62,13 @@ function setup(options: { reply?: Reply; timeoutMs?: number; appVersion?: string
     auth.push(request.headers.get("authorization"));
     return reply();
   });
+  let reservations = 0;
   const repos = {
     reserveAiCall: vi.fn(async ({ calls, capCalls }: { calls: number; capCalls: number }) => {
       order.push("reserve");
-      const allowed = calls <= capCalls;
+      reservations += 1;
+      const allowed =
+        calls <= capCalls && reservations <= (options.allowedReservations ?? Infinity);
       return { allowed, usedCalls: calls, callId: allowed ? CALL_ID : null };
     }),
     completeAiCall: vi.fn(async () => undefined),
@@ -148,7 +166,7 @@ describe("createFixDrafter", () => {
     expect(egress.requests()).toHaveLength(1);
   });
 
-  it.each([400, 401, 403, 500])(
+  it.each([400, 401, 403])(
     "throws LlmError with status %i, never LlmUnavailableError, after exactly 1 request",
     async (status) => {
       const { drafter } = setup({ reply: () => HttpResponse.json({}, { status }) });
@@ -160,12 +178,27 @@ describe("createFixDrafter", () => {
     },
   );
 
-  it("throws LlmError of kind network when the connection fails, after exactly 1 request", async () => {
+  it.each([500, 502, 503, 408])(
+    "retries a %i once, then throws LlmError with that status after exactly 2 requests",
+    async (status) => {
+      const { drafter, repos, spans } = setup({ reply: () => HttpResponse.json({}, { status }) });
+      const error = await rejection(drafter.draft(input));
+      expect(error).toBeInstanceOf(LlmError);
+      expect(error).not.toBeInstanceOf(LlmUnavailableError);
+      expect(error).toMatchObject({ kind: "http", status });
+      expect(egress.requests()).toHaveLength(2);
+      // Each request is metered and traced on its own.
+      expect(repos.reserveAiCall).toHaveBeenCalledTimes(2);
+      expect(spans.map((span) => span.error)).toEqual(["LlmError", "LlmError"]);
+    },
+  );
+
+  it("throws LlmError of kind network when the connection fails twice, after exactly 2 requests", async () => {
     const { drafter } = setup({ reply: () => HttpResponse.error() });
     const error = await rejection(drafter.draft(input));
     expect(error).toBeInstanceOf(LlmError);
     expect(error).toMatchObject({ kind: "network", status: null });
-    expect(egress.requests()).toHaveLength(1);
+    expect(egress.requests()).toHaveLength(2);
   });
 
   it("sends exactly User-Agent ai-it-support-agent/<APP_VERSION>", async () => {
@@ -182,11 +215,12 @@ describe("createFixDrafter", () => {
     expect(egress.requests()[0]?.headers["user-agent"]).toBe("ai-it-support-agent/unknown");
   });
 
-  it("throws FixParseError on a reply that is not valid JSON", async () => {
+  it("throws FixParseError when both replies are not valid JSON", async () => {
     const { drafter } = setup({ reply: () => HttpResponse.json(completion("Try a restart.")) });
     const error = await rejection(drafter.draft(input));
     expect(error).toBeInstanceOf(FixParseError);
     expect(String((error as Error).message)).not.toContain("Try a restart");
+    expect(egress.requests()).toHaveLength(2);
   });
 
   describe("with the recorded live completion envelope (P3-T10i)", () => {
@@ -238,17 +272,17 @@ describe("createFixDrafter", () => {
       expect(JSON.stringify(result)).not.toContain("REASONING-MARKER");
     });
 
-    it("throws FixParseError for the recorded 0-step no-article reply", async () => {
+    it("throws FixParseError for the recorded 0-step no-article reply, after one retry", async () => {
       const content = '{"steps": [], "caveats": ["No knowledge-base articles were provided."]}';
       const { drafter } = setup({ reply: () => HttpResponse.json(liveCompletion(content)) });
       const error = await rejection(drafter.draft(input));
       expect(error).toBeInstanceOf(FixParseError);
       expect((error as Error).message).toBe("Fix-step reply rejected: unexpected shape at steps");
-      expect(egress.requests()).toHaveLength(1);
+      expect(egress.requests()).toHaveLength(2);
     });
   });
 
-  it("throws LlmError of kind timeout when no answer arrives in time", async () => {
+  it("throws LlmError of kind timeout when neither request answers in time", async () => {
     const { drafter } = setup({
       timeoutMs: 50,
       reply: async () => {
@@ -259,7 +293,86 @@ describe("createFixDrafter", () => {
     const error = await rejection(drafter.draft(input));
     expect(error).toBeInstanceOf(LlmError);
     expect(error).toMatchObject({ kind: "timeout", status: null });
-    expect(egress.requests()).toHaveLength(1);
+    expect(egress.requests()).toHaveLength(2);
+  });
+
+  it("has a 10 s per-request limit and 2 requests at most, so a draft stays within about 20 s", () => {
+    expect(LLM_TIMEOUT_MS).toBe(10_000);
+    expect(LLM_MAX_ATTEMPTS).toBe(2);
+  });
+
+  describe("one retry inside the draft (P3-T10k)", () => {
+    /** Replies with `first` to the first request and a valid fix to every later one. */
+    function firstThen(first: Reply): Reply {
+      let count = 0;
+      return () => {
+        count += 1;
+        return count === 1 ? first() : HttpResponse.json(completion(JSON.stringify(FIX)));
+      };
+    }
+
+    it.each<[string, Reply]>([
+      [
+        "a timeout",
+        async () => {
+          await delay(1000);
+          return HttpResponse.json(completion(JSON.stringify(FIX)));
+        },
+      ],
+      ["a network error", () => HttpResponse.error()],
+      ["a 500", () => HttpResponse.json({}, { status: 500 })],
+      ["a 200 body the SDK cannot read", () => new HttpResponse("not json", { status: 200 })],
+      ["a reply that is not valid JSON", () => HttpResponse.json(completion("Try a restart."))],
+    ])("returns the second reply after %s", async (_label, first) => {
+      const { drafter, order, repos, spans } = setup({ timeoutMs: 50, reply: firstThen(first) });
+      const result = await drafter.draft(input);
+      expect(result).toEqual({ ...FIX, model: MODEL, usage: { tokensIn: 120, tokensOut: 45 } });
+      // A reservation before each request: the retry counts toward the cap.
+      expect(order).toEqual(["reserve", "request", "reserve", "request"]);
+      expect(repos.reserveAiCall).toHaveBeenCalledTimes(2);
+      expect(repos.completeAiCall).toHaveBeenCalledTimes(1);
+      // One span per request: the failed one carries the error class only.
+      expect(spans).toHaveLength(2);
+      expect(spans[0]).toMatchObject({ kind: "fix_steps", tokensIn: null, tokensOut: null });
+      expect(spans[0]?.error).toMatch(/^(LlmError|FixParseError)$/);
+      expect(spans[1]).toMatchObject({ kind: "fix_steps", tokensIn: 120, tokensOut: 45 });
+      expect(spans[1]?.error).toBeUndefined();
+      // The retry sends the same request again.
+      const bodies = egress.requests().map((request) => request.body);
+      expect(bodies).toHaveLength(2);
+      expect(bodies[1]).toBe(bodies[0]);
+    });
+
+    it("throws LlmUnavailableError when the retry gets a 429, after 2 requests", async () => {
+      let count = 0;
+      const { drafter } = setup({
+        reply: () => {
+          count += 1;
+          return HttpResponse.json({}, { status: count === 1 ? 500 : 429 });
+        },
+      });
+      const error = await rejection(drafter.draft(input));
+      expect(error).toBeInstanceOf(LlmUnavailableError);
+      expect(egress.requests()).toHaveLength(2);
+    });
+
+    it("never retries a 429: exactly 1 reservation and 1 request", async () => {
+      const { drafter, repos } = setup({ reply: () => HttpResponse.json({}, { status: 429 }) });
+      await rejection(drafter.draft(input));
+      expect(repos.reserveAiCall).toHaveBeenCalledTimes(1);
+      expect(egress.requests()).toHaveLength(1);
+    });
+
+    it("throws BudgetExceededError, and sends no second request, when the cap refuses the retry", async () => {
+      const { drafter, order } = setup({
+        allowedReservations: 1,
+        reply: () => HttpResponse.json({}, { status: 500 }),
+      });
+      const error = await rejection(drafter.draft(input));
+      expect(error).toBeInstanceOf(BudgetExceededError);
+      expect(order).toEqual(["reserve", "request", "reserve"]);
+      expect(egress.requests()).toHaveLength(1);
+    });
   });
 
   it("reserves the budget before the HTTP request", async () => {
@@ -294,7 +407,37 @@ describe("createFixDrafter", () => {
       error instanceof Error ? `${error.message} ${error.stack ?? ""}` : "",
       JSON.stringify(error ?? null),
     ].join("\n");
-    expect(spans).toHaveLength(1);
+    // The 200 and the 4xx are not retried; the 500 and the bad JSON are, once.
+    expect(spans).toHaveLength(["500", "bad JSON"].includes(_label) ? 2 : 1);
     expect(seen).not.toContain(KEY_MARKER);
+  });
+});
+
+describe("isTransientLlmError", () => {
+  it.each<[string, unknown]>([
+    ["a timeout", new LlmError("timeout")],
+    ["a network error", new LlmError("network")],
+    ["an HTTP 500", new LlmError("http", 500)],
+    ["an HTTP 503", new LlmError("http", 503)],
+    ["an HTTP 408", new LlmError("http", 408)],
+    ["an unreadable 200 body", new LlmError("http", 200)],
+    ["an HTTP error with no status", new LlmError("http")],
+    ["a reply that fails parseFixSteps", new FixParseError("not valid JSON")],
+  ])("is true for %s", (_label, error) => {
+    expect(isTransientLlmError(error)).toBe(true);
+  });
+
+  it.each<[string, unknown]>([
+    ["a 429", new LlmUnavailableError()],
+    ["an HTTP 400", new LlmError("http", 400)],
+    ["an HTTP 401", new LlmError("http", 401)],
+    ["an HTTP 403", new LlmError("http", 403)],
+    ["an HTTP 404", new LlmError("http", 404)],
+    ["an HTTP 499", new LlmError("http", 499)],
+    ["a refused budget", new BudgetExceededError("llm")],
+    ["a plain Error", new Error("boom")],
+    ["a non-Error value", "boom"],
+  ])("is false for %s", (_label, error) => {
+    expect(isTransientLlmError(error)).toBe(false);
   });
 });
