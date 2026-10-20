@@ -236,6 +236,49 @@ describe("T3.O.01", () => {
     expect(entry.evidence["failedChecks"]).toEqual([`${check}:${ticketOf(h.mock, ":O01:2")}`]);
   });
 
+  /** Ticket 2 made 2 AI calls: its first LLM request failed and was retried. */
+  const retried: MockE2eOptions["pipeline"] = (ticket, d) =>
+    String(ticket.body["testId"]).endsWith(":O01:2") ? { ...d, aiCallCount: 2 } : d;
+  const failedAttempt = (row: MockObservation): MockObservation => ({
+    ...row,
+    id: `${row.id}-failed`,
+    level: "ERROR",
+    statusMessage: "LlmError",
+    usageDetails: {},
+    output: undefined,
+  });
+
+  it("passes for a retried ticket: 1 failed and 1 successful observation, aiCallCount 2", async () => {
+    const h = await setup({ pipeline: retried, rows: second((row) => [failedAttempt(row), row]) });
+    const { code, entry } = await h.one("T3.O.01");
+    expect(code).toBe(0);
+    expect(entry.evidence).toMatchObject({
+      aiCallCounts: [1, 2, 1, 1, 1],
+      observationCounts: [1, 2, 1, 1, 1],
+      failedChecks: [],
+    });
+  });
+
+  it("still fails tokens:<ticket ID> for a successful observation with 0 tokens beside a failed one", async () => {
+    const h = await setup({
+      pipeline: retried,
+      rows: second((row) => [
+        failedAttempt(row),
+        { ...row, usageDetails: { input: 120, output: 0 } },
+      ]),
+    });
+    const { code, entry } = await h.one("T3.O.01");
+    expect(code).toBe(1);
+    expect(entry.evidence["failedChecks"]).toEqual([`tokens:${ticketOf(h.mock, ":O01:2")}`]);
+  });
+
+  it("still counts a failed observation against aiCallCount", async () => {
+    const h = await setup({ rows: second((row) => [failedAttempt(row), row]) });
+    const { code, entry } = await h.one("T3.O.01");
+    expect(code).toBe(1);
+    expect(entry.evidence["failedChecks"]).toEqual([`count:${ticketOf(h.mock, ":O01:2")}`]);
+  });
+
   it("fails naming the ticket when an observation is missing after the wait", async () => {
     const h = await setup({ rows: second(() => []) });
     const { code, entry } = await h.one("T3.O.01");

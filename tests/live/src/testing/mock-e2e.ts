@@ -58,6 +58,8 @@ export interface MockTicketOutcome {
   readonly fixSteps: number;
   /** Extra events, written together with `triaged`. */
   readonly extraEvents: readonly string[];
+  /** AI calls of a triaged ticket; default 1. */
+  readonly aiCallCount?: number;
 }
 
 /**
@@ -249,7 +251,7 @@ function ticketView(ticket: MockTicketInput, outcome: MockTicketOutcome, at: num
           triagedAt: iso(ticket.createdAt + triagedAfterMs),
         }
       : null,
-    aiCallCount: triaged ? 1 : 0,
+    aiCallCount: triaged ? (outcome.aiCallCount ?? 1) : 0,
     events,
     reviews: [],
     notifications: [],

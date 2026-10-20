@@ -8,6 +8,9 @@ export interface MockObservation {
   readonly input?: unknown;
   readonly output?: unknown;
   readonly metadata?: unknown;
+  /** `ERROR` on a failed attempt, as langfuse-sink writes it. */
+  readonly level?: string;
+  readonly statusMessage?: string;
 }
 
 export interface MockLangfuse {
