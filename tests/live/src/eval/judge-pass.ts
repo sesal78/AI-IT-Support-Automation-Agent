@@ -337,6 +337,8 @@ export interface JudgePassOptions {
   /** Used for the e2e app and for Langfuse; each request is pinned to its own origin. */
   readonly fetch?: (input: URL, init: RequestInit) => Promise<Response>;
   readonly judge?: JudgeClientOptions;
+  /** The clock for Langfuse pacing and retries (tests pass a fake one). */
+  readonly langfuse?: { now?: () => number; sleep?: (ms: number) => Promise<void> };
 }
 
 /**
@@ -505,7 +507,7 @@ export async function runJudgePass(options: JudgePassOptions): Promise<number> {
       { publicKey: publicKey!, secretKey: secretKey!, baseUrl: baseUrl! },
       run,
       items,
-      { fetch: options.fetch },
+      { fetch: options.fetch, ...options.langfuse },
     );
     langfuse = `dataset itsupport-eval-v1, run ${run}: ${recorded.items} items, ${recorded.linked} linked to their ticket's trace.`;
   } catch (error) {

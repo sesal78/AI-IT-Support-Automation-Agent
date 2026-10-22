@@ -220,6 +220,8 @@ async function harness(seed: Seed, values: Values = {}, defaults = { J1: 0.8, J2
       stdout: (line) => stdout.push(line),
       stderr: (line) => stderr.push(line),
       fetch: fetchFn,
+      // Langfuse pacing and retries wait on this; the judge client polls with it too.
+      sleep: async () => undefined,
       pollIntervalMs: 1,
     });
   const posts = (judgeId?: string) =>
@@ -393,8 +395,10 @@ describe("pnpm eval --run <id> --judges against the mock", () => {
     h.lf.fail = (path) => (path === "/api/public/dataset-items" ? 500 : undefined);
     expect(await h.pass()).toBe(2);
     expect(h.stderr.at(-1)).toMatch(
-      /Langfuse: FAILED \(POST \/api\/public\/dataset-items: status 500\)/,
+      /Langfuse: FAILED \(POST \/api\/public\/dataset-items: status 500 after 5 tries\)/,
     );
+    // A 5xx is retried, 5 tries in all, then it fails loudly.
+    expect(h.lf.requests.filter((r) => r.path === "/api/public/dataset-items")).toHaveLength(5);
     expect(h.report()).toContain("Langfuse: FAILED");
     // The judge values were still saved.
     expect(Object.keys(h.judgesFile().tickets)).toHaveLength(100);
@@ -468,6 +472,7 @@ describe("the judge pass on a run made by pnpm eval", () => {
       stdout: () => undefined,
       stderr: () => undefined,
       fetch: fetchFn,
+      sleep: async () => undefined,
       pollIntervalMs: 1,
     };
     // Two normal tickets cannot meet the rule targets: exit 1 on both steps.

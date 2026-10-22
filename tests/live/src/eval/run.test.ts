@@ -6,7 +6,13 @@ import { evalTicketSchema, type EvalTicket } from "@ai-it-support/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { markerEnv } from "../testing/env.ts";
 import { startMockE2e, type MockE2e, type MockE2eOptions } from "../testing/mock-e2e.ts";
-import { runEval, type EvalRecord, type RunEvalOptions } from "./run.ts";
+import {
+  DEFAULT_MAX_LLM_CALLS,
+  LLM_CALLS_PER_TICKET,
+  runEval,
+  type EvalRecord,
+  type RunEvalOptions,
+} from "./run.ts";
 
 const datasetPath = fileURLToPath(new URL("../../../../evals/tickets.json", import.meta.url));
 const dataset: readonly EvalTicket[] = evalTicketSchema
@@ -146,7 +152,7 @@ describe("runEval against the mock", () => {
   it("refuses to start with --max-llm-calls 5 for 10 tickets: exit 2, no ticket, no files", async () => {
     const h = await harness();
     expect(await h.run(["--run", "r1", "--limit", "10", "--max-llm-calls", "5"])).toBe(2);
-    expect(h.stderr.join("\n")).toMatch(/budget guard: 10 tickets need about 10 LLM.*Not started/);
+    expect(h.stderr.join("\n")).toMatch(/budget guard: 10 tickets need about 13 LLM.*Not started/);
     expect(h.testTicketPosts()).toEqual([]);
     expect(h.mock.testTickets.size).toBe(0);
     expect(existsSync(join(h.dir, "eval"))).toBe(false);
@@ -173,11 +179,18 @@ describe("runEval against the mock", () => {
     expect(h.metrics("r2").metrics.missingIds).toEqual(ids(10).slice(4));
   });
 
+  it("lets a normal 100-ticket eval pass its own LLM guard by a 1.5x margin", () => {
+    expect(Math.ceil(100 * LLM_CALLS_PER_TICKET)).toBe(130);
+    expect(DEFAULT_MAX_LLM_CALLS).toBeGreaterThanOrEqual(1.5 * 130);
+    // The p3-eval-a rate (152 calls for 56 tickets, 2.7 per ticket) still stops.
+    expect(DEFAULT_MAX_LLM_CALLS).toBeLessThan(100 * 2.7);
+  });
+
   it("stops the same way when LLM usage grows past --max-llm-calls", async () => {
     let calls = 100;
-    const h = await harness({ usage: () => ({ llm: (calls += 6), typesafe: 0 }) });
-    // Baseline 106; after batch 1 the growth is 6, above the maximum of 10 only after batch 2.
-    expect(await h.run(["--run", "r3", "--limit", "10", "--max-llm-calls", "10"])).toBe(2);
+    const h = await harness({ usage: () => ({ llm: (calls += 7), typesafe: 0 }) });
+    // Baseline 107; after batch 1 the growth is 7, above the maximum of 13 only after batch 2.
+    expect(await h.run(["--run", "r3", "--limit", "10", "--max-llm-calls", "13"])).toBe(2);
     expect(h.mock.testTickets.size).toBe(8);
     expect(h.results("r3").tickets.filter((r) => r.status === "not_run")).toHaveLength(2);
   });
