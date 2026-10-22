@@ -84,8 +84,9 @@ export {
   type GroundingResult,
 } from "./grounding.js";
 export {
-  LLM_MAX_ATTEMPTS,
-  LLM_TIMEOUT_MS,
+  LLM_DRAFT_TIMEOUT_MS,
+  LLM_HEDGE_DELAY_MS,
+  LLM_MAX_REQUESTS,
   LlmError,
   LlmUnavailableError,
   createFixDrafter,

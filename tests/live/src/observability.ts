@@ -165,8 +165,9 @@ const positive = (value: unknown) =>
   typeof value === "number" && Number.isFinite(value) && value > 0;
 
 /**
- * A failed attempt, such as an LLM request the drafter retried (P3-T10k): the
- * sink marks its span level ERROR and sends no token counts.
+ * A failed attempt, such as an LLM request the drafter retried (P3-T10k) or a
+ * hedged request it aborted once another answered (P3-T10l): the sink marks
+ * its span level ERROR and sends no token counts.
  */
 const failedAttempt = (row: Observation) => row["level"] === "ERROR";
 

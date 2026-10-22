@@ -10,12 +10,18 @@ import {
 import type { createAiRuntime } from "./trace.js";
 
 /**
- * Whole-request limit for one fix-step request. With one retry a draft still
- * ends within about 20 s, the single-request limit before P3-T10k.
+ * Time a request may go unanswered before `draft` sends the same request
+ * again (a hedge). A normal fix-step reply takes 2 to 3 s (P3-T10l).
  */
-export const LLM_TIMEOUT_MS = 10_000;
-/** Requests per draft at most: the first, and one retry after a transient failure. */
-export const LLM_MAX_ATTEMPTS = 2;
+export const LLM_HEDGE_DELAY_MS = 4_000;
+/**
+ * Whole-draft limit: every request still open then is aborted as a timeout.
+ * The last request starts at most 2 hedge delays (8 s) in, so it still has
+ * 7 s, more than twice a normal reply.
+ */
+export const LLM_DRAFT_TIMEOUT_MS = 15_000;
+/** Requests per draft at most: the first, plus two hedges or retries. */
+export const LLM_MAX_REQUESTS = 3;
 /** Calls reserved per request: one chat completion. */
 const FIX_STEPS_CALLS = 1;
 
@@ -48,6 +54,17 @@ export class LlmError extends Error {
   }
 }
 
+/**
+ * A request `draft` aborted because another one already gave a valid reply.
+ * It never leaves `draft`; its span carries this class name (level ERROR).
+ */
+export class LlmCancelledError extends Error {
+  constructor() {
+    super("LLM request cancelled: another request answered");
+    this.name = "LlmCancelledError";
+  }
+}
+
 export interface FixDrafterDeps {
   apiKey: string;
   /** OpenAI-compatible base URL, e.g. `https://opencode.ai/zen/go/v1`. */
@@ -56,8 +73,6 @@ export interface FixDrafterDeps {
   runtime: Pick<ReturnType<typeof createAiRuntime>, "call">;
   /** APP_VERSION from the pipeline env; `unknown` when unset. */
   appVersion?: string | undefined;
-  /** Default LLM_TIMEOUT_MS. */
-  timeoutMs?: number;
 }
 
 export interface FixDraftInput extends FixPromptInput {
@@ -72,16 +87,15 @@ export interface FixDraft extends FixSteps {
   usage: { tokensIn: number; tokensOut: number };
 }
 
-/** Maps any generateText failure to LlmUnavailableError or LlmError; drops the original. */
+/**
+ * Maps a generateText failure that is not `draft`'s own abort (`abortedError`)
+ * to LlmUnavailableError or LlmError; drops the original.
+ */
 function toLlmError(error: unknown): Error {
   const last = RetryError.isInstance(error) ? error.lastError : error;
   if (APICallError.isInstance(last)) {
     if (last.statusCode === 429) return new LlmUnavailableError();
     if (last.statusCode !== undefined) return new LlmError("http", last.statusCode);
-    return new LlmError("network");
-  }
-  if (last instanceof Error && (last.name === "TimeoutError" || last.name === "AbortError")) {
-    return new LlmError("timeout");
   }
   return new LlmError("network");
 }
@@ -99,19 +113,109 @@ export function isTransientLlmError(error: unknown): boolean {
   return error.status === 408 || error.status < 400 || error.status >= 500;
 }
 
+/** Abort reasons `draft` gives its own requests. */
+const TIMED_OUT = Symbol("timed out");
+const CANCELLED = Symbol("cancelled");
+
+/** The failure of a request `draft` aborted, from the abort reason. */
+function abortedError(signal: AbortSignal): Error {
+  return signal.reason === CANCELLED ? new LlmCancelledError() : new LlmError("timeout");
+}
+
+/**
+ * Sends hedged requests and settles with the first valid reply.
+ *
+ * `send(signal, onValid)` makes one metered, traced request; it calls
+ * `onValid` with the reply the moment the reply passes the parse, before its
+ * span is exported, so the others are aborted at once.
+ *
+ * - A new request starts when no open request is younger than
+ *   `LLM_HEDGE_DELAY_MS`: after 4 s without an answer (the hedge), or at once
+ *   when the only young request failed transiently. At most
+ *   `LLM_MAX_REQUESTS` start, so the last one starts within 8 s.
+ * - A failure never cancels another request. After a failure that is not
+ *   transient (a 429, another 4xx, a refused budget, any other error) no new
+ *   request starts; the open ones are still awaited.
+ * - At `LLM_DRAFT_TIMEOUT_MS` every open request is aborted (`LlmError`
+ *   timeout).
+ * - It settles only when every request has settled, so each span is exported
+ *   before `draft` returns and no timer is left. With no valid reply it
+ *   rejects with the first failure that is not transient, else the last one.
+ */
+function hedge(
+  send: (signal: AbortSignal, onValid: (draft: FixDraft) => void) => Promise<unknown>,
+): Promise<FixDraft> {
+  return new Promise((resolve, reject) => {
+    const requests: { controller: AbortController; young: boolean; open: boolean }[] = [];
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    let winner: FixDraft | undefined;
+    let stop: { error: unknown } | undefined;
+    let lastError: unknown;
+
+    function next(): void {
+      if (winner !== undefined || stop !== undefined) return;
+      if (requests.length >= LLM_MAX_REQUESTS) return;
+      if (requests.some((request) => request.open && request.young)) return;
+      const request = { controller: new AbortController(), young: true, open: true };
+      requests.push(request);
+      timers.push(
+        setTimeout(() => {
+          request.young = false;
+          next();
+        }, LLM_HEDGE_DELAY_MS),
+      );
+      const onValid = (draft: FixDraft) => {
+        if (winner !== undefined) return;
+        winner = draft;
+        for (const other of requests) if (other !== request) other.controller.abort(CANCELLED);
+      };
+      send(request.controller.signal, onValid).then(
+        () => {
+          request.open = false;
+          settle();
+        },
+        (error: unknown) => {
+          request.open = false;
+          lastError = error;
+          if (!isTransientLlmError(error)) stop ??= { error };
+          next();
+          settle();
+        },
+      );
+    }
+
+    function settle(): void {
+      if (requests.some((request) => request.open)) return;
+      for (const timer of timers) clearTimeout(timer);
+      if (winner !== undefined) resolve(winner);
+      else reject(stop === undefined ? lastError : stop.error);
+    }
+
+    timers.push(
+      setTimeout(() => {
+        for (const request of requests) request.controller.abort(TIMED_OUT);
+      }, LLM_DRAFT_TIMEOUT_MS),
+    );
+    next();
+  });
+}
+
 /**
  * Fix-step drafts from an OpenAI-compatible chat model (OpenCode Go). Plain
- * text, no tools, SDK retries off. Each request has its own `LLM_TIMEOUT_MS`
- * limit and its own `runtime.call` (provider `llm`, kind `fix_steps`), so the
- * budget is reserved before every request and every request counts toward
- * the cap and gets its own span. A transient failure (`isTransientLlmError`)
- * is retried once inside the draft, so one slow or broken reply does not fail
- * the whole triage run; any other failure, and a second failure, is thrown.
- * The reply must pass `parseFixSteps`; there is no repair.
+ * text, no tools, SDK retries off. Every request has its own `runtime.call`
+ * (provider `llm`, kind `fix_steps`), so the budget is reserved before every
+ * request, a hedge included, and every request counts toward the cap and
+ * gets exactly one span; a request aborted because another answered gets an
+ * `LlmCancelledError` span. A request unanswered after `LLM_HEDGE_DELAY_MS`
+ * is hedged, and a transient failure (`isTransientLlmError`) is retried,
+ * within `LLM_MAX_REQUESTS` requests and `LLM_DRAFT_TIMEOUT_MS` (see
+ * `hedge`), so one stalled or broken reply does not fail the triage run. A
+ * 429 (`LlmUnavailableError`), another 4xx and a refused budget
+ * (`BudgetExceededError`) start no new request. The reply must pass
+ * `parseFixSteps`; there is no repair.
  */
 export function createFixDrafter(deps: FixDrafterDeps) {
   const { apiKey, baseUrl, model, runtime } = deps;
-  const timeoutMs = deps.timeoutMs ?? LLM_TIMEOUT_MS;
   // Honest client name only: the SDK appends its own User-Agent parts, so the
   // header is set here, last, to exactly this value.
   const userAgent = `ai-it-support-agent/${deps.appVersion || "unknown"}`;
@@ -128,8 +232,14 @@ export function createFixDrafter(deps: FixDrafterDeps) {
   const chatModel = provider.chatModel(model);
 
   /** One metered, traced request. */
-  async function request(input: FixDraftInput, system: string, user: string): Promise<FixDraft> {
-    const { output } = await runtime.call(
+  async function request(
+    input: FixDraftInput,
+    system: string,
+    user: string,
+    signal: AbortSignal,
+    onValid: (draft: FixDraft) => void,
+  ): Promise<void> {
+    await runtime.call(
       {
         provider: "llm",
         kind: "fix_steps",
@@ -140,6 +250,8 @@ export function createFixDrafter(deps: FixDrafterDeps) {
         input: { model, system, user },
       },
       async () => {
+        // Aborted while the budget was being reserved: no HTTP request.
+        if (signal.aborted) throw abortedError(signal);
         let result: Awaited<ReturnType<typeof generateText>>;
         try {
           result = await generateText({
@@ -147,40 +259,32 @@ export function createFixDrafter(deps: FixDrafterDeps) {
             system,
             prompt: user,
             maxRetries: 0,
-            timeout: timeoutMs,
+            abortSignal: signal,
           });
         } catch (error) {
-          throw toLlmError(error);
+          throw signal.aborted ? abortedError(signal) : toLlmError(error);
         }
         const fix = parseFixSteps(result.text);
         const usage = {
           tokensIn: result.usage.inputTokens ?? 0,
           tokensOut: result.usage.outputTokens ?? 0,
         };
-        return {
-          ...usage,
-          output: {
-            steps: fix.steps,
-            caveats: fix.caveats,
-            model: result.response.modelId,
-            usage,
-          },
+        const output: FixDraft = {
+          steps: fix.steps,
+          caveats: fix.caveats,
+          model: result.response.modelId,
+          usage,
         };
+        onValid(output);
+        return { ...usage, output };
       },
     );
-    return output;
   }
 
   return {
     async draft(input: FixDraftInput): Promise<FixDraft> {
       const { system, user } = buildFixPrompt({ ticket: input.ticket, articles: input.articles });
-      for (let attempt = 1; ; attempt += 1) {
-        try {
-          return await request(input, system, user);
-        } catch (error) {
-          if (attempt >= LLM_MAX_ATTEMPTS || !isTransientLlmError(error)) throw error;
-        }
-      }
+      return hedge((signal, onValid) => request(input, system, user, signal, onValid));
     },
   };
 }
