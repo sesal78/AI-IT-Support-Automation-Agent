@@ -1327,7 +1327,7 @@ describe("triage-ticket department privacy (real judge)", () => {
         assignment_group: choiceAnswer(ASSIGNMENT_GROUPS, "Network"),
         outage_or_duplicate: { type: "noul", noul: 0.05 },
         injection: { type: "noul", noul: 0.01 },
-        actionable: { type: "noul", noul: 0.9 },
+        needs_info: { type: "noul", noul: 0.1 },
       },
       usage: { input_tokens: 10, output_tokens: 2 },
     };

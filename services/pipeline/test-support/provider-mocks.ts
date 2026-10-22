@@ -49,7 +49,7 @@ function typesafeAnswer(questions: string[]): Record<string, unknown> {
       assignment_group: choiceAnswer(ASSIGNMENT_GROUPS, "Network"),
       outage_or_duplicate: { type: "noul", noul: 0.05 },
       injection: { type: "noul", noul: 0.02 },
-      actionable: { type: "noul", noul: 0.95 },
+      needs_info: { type: "noul", noul: 0.05 },
     };
   }
   if (questions.includes("grounded")) return { grounded: { type: "score", score: 3 } };
