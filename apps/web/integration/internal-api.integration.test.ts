@@ -1,3 +1,4 @@
+import { globalAgent } from "node:http";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildCanaries, canaryTicketText } from "../../../packages/shared/src/canaries.js";
 import { clientFor } from "../../../packages/db/integration/pg-container.js";
@@ -15,6 +16,19 @@ import { egress } from "../../../services/pipeline/test-support/egress.js";
 
 const trigger = vi.hoisted(() => vi.fn());
 vi.mock("@trigger.dev/sdk", () => ({ tasks: { trigger } }));
+
+// The handlers run without a Next.js request scope, where after() throws.
+// Tasks are queued here and runAfterTasks() runs them, as Next does once the
+// response has been sent.
+const afterTasks = vi.hoisted(() => [] as (() => unknown)[]);
+vi.mock("next/server", () => ({
+  after: (task: (() => unknown) | Promise<unknown>) => {
+    afterTasks.push(typeof task === "function" ? task : () => task);
+  },
+}));
+async function runAfterTasks(): Promise<void> {
+  while (afterTasks.length > 0) await Promise.all(afterTasks.splice(0).map((task) => task()));
+}
 
 const TOKEN = "Token0".repeat(6);
 const WRONG = "Wrong0".repeat(6);
@@ -81,6 +95,74 @@ const post = (path: string, body: unknown, headers: Record<string, string> = aut
 const idContext = (id: string) => ({ params: Promise.resolve({ id }) });
 const aMinuteAgo = () => encodeURIComponent(new Date(Date.now() - 60_000).toISOString());
 const thisMonth = () => new Date().toISOString().slice(0, 7);
+
+const RPC_PATH = "/rest/v1/rpc/security_event_record";
+// PostgREST's answer when no pooled connection frees up in time (load).
+const POOL_TIMEOUT_BODY = JSON.stringify({
+  code: "PGRST003",
+  details: null,
+  hint: null,
+  message: "Timed out acquiring connection from connection pool.",
+});
+
+/**
+ * Wraps fetch (supabase-js looks it up per call): the first
+ * security_event_record call for each sample path in `faultPaths` gets
+ * PostgREST's pool-timeout 504 without reaching the stack; a later call for the
+ * same path, and every other request, goes to the REST stack as usual.
+ */
+function failFirstWrites(faultPaths: ReadonlySet<string>) {
+  const realFetch = globalThis.fetch;
+  const faulted = new Set<string>();
+  const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (new URL(url).pathname === RPC_PATH && typeof init?.body === "string") {
+      const { p_sample } = JSON.parse(init.body) as { p_sample?: { path?: string } };
+      const path = p_sample?.path ?? "";
+      if (faultPaths.has(path) && !faulted.has(path)) {
+        faulted.add(path);
+        return new Response(POOL_TIMEOUT_BODY, {
+          status: 504,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        });
+      }
+    }
+    return realFetch(input, init);
+  });
+  return { faults: () => faulted.size, restore: () => spy.mockRestore() };
+}
+
+const FLOOD_REQUESTS = 1000;
+const FLOOD_WRITERS = 20;
+
+/**
+ * Sends one wrong-token request per ID, at most FLOOD_WRITERS in flight (the
+ * live T3.S.07 shape), then runs the after() tasks. Returns the statuses.
+ */
+async function flood(app: Handlers, ids: readonly string[]): Promise<number[]> {
+  const statuses: number[] = [];
+  let next = 0;
+  let inFlight = 0;
+  let maxInFlight = 0;
+  async function writer(): Promise<void> {
+    while (next < ids.length) {
+      const id = ids[next] ?? "";
+      next += 1;
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      const response = await app.ticket.GET(
+        get(`/internal/tickets/${id}`, { authorization: `Bearer ${WRONG}` }),
+        idContext(id),
+      );
+      inFlight -= 1;
+      statuses.push(response.status);
+    }
+  }
+  await Promise.all(Array.from({ length: FLOOD_WRITERS }, writer));
+  expect(maxInFlight).toBe(FLOOD_WRITERS);
+  await runAfterTasks();
+  return statuses;
+}
 
 async function securityRows(kind?: string) {
   const { rows } = await sql().query<{ source: string; kind: string; count: number }>(
@@ -166,6 +248,55 @@ describe("auth boundary with E2E_MODE=false (T3.S.02, local half)", () => {
     expect(rows.length).toBeGreaterThanOrEqual(1);
     expect(rows.length).toBeLessThanOrEqual(2); // a minute boundary may split the burst
     expect(rows.reduce((sum, row) => sum + row.count, 0)).toBe(50);
+  });
+});
+
+describe("security-event counts under load (P3-T1b, live T3.S.07 shape)", () => {
+  // With msw (the egress recorder) on, about a thousand interleaved fetch and
+  // node:http requests crash the Windows test worker natively (exit
+  // 0xC0000409; reproduced without Docker on Node 24, msw 2.15.0). The
+  // recorder passes 127.0.0.1 through unrecorded and these tests make no other
+  // request, so it pauses for this block only. The pooled keep-alive sockets
+  // opened while it was on are dropped too: reusing them still crashed.
+  beforeAll(() => {
+    egress.stop();
+    globalAgent.destroy();
+  });
+  afterAll(() => egress.start());
+
+  const sumOf = (rows: { count: number }[]) => rows.reduce((sum, row) => sum + row.count, 0);
+  const newIds = () => Array.from({ length: FLOOD_REQUESTS }, () => crypto.randomUUID());
+
+  it("counts 1000 wrong-token requests from 20 concurrent writers exactly", async () => {
+    await sql().query("truncate itsupport.security_events");
+    const app = await load(stack(), false);
+
+    const statuses = await flood(app, newIds());
+
+    expect(statuses.filter((status) => status === 401)).toHaveLength(FLOOD_REQUESTS);
+    expect(sumOf(await securityRows("bad_token"))).toBe(FLOOD_REQUESTS);
+  });
+
+  it("keeps the exact count when the REST API times out the first write of 25 events", async () => {
+    await sql().query("truncate itsupport.security_events");
+    const ids = newIds();
+    const faultPaths = new Set(
+      ids.filter((_, i) => i % 40 === 0).map((id) => `/api/internal/tickets/${id}`),
+    );
+    const writes = failFirstWrites(faultPaths);
+    const logError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const app = await load(stack(), false);
+
+      const statuses = await flood(app, ids);
+
+      expect(writes.faults()).toBe(25);
+      expect(statuses.filter((status) => status === 401)).toHaveLength(FLOOD_REQUESTS);
+      expect(sumOf(await securityRows("bad_token"))).toBe(FLOOD_REQUESTS);
+    } finally {
+      logError.mockRestore();
+      writes.restore();
+    }
   });
 });
 

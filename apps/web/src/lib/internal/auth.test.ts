@@ -1,12 +1,18 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
 const recordSecurityEvent = vi.hoisted(() => vi.fn());
 const timingSafeEqual = vi.hoisted(() => vi.fn());
+// after() queues its task here; runAfterTasks() runs it, as Next.js does once
+// the response has been sent.
+const after = vi.hoisted(() => vi.fn());
+const afterTasks: (() => Promise<unknown>)[] = [];
+const runAfterTasks = () => Promise.all(afterTasks.splice(0).map((task) => task()));
 
 vi.mock("@ai-it-support/db", () => ({
   createDbClient: () => ({}),
   createRepositories: () => ({ recordSecurityEvent }),
 }));
+vi.mock("next/server", () => ({ after }));
 vi.mock("node:crypto", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:crypto")>();
   timingSafeEqual.mockImplementation(actual.timingSafeEqual);
@@ -30,6 +36,7 @@ async function expectRefused(request: Request, kind: string) {
   expect(recordSecurityEvent).toHaveBeenCalledTimes(1);
   expect(recordSecurityEvent.mock.calls[0]?.[0]).toBe("internal_api");
   expect(recordSecurityEvent.mock.calls[0]?.[1]).toBe(kind);
+  expect(after).not.toHaveBeenCalled();
 }
 
 beforeEach(async () => {
@@ -45,6 +52,11 @@ beforeEach(async () => {
   recordSecurityEvent.mockReset();
   recordSecurityEvent.mockResolvedValue(undefined);
   timingSafeEqual.mockClear();
+  afterTasks.length = 0;
+  after.mockReset();
+  after.mockImplementation((task: () => Promise<unknown>) => {
+    afterTasks.push(task);
+  });
   ({ requireInternalAuth } = await import("./auth"));
 });
 
@@ -193,30 +205,96 @@ describe("requireInternalAuth: security event sample", () => {
 });
 
 describe("requireInternalAuth: recording failure", () => {
-  it("still returns 401 and logs the error class name only", async () => {
-    const logError = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    class DbError extends Error {
-      constructor() {
-        super(`boom ${TOKEN}`);
-        this.name = "DbError";
-      }
+  class DbError extends Error {
+    readonly code: string | undefined;
+    constructor(code?: string) {
+      super(`boom ${TOKEN}`);
+      this.name = "DbError";
+      this.code = code;
     }
-    recordSecurityEvent.mockRejectedValue(new DbError());
-    const response = await requireInternalAuth(bearer("wrong"));
-    expect(response?.status).toBe(401);
-    expect(logError).toHaveBeenCalledTimes(1);
-    expect(String(logError.mock.calls[0]?.[0])).toContain("DbError");
-    expect(JSON.stringify(logError.mock.calls)).not.toContain(TOKEN);
-    expect(JSON.stringify(logError.mock.calls)).not.toContain("boom");
-    logError.mockRestore();
+  }
+  const lines = (spy: MockInstance) => spy.mock.calls.map((call) => JSON.parse(String(call[0])));
+  const logLine = (attempt: 1 | 2, kind: string, error: string, code?: string) => ({
+    level: attempt === 1 ? "warn" : "error",
+    scope: "internal-api",
+    msg: attempt === 1 ? "security event write failed, retrying" : "security event lost",
+    source: "internal_api",
+    kind,
+    attempt,
+    error,
+    ...(code === undefined ? {} : { code }),
+  });
+  let warn: MockInstance;
+  let error: MockInstance;
+  beforeEach(() => {
+    warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    error.mockRestore();
   });
 
-  it("logs 'unknown' for a thrown non-Error", async () => {
-    const logError = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    recordSecurityEvent.mockRejectedValue("nope");
+  it("answers 401 at once and retries the write once after the response", async () => {
+    recordSecurityEvent.mockRejectedValueOnce(new DbError("PGRST003"));
+    const response = await requireInternalAuth(bearer("wrong"));
+    expect(response?.status).toBe(401);
+    expect(await response?.json()).toEqual({ error: "unauthorized" });
+    expect(recordSecurityEvent).toHaveBeenCalledTimes(1);
+    expect(after).toHaveBeenCalledTimes(1);
+
+    await runAfterTasks();
+    expect(recordSecurityEvent).toHaveBeenCalledTimes(2);
+    expect(recordSecurityEvent.mock.calls[1]).toEqual([
+      "internal_api",
+      "bad_token",
+      { path: "/api/internal/x", method: "POST" },
+    ]);
+    expect(lines(warn)).toEqual([logLine(1, "bad_token", "DbError", "PGRST003")]);
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("logs the event as lost, one JSON error line, when the retry fails too", async () => {
+    recordSecurityEvent.mockRejectedValue(new DbError("57014"));
     const response = await requireInternalAuth(req());
     expect(response?.status).toBe(401);
-    expect(String(logError.mock.calls[0]?.[0])).toContain("unknown");
-    logError.mockRestore();
+    await runAfterTasks(); // the task itself never rejects
+    expect(recordSecurityEvent).toHaveBeenCalledTimes(2);
+    expect(lines(warn)).toEqual([logLine(1, "missing_token", "DbError", "57014")]);
+    expect(lines(error)).toEqual([logLine(2, "missing_token", "DbError", "57014")]);
+    const logged = JSON.stringify([...warn.mock.calls, ...error.mock.calls]);
+    for (const leak of [TOKEN, "boom", "/api/internal/x"]) expect(logged).not.toContain(leak);
+  });
+
+  it("gives the same status, body and headers whether the write fails or not", async () => {
+    const shape = async (r: Response | null) => [
+      r?.status,
+      await r?.text(),
+      [...(r?.headers ?? [])],
+    ];
+    const ok = await shape(await requireInternalAuth(bearer("wrong")));
+    recordSecurityEvent.mockRejectedValue(new DbError());
+    expect(await shape(await requireInternalAuth(bearer("wrong")))).toEqual(ok);
+  });
+
+  it("retries before answering when after() has no request scope", async () => {
+    after.mockImplementation(() => {
+      throw new Error("`after` was called outside a request scope.");
+    });
+    recordSecurityEvent.mockRejectedValueOnce(new DbError());
+    const response = await requireInternalAuth(bearer("wrong"));
+    expect(response?.status).toBe(401);
+    expect(recordSecurityEvent).toHaveBeenCalledTimes(2);
+    expect(lines(warn)).toEqual([logLine(1, "bad_token", "DbError")]);
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("logs 'unknown' for a thrown non-Error and no code unless it is a string", async () => {
+    recordSecurityEvent.mockRejectedValueOnce("nope");
+    recordSecurityEvent.mockRejectedValueOnce(Object.assign(new Error("x"), { code: 42 }));
+    await requireInternalAuth(req({}, "http://localhost/x?token=1"));
+    await runAfterTasks();
+    expect(lines(warn)).toEqual([logLine(1, "token_in_query", "unknown")]);
+    expect(lines(error)).toEqual([logLine(2, "token_in_query", "Error")]);
   });
 });

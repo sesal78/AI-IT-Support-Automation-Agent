@@ -242,10 +242,14 @@ describe.each([undefined, "false"])("with E2E_MODE=%s", (mode) => {
     }
   });
 
-  it("stays 404 when recording the event fails", async () => {
+  it("stays 404 when recording the event fails, after one retry", async () => {
     repo.recordSecurityEvent.mockRejectedValue(new Error(DESCRIPTION));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     await notFound(route.POST(post(valid)));
-    expect(JSON.stringify(spy.mock.calls)).not.toContain(DESCRIPTION);
+    // No request scope here, so after() throws and the retry runs before the answer.
+    expect(repo.recordSecurityEvent).toHaveBeenCalledTimes(2);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify([...warn.mock.calls, ...spy.mock.calls])).not.toContain(DESCRIPTION);
   });
 });
