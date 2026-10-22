@@ -17,10 +17,21 @@ import { computeMetrics, evaluateTargets, writeReport, type EvalResult } from ".
 
 /** Tickets in flight at one time; the usage guard runs after each batch. */
 export const BATCH_SIZE = 4;
-/** Budget estimate per ticket (plan resolved point 10): one LLM call, 18 TypeSafe calls. */
-export const LLM_CALLS_PER_TICKET = 1;
+/**
+ * Budget estimate per ticket (plan resolved point 10): 18 TypeSafe calls and
+ * 1.3 LLM calls. A draft sends 1 request, plus a hedge when the reply takes
+ * longer than `LLM_HEDGE_DELAY_MS` (5 s, about the p95 of a normal draft) and
+ * a third past 10 s. 1.3 assumes about 3 drafts in 10 send a hedge: in eval
+ * p3-eval-a, 13 of 34 sampled drafts took over 5 s and 3 over 10 s (P3-T10m).
+ */
+export const LLM_CALLS_PER_TICKET = 1.3;
 export const TYPESAFE_CALLS_PER_TICKET = 18;
-export const DEFAULT_MAX_LLM_CALLS = 150;
+/**
+ * 1.5 times the estimate for 100 tickets (130), rounded up: a normal
+ * 100-ticket eval stays below it, and a run where most drafts send 2 or 3
+ * requests stops at about 2 per ticket.
+ */
+export const DEFAULT_MAX_LLM_CALLS = 200;
 export const DEFAULT_MAX_TYPESAFE_CALLS = 2500;
 export const DEFAULT_TICKET_TIMEOUT_MS = 180_000;
 export const DEFAULT_POLL_INTERVAL_MS = 2_000;
@@ -314,6 +325,7 @@ export async function runEval(options: RunEvalOptions): Promise<number> {
       stderr: options.stderr,
       fetch: options.fetch,
       judge: { now: options.now, sleep: options.sleep, pollIntervalMs: options.pollIntervalMs },
+      langfuse: { now: options.now, sleep: options.sleep },
     });
   }
   const now = options.now ?? Date.now;
@@ -345,7 +357,7 @@ export async function runEval(options: RunEvalOptions): Promise<number> {
   if (relative(evalDir, outDir) !== args.run) return fail("run ID is malformed");
 
   const estimate = {
-    llm: tickets.length * LLM_CALLS_PER_TICKET,
+    llm: Math.ceil(tickets.length * LLM_CALLS_PER_TICKET),
     typesafe: tickets.length * TYPESAFE_CALLS_PER_TICKET,
   };
   if (estimate.llm > args.maxLlmCalls || estimate.typesafe > args.maxTypesafeCalls) {

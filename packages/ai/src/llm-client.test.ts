@@ -284,12 +284,12 @@ describe("createFixDrafter", () => {
     });
   });
 
-  it("hedges after 4 s, sends 3 requests at most and ends a draft within 15 s", () => {
-    expect(LLM_HEDGE_DELAY_MS).toBe(4_000);
+  it("hedges after 5 s, sends 3 requests at most and ends a draft within 15 s", () => {
+    expect(LLM_HEDGE_DELAY_MS).toBe(5_000);
     expect(LLM_MAX_REQUESTS).toBe(3);
     expect(LLM_DRAFT_TIMEOUT_MS).toBe(15_000);
-    // The last request starts by 2 hedge delays and still has 7 s.
-    expect(LLM_DRAFT_TIMEOUT_MS - (LLM_MAX_REQUESTS - 1) * LLM_HEDGE_DELAY_MS).toBe(7_000);
+    // The last request starts by 2 hedge delays and still has 5 s.
+    expect(LLM_DRAFT_TIMEOUT_MS - (LLM_MAX_REQUESTS - 1) * LLM_HEDGE_DELAY_MS).toBe(5_000);
   });
 
   describe("retry inside the draft (P3-T10k)", () => {
@@ -473,7 +473,7 @@ describe("hedged requests (P3-T10l)", () => {
     expect(calls[0]!.signal.aborted).toBe(false);
   });
 
-  it("hedges a stalled first request after 4 s, returns the hedge and aborts the first", async () => {
+  it("hedges a stalled first request after 5 s, returns the hedge and aborts the first", async () => {
     const { drafter, repos, spans } = setup();
     const draft = start(drafter);
     await at(LLM_HEDGE_DELAY_MS - 1);
@@ -534,9 +534,9 @@ describe("hedged requests (P3-T10l)", () => {
     const draft = start(drafter);
     await at(LLM_HEDGE_DELAY_MS);
     expect(calls).toHaveLength(2);
-    await at(5_000);
-    calls[0]!.answer(json({}, 500));
     await at(6_000);
+    calls[0]!.answer(json({}, 500));
+    await at(7_000);
     expect(calls).toHaveLength(2);
     calls[1]!.answer(valid());
     await expect(draft.promise).resolves.toEqual(RESULT);
@@ -547,9 +547,9 @@ describe("hedged requests (P3-T10l)", () => {
     const { drafter, spans } = setup();
     const draft = start(drafter);
     await at(LLM_HEDGE_DELAY_MS);
-    await at(4_500);
+    await at(5_500);
     calls[1]!.answer(json({}, 502));
-    await at(4_501);
+    await at(5_501);
     expect(calls).toHaveLength(3);
     calls[2]!.answer(valid());
     await expect(draft.promise).resolves.toEqual(RESULT);
@@ -561,7 +561,7 @@ describe("hedged requests (P3-T10l)", () => {
     ]);
   });
 
-  it("hedges every 4 s up to 3 requests, then fails with a timeout at 15 s", async () => {
+  it("hedges every 5 s up to 3 requests, then fails with a timeout at 15 s", async () => {
     const { drafter, repos, spans } = setup();
     const draft = start(drafter);
     const failure = rejection(draft.promise);
@@ -600,10 +600,10 @@ describe("hedged requests (P3-T10l)", () => {
     const draft = start(drafter);
     const failure = rejection(draft.promise);
     await at(LLM_HEDGE_DELAY_MS);
-    await at(5_000);
+    await at(6_000);
     calls[0]!.answer(json({}, 429));
-    // The hedge is younger than the hedge delay at 5 s, older at 9 s.
-    await at(9_000);
+    // The hedge is younger than the hedge delay at 6 s, older at 11 s.
+    await at(11_000);
     expect(calls).toHaveLength(2);
     calls[1]!.answer(json({}, 500));
     expect(await failure).toBeInstanceOf(LlmUnavailableError);
@@ -646,9 +646,9 @@ describe("hedged requests (P3-T10l)", () => {
     const draft = start(drafter);
     await at(LLM_HEDGE_DELAY_MS);
     expect(repos.reserveAiCall).toHaveBeenCalledTimes(2);
-    await at(5_000);
+    await at(6_000);
     calls[0]!.answer(valid());
-    await at(5_001);
+    await at(6_001);
     // The draft waits for the hedge, so its span is exported before it returns.
     expect(draft.state()).toBe("pending");
     release();

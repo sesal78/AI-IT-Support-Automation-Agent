@@ -20,6 +20,15 @@ const SCOPE_NAME = "ai-it-support-agent/eval";
 const SPAN_KIND_INTERNAL = 1;
 const STATUS_OK = 1;
 
+/** Tries per request when Langfuse answers 429 or 5xx (P3-T10m); then the request fails. */
+export const LANGFUSE_MAX_TRIES = 5;
+/** Longest wait before a retry, whatever Retry-After asks for. */
+export const LANGFUSE_MAX_RETRY_WAIT_MS = 30_000;
+/** Wait before the first retry when there is no usable Retry-After; it doubles each retry. */
+export const LANGFUSE_BACKOFF_MS = 1_000;
+/** Least time between the starts of two requests, so a 100-ticket run does not burst. */
+export const LANGFUSE_PACE_MS = 200;
+
 /** A Langfuse request that failed. Names the endpoint template and the status or error class; never a body. */
 export class LangfuseRequestError extends Error {
   override readonly name = "LangfuseRequestError";
@@ -39,6 +48,28 @@ export interface LangfuseConfig {
 
 type FetchLike = (input: URL, init: RequestInit) => Promise<Response>;
 
+export interface LangfuseClock {
+  readonly now: () => number;
+  readonly sleep: (ms: number) => Promise<void>;
+}
+
+const isRetryable = (status: number) => status === 429 || status >= 500;
+
+/**
+ * The wait before retry `retry` (1 for the first), at most
+ * `LANGFUSE_MAX_RETRY_WAIT_MS`. Retry-After counts only as whole seconds
+ * (`/^\d+$/`) or as an HTTP date (it has letters) that is now or later; any
+ * other value, such as "-1", "1.5" or a past date, falls back to 1, 2, 4, 8 s.
+ */
+export function retryWaitMs(retryAfter: string | null, retry: number, now: number): number {
+  let wait = LANGFUSE_BACKOFF_MS * 2 ** (retry - 1);
+  const value = retryAfter?.trim() ?? "";
+  const date = /[A-Za-z]/.test(value) ? Date.parse(value) : Number.NaN;
+  if (/^\d+$/.test(value)) wait = Number(value) * 1_000;
+  else if (!Number.isNaN(date) && date >= now) wait = date - now;
+  return Math.min(wait, LANGFUSE_MAX_RETRY_WAIT_MS);
+}
+
 interface LangfuseApi {
   request(
     endpoint: string,
@@ -53,44 +84,81 @@ interface LangfuseApi {
  * Requests to the origin of LANGFUSE_BASE_URL only: a path that resolves
  * elsewhere is refused before sending, and `redirect: "manual"` returns a 30x
  * as-is, so the Basic credentials never leave for another host.
+ *
+ * Paced and retried (P3-T10m): a request starts at least `LANGFUSE_PACE_MS`
+ * after the one before, and a 429, a 5xx or a network failure is sent again
+ * after `retryWaitMs`, up to `LANGFUSE_MAX_TRIES` tries in all; the last one
+ * throws LangfuseRequestError with its status or error class.
  */
-function createLangfuseApi(config: LangfuseConfig, doFetch: FetchLike): LangfuseApi {
+function createLangfuseApi(
+  config: LangfuseConfig,
+  doFetch: FetchLike,
+  clock: LangfuseClock,
+): LangfuseApi {
   const origin = new URL(config.baseUrl).origin;
   const authorization = `Basic ${Buffer.from(`${config.publicKey}:${config.secretKey}`).toString(
     "base64",
   )}`;
+  let lastStart: number | null = null;
+
+  async function send(
+    endpoint: string,
+    method: string,
+    url: URL,
+    body: unknown,
+    extra: Record<string, string>,
+  ): Promise<{ status: number; json: unknown; retryAfter: string | null } | { failed: string }> {
+    if (lastStart !== null) {
+      const wait = lastStart + LANGFUSE_PACE_MS - clock.now();
+      if (wait > 0) await clock.sleep(wait);
+    }
+    lastStart = clock.now();
+    let response: Response;
+    let text: string;
+    try {
+      response = await doFetch(url, {
+        method,
+        headers: {
+          authorization,
+          ...(body === undefined ? {} : { "content-type": "application/json" }),
+          ...extra,
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        redirect: "manual",
+      });
+      text = await response.text();
+    } catch (error) {
+      return { failed: `request failed (${errorClassName(error)})` };
+    }
+    let json: unknown = null;
+    if (text.trim() !== "") {
+      try {
+        json = JSON.parse(text);
+      } catch {
+        json = null;
+      }
+    }
+    return { status: response.status, json, retryAfter: response.headers.get("retry-after") };
+  }
+
   return {
     async request(endpoint, method, path, body, extra = {}) {
       const url = path.startsWith("/") && !path.startsWith("//") ? new URL(path, origin) : null;
       if (url === null || url.origin !== origin) {
         throw new LangfuseRequestError(endpoint, "origin refused");
       }
-      let response: Response;
-      let text: string;
-      try {
-        response = await doFetch(url, {
-          method,
-          headers: {
-            authorization,
-            ...(body === undefined ? {} : { "content-type": "application/json" }),
-            ...extra,
-          },
-          body: body === undefined ? undefined : JSON.stringify(body),
-          redirect: "manual",
-        });
-        text = await response.text();
-      } catch (error) {
-        throw new LangfuseRequestError(endpoint, `request failed (${errorClassName(error)})`);
-      }
-      let json: unknown = null;
-      if (text.trim() !== "") {
-        try {
-          json = JSON.parse(text);
-        } catch {
-          json = null;
+      for (let tries = 1; ; tries += 1) {
+        const sent = await send(endpoint, method, url, body, extra);
+        if ("status" in sent && !isRetryable(sent.status)) {
+          return { status: sent.status, json: sent.json };
         }
+        if (tries === LANGFUSE_MAX_TRIES) {
+          const problem = "status" in sent ? `status ${sent.status}` : sent.failed;
+          throw new LangfuseRequestError(endpoint, `${problem} after ${tries} tries`);
+        }
+        const retryAfter = "status" in sent ? sent.retryAfter : null;
+        await clock.sleep(retryWaitMs(retryAfter, tries, clock.now()));
       }
-      return { status: response.status, json };
     },
   };
 }
@@ -185,16 +253,22 @@ const isOk = (status: number) => status >= 200 && status < 300;
  * experiment (run) name `runId`, with the ticket UUID as its session ID.
  * Idempotent: the dataset is found by name, items are upserted on their ID,
  * and the link traces have IDs derived from the run and the item.
- * Throws LangfuseRequestError on the first failed request.
+ * Requests are paced and a 429 or 5xx is retried (see `createLangfuseApi`).
+ * Throws LangfuseRequestError on the first request that still fails.
  */
 export async function recordDatasetRun(
   config: LangfuseConfig,
   runId: string,
   items: readonly DatasetRunItem[],
-  options: { fetch?: FetchLike; now?: () => number } = {},
+  options: { fetch?: FetchLike; now?: () => number; sleep?: (ms: number) => Promise<void> } = {},
 ): Promise<DatasetRunResult> {
-  const api = createLangfuseApi(config, options.fetch ?? ((input, init) => fetch(input, init)));
   const now = options.now ?? Date.now;
+  const sleep =
+    options.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  const api = createLangfuseApi(config, options.fetch ?? ((input, init) => fetch(input, init)), {
+    now,
+    sleep,
+  });
   const datasetIdOf = (endpoint: string, status: number, json: unknown): string => {
     const id = (json as { id?: unknown } | null)?.id;
     if (!isOk(status)) throw new LangfuseRequestError(endpoint, `status ${status}`);

@@ -11,13 +11,15 @@ import type { createAiRuntime } from "./trace.js";
 
 /**
  * Time a request may go unanswered before `draft` sends the same request
- * again (a hedge). A normal fix-step reply takes 2 to 3 s (P3-T10l).
+ * again (a hedge). Measured on the E2E deploy (P3-T10m), a normal fix-step
+ * draft takes 2 to 4 s (p50 2.7 s, p95 4.8 s), so 5 s hedges only the slow
+ * tail. At 4 s (P3-T10l) the hedge fired on more than half the eval drafts.
  */
-export const LLM_HEDGE_DELAY_MS = 4_000;
+export const LLM_HEDGE_DELAY_MS = 5_000;
 /**
  * Whole-draft limit: every request still open then is aborted as a timeout.
- * The last request starts at most 2 hedge delays (8 s) in, so it still has
- * 7 s, more than twice a normal reply.
+ * The last request starts at most 2 hedge delays (10 s) in, so it still has
+ * 5 s, more than the p95 of a normal draft.
  */
 export const LLM_DRAFT_TIMEOUT_MS = 15_000;
 /** Requests per draft at most: the first, plus two hedges or retries. */
@@ -130,9 +132,9 @@ function abortedError(signal: AbortSignal): Error {
  * span is exported, so the others are aborted at once.
  *
  * - A new request starts when no open request is younger than
- *   `LLM_HEDGE_DELAY_MS`: after 4 s without an answer (the hedge), or at once
+ *   `LLM_HEDGE_DELAY_MS`: after 5 s without an answer (the hedge), or at once
  *   when the only young request failed transiently. At most
- *   `LLM_MAX_REQUESTS` start, so the last one starts within 8 s.
+ *   `LLM_MAX_REQUESTS` start, so the last one starts within 10 s.
  * - A failure never cancels another request. After a failure that is not
  *   transient (a 429, another 4xx, a refused budget, any other error) no new
  *   request starts; the open ones are still awaited.
