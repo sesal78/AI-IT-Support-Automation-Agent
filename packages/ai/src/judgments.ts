@@ -28,12 +28,29 @@ const QUESTIONS = {
     password_reset: "The requester is locked out or needs a password reset.",
     network: "A network problem: no connection, VPN, Wi-Fi, or a slow network.",
   } satisfies Record<Category, string>),
-  priority: choice("What priority should the IT support ticket in `ticket` get?", {
-    P1: "Critical: many people cannot work, or a key business service is down.",
-    P2: "High: one person or a team cannot work, with no workaround.",
-    P3: "Moderate: work is slowed, but a workaround exists.",
-    P4: "Low: a minor issue, question or request with little impact.",
-  } satisfies Record<Priority, string>),
+  // The P1-P4 rules of evals/README.md. Tuned in P3-T11e: the earlier wording
+  // ("P3: work is slowed, but a workaround exists") over-rated 25 of the 29
+  // wrong priorities of eval p3-eval-a, most often P3 as P2.
+  priority: choice(
+    "What priority does the IT support ticket in `ticket` get under these rules? Judge the impact the ticket states, not how urgent its wording sounds.",
+    {
+      // README P1, kept broad: under-rating a P1 costs more than over-rating it.
+      P1: {
+        what: "Business-stopping, or many people or a critical system down or about to fail (a key business service is down), or an active security event: for example compromised credentials or accounts, malware, or a lost or stolen device with data.",
+      },
+      P2: {
+        what: "A person or team cannot work at all and has no workaround, or a deadline today is at risk.",
+        not_for:
+          "A fault in one task, file, feature or device while the person can keep working on the rest.",
+      },
+      P3: {
+        what: "A person is affected but can keep working: one task, file, feature or device fails, or a workaround exists.",
+      },
+      P4: {
+        what: "A question, a how-to, a request for access, equipment, software or a change, or a cosmetic fault.",
+      },
+    } satisfies Record<Priority, Record<string, string>>,
+  ),
   urgency: choice("How urgent is the IT support ticket in `ticket`?", {
     high: "It needs action now; the impact grows quickly.",
     medium: "It needs action soon, within the working day.",
@@ -61,11 +78,16 @@ const QUESTIONS = {
       false: "The ticket text only describes the requester's problem.",
     },
   ),
-  actionable: noul(
-    "Can a support agent act on the IT support ticket in `ticket` without asking the requester anything?",
+  // The vague set of evals/README.md: too little detail to act on. Tuned in
+  // P3-T11e: the earlier "can an agent act without asking the requester
+  // anything?" (inverted) gave specific normal tickets a median needs-info of
+  // 0.63, so it flagged 41 of 56. Phrased so a high value means needs info.
+  needs_info: noul(
+    "Is the IT support ticket in `ticket` too vague to start work on, because it does not say what is wrong or which system, device or account it is about?",
     {
-      true: "The ticket has enough detail to start work.",
-      false: "The agent must ask the requester for more information first.",
+      true: "Too vague: an agent cannot tell what the problem is or what it affects.",
+      false:
+        "Specific enough to start: it names the problem and what it affects, even if the agent may later ask for a detail.",
     },
   ),
 };
@@ -96,7 +118,7 @@ const responseSchema = z.object({
     assignment_group: choiceAnswer(ASSIGNMENT_GROUPS),
     outage_or_duplicate: noulAnswer,
     injection: noulAnswer,
-    actionable: noulAnswer,
+    needs_info: noulAnswer,
   }),
   usage: z.object({ input_tokens: tokenCount, output_tokens: tokenCount }),
 });
@@ -130,7 +152,7 @@ export interface TriageJudgments {
   assignmentGroup: ChoiceJudgment<AssignmentGroup>;
   outageOrDuplicate: number;
   injection: number;
-  /** 1 - P(actionable). */
+  /** P(too vague to start work on): the `needs_info` Noul, not inverted. */
   needsInfo: number;
   /** The model the API reports, not the requested one. */
   model: string;
@@ -182,7 +204,7 @@ export function parseTriageResponse(raw: unknown): TriageJudgments {
     assignmentGroup: toChoice(answers.assignment_group),
     outageOrDuplicate: answers.outage_or_duplicate.noul,
     injection: answers.injection.noul,
-    needsInfo: 1 - answers.actionable.noul,
+    needsInfo: answers.needs_info.noul,
     model,
     tokensIn: usage.input_tokens,
     tokensOut: usage.output_tokens,

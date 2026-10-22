@@ -32,7 +32,7 @@ function validResponse() {
       assignment_group: choiceAnswer(ASSIGNMENT_GROUPS, "Network", 0.75),
       outage_or_duplicate: { type: "noul", noul: 0.1 },
       injection: { type: "noul", noul: 0.05 },
-      actionable: { type: "noul", noul: 0.2 },
+      needs_info: { type: "noul", noul: 0.8 },
     },
     usage: { input_tokens: 321, output_tokens: 7 },
   };
@@ -120,10 +120,10 @@ describe("createTriageJudge", () => {
     });
     expect(Object.keys(request!.body.questions).sort()).toEqual(
       [
-        "actionable",
         "assignment_group",
         "category",
         "injection",
+        "needs_info",
         "outage_or_duplicate",
         "priority",
         "urgency",
@@ -140,6 +140,54 @@ describe("createTriageJudge", () => {
     for (const question of Object.values(questions)) {
       expect(question.instructions).toContain("`ticket`");
     }
+  });
+
+  // The P1-P4 rules of evals/README.md. Eval p3-eval-a (P3-T11e) over-rated 25
+  // of 29 wrong priorities while the criteria said "work is slowed, but a
+  // workaround exists" for P3 and left out the deadline and security rules.
+  it("words the priority criteria after the eval labeling rules", async () => {
+    const { judge, captured } = setup();
+    await judge.judge(input);
+    const priority = captured[0]!.body.questions.priority!;
+    const text = (label: string) =>
+      JSON.stringify((priority.criteria as Record<string, unknown>)[label]).toLowerCase();
+
+    expect(JSON.stringify(priority.instructions)).toContain("impact");
+    // P1 keeps every README case and its old breadth; under-rating a P1 costs
+    // more than over-rating, so nothing in it pushes a ticket down.
+    for (const words of [
+      "business-stopping",
+      "many people",
+      "critical system down",
+      "about to fail",
+      "key business service",
+      "active security event",
+      "compromised credentials",
+      "lost or stolen device",
+    ]) {
+      expect(text("P1")).toContain(words);
+    }
+    expect(text("P2")).toContain("cannot work");
+    expect(text("P2")).toContain("no workaround");
+    expect(text("P2")).toContain("deadline");
+    expect(text("P3")).toContain("keep working");
+    expect(text("P3")).toContain("workaround");
+    for (const word of ["question", "request", "cosmetic"]) expect(text("P4")).toContain(word);
+    // The over-rating guard: one failing task is not P2. P1 has no such guard.
+    const criteria = priority.criteria as Record<string, Record<string, unknown>>;
+    expect(String(criteria.P2!.not_for).toLowerCase()).toContain("keep working");
+    expect(criteria.P1).not.toHaveProperty("not_for");
+  });
+
+  // Eval p3-eval-a: "can an agent act without asking anything?" scored a median
+  // of 0.63 (needs info) on 116 specific normal tickets, so it flagged 41/56.
+  it("asks whether the ticket is too vague, so a high value means needs info", async () => {
+    const { judge, captured } = setup();
+    await judge.judge(input);
+    const question = captured[0]!.body.questions.needs_info!;
+    expect(question.type).toBe("noul");
+    expect(String(question.instructions)).toMatch(/too vague/);
+    expect(JSON.stringify(question.criteria)).not.toMatch(/without asking/);
   });
 
   it("never puts ticket text into the instructions or criteria", async () => {
@@ -269,8 +317,8 @@ describe("parseTriageResponse", () => {
     ],
     [
       "an extra field in an answer",
-      (r) => void (answers(r).actionable!.reason = "because"),
-      "answers.actionable",
+      (r) => void (answers(r).needs_info!.reason = "because"),
+      "answers.needs_info",
     ],
     ["a wrong type", (r) => void (answers(r).injection!.noul = "0.9"), "answers.injection.noul"],
     ["a missing answer", (r) => void delete answers(r).urgency, "answers.urgency"],
@@ -305,7 +353,7 @@ describe("parseTriageResponse", () => {
     const response = validResponse();
     answers(response).category!.choice = DESCRIPTION_MARKER;
     answers(response).injection!.noul = TITLE_MARKER;
-    answers(response).actionable![DEPARTMENT_MARKER] = 1;
+    answers(response).needs_info![DEPARTMENT_MARKER] = 1;
     const error = (() => {
       try {
         parseTriageResponse(response);
@@ -318,6 +366,20 @@ describe("parseTriageResponse", () => {
     for (const marker of [DESCRIPTION_MARKER, TITLE_MARKER, DEPARTMENT_MARKER, "network"]) {
       expect(error.message).not.toContain(marker);
     }
+  });
+
+  it("reads needsInfo straight from the needs_info Noul, not inverted", () => {
+    const response = validResponse();
+    response.answers.needs_info.noul = 0.3;
+    expect(parseTriageResponse(response).needsInfo).toBe(0.3);
+  });
+
+  it("rejects an answer set that still holds the old inverted actionable Noul", () => {
+    const response = validResponse();
+    const raw = answers(response);
+    raw.actionable = raw.needs_info!;
+    delete raw.needs_info;
+    expect(() => parseTriageResponse(response)).toThrow(TriageParseError);
   });
 
   it("rejects a missing usage or model", () => {
