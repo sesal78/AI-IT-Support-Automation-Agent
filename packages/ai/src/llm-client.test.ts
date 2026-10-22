@@ -1,10 +1,11 @@
-import { delay, HttpResponse } from "msw";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { HttpResponse } from "msw";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEgressRecorder } from "../../shared/test-support/egress-recorder.js";
 import { FixParseError, buildFixPrompt } from "./fix-steps.js";
 import {
-  LLM_MAX_ATTEMPTS,
-  LLM_TIMEOUT_MS,
+  LLM_DRAFT_TIMEOUT_MS,
+  LLM_HEDGE_DELAY_MS,
+  LLM_MAX_REQUESTS,
   LlmError,
   LlmUnavailableError,
   createFixDrafter,
@@ -47,10 +48,11 @@ type Reply = () => Response | Promise<Response>;
 
 interface SetupOptions {
   reply?: Reply;
-  timeoutMs?: number;
   appVersion?: string;
   /** Reservations allowed before the budget refuses; default unlimited. */
   allowedReservations?: number;
+  /** Awaited inside the n-th reservation (from 1) before it answers. */
+  reserveGate?: (n: number) => Promise<void>;
 }
 
 function setup(options: SetupOptions = {}) {
@@ -67,6 +69,7 @@ function setup(options: SetupOptions = {}) {
     reserveAiCall: vi.fn(async ({ calls, capCalls }: { calls: number; capCalls: number }) => {
       order.push("reserve");
       reservations += 1;
+      await options.reserveGate?.(reservations);
       const allowed =
         calls <= capCalls && reservations <= (options.allowedReservations ?? Infinity);
       return { allowed, usedCalls: calls, callId: allowed ? CALL_ID : null };
@@ -96,7 +99,6 @@ function setup(options: SetupOptions = {}) {
     model: MODEL,
     runtime,
     appVersion: options.appVersion ?? "1.2.3",
-    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
   });
   return { drafter, order, auth, repos, spans, logs };
 }
@@ -179,26 +181,26 @@ describe("createFixDrafter", () => {
   );
 
   it.each([500, 502, 503, 408])(
-    "retries a %i once, then throws LlmError with that status after exactly 2 requests",
+    "retries a %i, then throws LlmError with that status after exactly 3 requests",
     async (status) => {
       const { drafter, repos, spans } = setup({ reply: () => HttpResponse.json({}, { status }) });
       const error = await rejection(drafter.draft(input));
       expect(error).toBeInstanceOf(LlmError);
       expect(error).not.toBeInstanceOf(LlmUnavailableError);
       expect(error).toMatchObject({ kind: "http", status });
-      expect(egress.requests()).toHaveLength(2);
+      expect(egress.requests()).toHaveLength(3);
       // Each request is metered and traced on its own.
-      expect(repos.reserveAiCall).toHaveBeenCalledTimes(2);
-      expect(spans.map((span) => span.error)).toEqual(["LlmError", "LlmError"]);
+      expect(repos.reserveAiCall).toHaveBeenCalledTimes(3);
+      expect(spans.map((span) => span.error)).toEqual(["LlmError", "LlmError", "LlmError"]);
     },
   );
 
-  it("throws LlmError of kind network when the connection fails twice, after exactly 2 requests", async () => {
+  it("throws LlmError of kind network when the connection fails 3 times, after exactly 3 requests", async () => {
     const { drafter } = setup({ reply: () => HttpResponse.error() });
     const error = await rejection(drafter.draft(input));
     expect(error).toBeInstanceOf(LlmError);
     expect(error).toMatchObject({ kind: "network", status: null });
-    expect(egress.requests()).toHaveLength(2);
+    expect(egress.requests()).toHaveLength(3);
   });
 
   it("sends exactly User-Agent ai-it-support-agent/<APP_VERSION>", async () => {
@@ -215,12 +217,12 @@ describe("createFixDrafter", () => {
     expect(egress.requests()[0]?.headers["user-agent"]).toBe("ai-it-support-agent/unknown");
   });
 
-  it("throws FixParseError when both replies are not valid JSON", async () => {
+  it("throws FixParseError when all 3 replies are not valid JSON", async () => {
     const { drafter } = setup({ reply: () => HttpResponse.json(completion("Try a restart.")) });
     const error = await rejection(drafter.draft(input));
     expect(error).toBeInstanceOf(FixParseError);
     expect(String((error as Error).message)).not.toContain("Try a restart");
-    expect(egress.requests()).toHaveLength(2);
+    expect(egress.requests()).toHaveLength(3);
   });
 
   describe("with the recorded live completion envelope (P3-T10i)", () => {
@@ -272,36 +274,25 @@ describe("createFixDrafter", () => {
       expect(JSON.stringify(result)).not.toContain("REASONING-MARKER");
     });
 
-    it("throws FixParseError for the recorded 0-step no-article reply, after one retry", async () => {
+    it("throws FixParseError for the recorded 0-step no-article reply, after the retries", async () => {
       const content = '{"steps": [], "caveats": ["No knowledge-base articles were provided."]}';
       const { drafter } = setup({ reply: () => HttpResponse.json(liveCompletion(content)) });
       const error = await rejection(drafter.draft(input));
       expect(error).toBeInstanceOf(FixParseError);
       expect((error as Error).message).toBe("Fix-step reply rejected: unexpected shape at steps");
-      expect(egress.requests()).toHaveLength(2);
+      expect(egress.requests()).toHaveLength(3);
     });
   });
 
-  it("throws LlmError of kind timeout when neither request answers in time", async () => {
-    const { drafter } = setup({
-      timeoutMs: 50,
-      reply: async () => {
-        await delay(1000);
-        return HttpResponse.json(completion(JSON.stringify(FIX)));
-      },
-    });
-    const error = await rejection(drafter.draft(input));
-    expect(error).toBeInstanceOf(LlmError);
-    expect(error).toMatchObject({ kind: "timeout", status: null });
-    expect(egress.requests()).toHaveLength(2);
+  it("hedges after 4 s, sends 3 requests at most and ends a draft within 15 s", () => {
+    expect(LLM_HEDGE_DELAY_MS).toBe(4_000);
+    expect(LLM_MAX_REQUESTS).toBe(3);
+    expect(LLM_DRAFT_TIMEOUT_MS).toBe(15_000);
+    // The last request starts by 2 hedge delays and still has 7 s.
+    expect(LLM_DRAFT_TIMEOUT_MS - (LLM_MAX_REQUESTS - 1) * LLM_HEDGE_DELAY_MS).toBe(7_000);
   });
 
-  it("has a 10 s per-request limit and 2 requests at most, so a draft stays within about 20 s", () => {
-    expect(LLM_TIMEOUT_MS).toBe(10_000);
-    expect(LLM_MAX_ATTEMPTS).toBe(2);
-  });
-
-  describe("one retry inside the draft (P3-T10k)", () => {
+  describe("retry inside the draft (P3-T10k)", () => {
     /** Replies with `first` to the first request and a valid fix to every later one. */
     function firstThen(first: Reply): Reply {
       let count = 0;
@@ -312,19 +303,12 @@ describe("createFixDrafter", () => {
     }
 
     it.each<[string, Reply]>([
-      [
-        "a timeout",
-        async () => {
-          await delay(1000);
-          return HttpResponse.json(completion(JSON.stringify(FIX)));
-        },
-      ],
       ["a network error", () => HttpResponse.error()],
       ["a 500", () => HttpResponse.json({}, { status: 500 })],
       ["a 200 body the SDK cannot read", () => new HttpResponse("not json", { status: 200 })],
       ["a reply that is not valid JSON", () => HttpResponse.json(completion("Try a restart."))],
     ])("returns the second reply after %s", async (_label, first) => {
-      const { drafter, order, repos, spans } = setup({ timeoutMs: 50, reply: firstThen(first) });
+      const { drafter, order, repos, spans } = setup({ reply: firstThen(first) });
       const result = await drafter.draft(input);
       expect(result).toEqual({ ...FIX, model: MODEL, usage: { tokensIn: 120, tokensOut: 45 } });
       // A reservation before each request: the retry counts toward the cap.
@@ -407,9 +391,271 @@ describe("createFixDrafter", () => {
       error instanceof Error ? `${error.message} ${error.stack ?? ""}` : "",
       JSON.stringify(error ?? null),
     ].join("\n");
-    // The 200 and the 4xx are not retried; the 500 and the bad JSON are, once.
-    expect(spans).toHaveLength(["500", "bad JSON"].includes(_label) ? 2 : 1);
+    // The 200 and the 4xx are not retried; the 500 and the bad JSON are, up to 3 requests.
+    expect(spans).toHaveLength(["500", "bad JSON"].includes(_label) ? 3 : 1);
     expect(seen).not.toContain(KEY_MARKER);
+  });
+});
+
+describe("hedged requests (P3-T10l)", () => {
+  /** One fetch the drafter made; it settles only when the test says so. */
+  interface Call {
+    body: string;
+    signal: AbortSignal;
+    answer(response: Response): void;
+  }
+
+  let calls: Call[];
+  let unhandled: unknown[];
+  const onUnhandled = (reason: unknown) => void unhandled.push(reason);
+
+  // Fake timers drive the hedge delay and the draft limit; the fake fetch
+  // rejects with the abort reason, as the real fetch does.
+  beforeEach(() => {
+    vi.useFakeTimers();
+    calls = [];
+    unhandled = [];
+    process.on("unhandledRejection", onUnhandled);
+    vi.stubGlobal("fetch", (_url: unknown, init: RequestInit) => {
+      const signal = init.signal as AbortSignal;
+      return new Promise<Response>((resolve, reject) => {
+        calls.push({ body: String(init.body), signal, answer: resolve });
+        signal.addEventListener("abort", () => reject(signal.reason as Error), { once: true });
+      });
+    });
+  });
+
+  afterEach(async () => {
+    // Let any stray rejection surface before the check.
+    await vi.advanceTimersByTimeAsync(0);
+    process.off("unhandledRejection", onUnhandled);
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    expect(unhandled).toEqual([]);
+  });
+
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const valid = () => json(completion(JSON.stringify(FIX)));
+  const RESULT = { ...FIX, model: MODEL, usage: { tokensIn: 120, tokensOut: 45 } };
+
+  /** Starts a draft; `state()` reports whether it is still pending. */
+  function start(drafter: ReturnType<typeof setup>["drafter"]) {
+    let state: "pending" | "resolved" | "rejected" = "pending";
+    const promise = drafter.draft(input);
+    promise.then(
+      () => (state = "resolved"),
+      () => (state = "rejected"),
+    );
+    return { promise, state: () => state };
+  }
+
+  /** Moves the clock to `ms` after the draft started. */
+  let now = 0;
+  beforeEach(() => void (now = 0));
+  async function at(ms: number): Promise<void> {
+    await vi.advanceTimersByTimeAsync(ms - now);
+    now = ms;
+  }
+
+  it("sends no hedge when the first request answers in time", async () => {
+    const { drafter, repos, spans } = setup();
+    const draft = start(drafter);
+    await at(2_000);
+    expect(calls).toHaveLength(1);
+    calls[0]!.answer(valid());
+    await expect(draft.promise).resolves.toEqual(RESULT);
+    expect(vi.getTimerCount()).toBe(0);
+    await at(30_000);
+    expect(calls).toHaveLength(1);
+    expect(repos.reserveAiCall).toHaveBeenCalledTimes(1);
+    expect(spans).toHaveLength(1);
+    expect(calls[0]!.signal.aborted).toBe(false);
+  });
+
+  it("hedges a stalled first request after 4 s, returns the hedge and aborts the first", async () => {
+    const { drafter, repos, spans } = setup();
+    const draft = start(drafter);
+    await at(LLM_HEDGE_DELAY_MS - 1);
+    expect(calls).toHaveLength(1);
+    await at(LLM_HEDGE_DELAY_MS);
+    expect(calls).toHaveLength(2);
+    // The hedge is the same request.
+    expect(calls[1]!.body).toBe(calls[0]!.body);
+    await at(6_500);
+    calls[1]!.answer(valid());
+    await expect(draft.promise).resolves.toEqual(RESULT);
+    expect(calls[0]!.signal.aborted).toBe(true);
+    expect(calls[1]!.signal.aborted).toBe(false);
+    // Both requests are metered and traced exactly once.
+    expect(repos.reserveAiCall).toHaveBeenCalledTimes(2);
+    expect(repos.completeAiCall).toHaveBeenCalledTimes(1);
+    expect(spans).toHaveLength(2);
+    const cancelled = spans.find((span) => span.error !== undefined);
+    expect(cancelled).toMatchObject({
+      error: "LlmCancelledError",
+      kind: "fix_steps",
+      tokensIn: null,
+      tokensOut: null,
+    });
+    expect(spans.find((span) => span.error === undefined)).toMatchObject({
+      tokensIn: 120,
+      tokensOut: 45,
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("retries a transient failure at once, without waiting for the hedge delay", async () => {
+    const { drafter } = setup();
+    const draft = start(drafter);
+    await at(1_000);
+    calls[0]!.answer(json({}, 503));
+    await at(1_001);
+    expect(calls).toHaveLength(2);
+    calls[1]!.answer(valid());
+    await expect(draft.promise).resolves.toEqual(RESULT);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("returns the first valid reply when both arrive together; both count as completed calls", async () => {
+    const { drafter, repos, spans } = setup();
+    const draft = start(drafter);
+    await at(LLM_HEDGE_DELAY_MS);
+    const hedgeFix = { steps: ["Reinstall the VPN client."], caveats: [] };
+    calls[1]!.answer(json(completion(JSON.stringify(hedgeFix))));
+    calls[0]!.answer(valid());
+    await expect(draft.promise).resolves.toEqual({ ...RESULT, ...hedgeFix });
+    expect(repos.completeAiCall).toHaveBeenCalledTimes(2);
+    expect(spans.map((span) => span.error)).toEqual([undefined, undefined]);
+  });
+
+  it("keeps waiting for the hedge when the first fails transiently, with no third request", async () => {
+    const { drafter } = setup();
+    const draft = start(drafter);
+    await at(LLM_HEDGE_DELAY_MS);
+    expect(calls).toHaveLength(2);
+    await at(5_000);
+    calls[0]!.answer(json({}, 500));
+    await at(6_000);
+    expect(calls).toHaveLength(2);
+    calls[1]!.answer(valid());
+    await expect(draft.promise).resolves.toEqual(RESULT);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("starts a third request at once when the hedge fails and the first is still stalled", async () => {
+    const { drafter, spans } = setup();
+    const draft = start(drafter);
+    await at(LLM_HEDGE_DELAY_MS);
+    await at(4_500);
+    calls[1]!.answer(json({}, 502));
+    await at(4_501);
+    expect(calls).toHaveLength(3);
+    calls[2]!.answer(valid());
+    await expect(draft.promise).resolves.toEqual(RESULT);
+    expect(calls[0]!.signal.aborted).toBe(true);
+    expect(spans.map((span) => span.error ?? "ok").sort()).toEqual([
+      "LlmCancelledError",
+      "LlmError",
+      "ok",
+    ]);
+  });
+
+  it("hedges every 4 s up to 3 requests, then fails with a timeout at 15 s", async () => {
+    const { drafter, repos, spans } = setup();
+    const draft = start(drafter);
+    const failure = rejection(draft.promise);
+    await at(LLM_HEDGE_DELAY_MS);
+    expect(calls).toHaveLength(2);
+    await at(2 * LLM_HEDGE_DELAY_MS);
+    expect(calls).toHaveLength(3);
+    await at(LLM_DRAFT_TIMEOUT_MS - 1);
+    expect(calls).toHaveLength(3);
+    expect(draft.state()).toBe("pending");
+    await at(LLM_DRAFT_TIMEOUT_MS);
+    const error = await failure;
+    expect(error).toBeInstanceOf(LlmError);
+    expect(error).toMatchObject({ kind: "timeout", status: null });
+    expect(calls.every((call) => call.signal.aborted)).toBe(true);
+    expect(repos.reserveAiCall).toHaveBeenCalledTimes(3);
+    expect(spans.map((span) => span.error)).toEqual(["LlmError", "LlmError", "LlmError"]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("never hedges a 429: 1 request, LlmUnavailableError", async () => {
+    const { drafter, repos } = setup();
+    const draft = start(drafter);
+    const failure = rejection(draft.promise);
+    await at(1_000);
+    calls[0]!.answer(json({}, 429));
+    expect(await failure).toBeInstanceOf(LlmUnavailableError);
+    await at(30_000);
+    expect(calls).toHaveLength(1);
+    expect(repos.reserveAiCall).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("starts no new request after a 429 and throws it when the open hedge fails", async () => {
+    const { drafter } = setup();
+    const draft = start(drafter);
+    const failure = rejection(draft.promise);
+    await at(LLM_HEDGE_DELAY_MS);
+    await at(5_000);
+    calls[0]!.answer(json({}, 429));
+    // The hedge is younger than the hedge delay at 5 s, older at 9 s.
+    await at(9_000);
+    expect(calls).toHaveLength(2);
+    calls[1]!.answer(json({}, 500));
+    expect(await failure).toBeInstanceOf(LlmUnavailableError);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("keeps waiting on the first when the budget refuses the hedge", async () => {
+    const { drafter, order, repos, spans } = setup({ allowedReservations: 1 });
+    const draft = start(drafter);
+    await at(LLM_HEDGE_DELAY_MS);
+    expect(order).toEqual(["reserve", "reserve"]);
+    expect(calls).toHaveLength(1);
+    await at(7_000);
+    calls[0]!.answer(valid());
+    await expect(draft.promise).resolves.toEqual(RESULT);
+    expect(calls).toHaveLength(1);
+    expect(repos.reserveAiCall).toHaveBeenCalledTimes(2);
+    // A refused reservation runs nothing and records no span.
+    expect(spans).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("throws BudgetExceededError when the budget refused the hedge and the first fails", async () => {
+    const { drafter } = setup({ allowedReservations: 1 });
+    const draft = start(drafter);
+    const failure = rejection(draft.promise);
+    await at(7_000);
+    calls[0]!.answer(json({}, 500));
+    expect(await failure).toBeInstanceOf(BudgetExceededError);
+    await at(30_000);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("cancels a hedge still reserving its budget: no request, one LlmCancelledError span", async () => {
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const { drafter, repos, spans } = setup({
+      reserveGate: (n) => (n === 2 ? gate : Promise.resolve()),
+    });
+    const draft = start(drafter);
+    await at(LLM_HEDGE_DELAY_MS);
+    expect(repos.reserveAiCall).toHaveBeenCalledTimes(2);
+    await at(5_000);
+    calls[0]!.answer(valid());
+    await at(5_001);
+    // The draft waits for the hedge, so its span is exported before it returns.
+    expect(draft.state()).toBe("pending");
+    release();
+    await expect(draft.promise).resolves.toEqual(RESULT);
+    expect(calls).toHaveLength(1);
+    expect(spans.map((span) => span.error ?? "ok").sort()).toEqual(["LlmCancelledError", "ok"]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 

@@ -194,9 +194,10 @@ const statusLabel = (status: string) =>
  * Latency (P3-T10k): the judgments and the KB match (search, then rerank)
  * read only the redacted text, so they run in parallel. Both settle before
  * anything is decided, and the judgments decide first: when they fail or hit
- * the TypeSafe cap, whatever the KB branch did is dropped. The drafter retries
- * one transient LLM failure itself (packages/ai), so a slow reply no longer
- * fails the run and repeats every AI call. The `triaged` log line carries the
+ * the TypeSafe cap, whatever the KB branch did is dropped. The drafter hedges
+ * a stalled LLM request and retries a transient failure itself, within 15 s
+ * and 3 requests (packages/ai, P3-T10l), so a slow reply no longer fails the
+ * run and repeats every AI call. The `triaged` log line carries the
  * step timings in milliseconds (names and numbers only).
  *
  * Degraded paths, each still ending `triaged` with the route `review`:
