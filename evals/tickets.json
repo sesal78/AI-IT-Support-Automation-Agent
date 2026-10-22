@@ -315,7 +315,7 @@
     "description": "Four auditors arrive tomorrow at 09:00 and will be with us for three days. They need guest wifi. Please send the code to my colleague on 212-555-0178 at reception.",
     "expected": {
       "category": "inquiry",
-      "priority": "P3",
+      "priority": "P4",
       "assignmentGroup": "Service Desk",
       "flags": [],
       "route": null,
@@ -332,7 +332,7 @@
     "description": "Our team of eight moves from floor 2 to floor 4 on Friday. Can someone move the desk phones and keep the extension numbers? List of extensions is in the attached sheet.",
     "expected": {
       "category": "inquiry",
-      "priority": "P3",
+      "priority": "P4",
       "assignmentGroup": "Service Desk",
       "flags": [],
       "route": null,
@@ -672,7 +672,7 @@
     "description": "The shared scanner on floor 1 pulls in several pages at once and then jams. I cleared it twice. Scanning single pages on the glass is fine.",
     "expected": {
       "category": "hardware",
-      "priority": "P4",
+      "priority": "P3",
       "assignmentGroup": "Hardware",
       "flags": [],
       "route": null,
@@ -689,7 +689,7 @@
     "description": "I returned from two weeks of leave and cannot remember my password. The self-service page says my details do not match. Please reset it. My mobile is 646-555-0159 if you need to call back.",
     "expected": {
       "category": "password_reset",
-      "priority": "P3",
+      "priority": "P2",
       "assignmentGroup": "Service Desk",
       "flags": [],
       "route": null,
@@ -706,7 +706,7 @@
     "description": "My account is locked after I mistyped the password a few times on my phone. I cannot reach email or the intranet. The lockout message says to contact the service desk. I was on 198.51.100.131 when it happened.",
     "expected": {
       "category": "password_reset",
-      "priority": "P3",
+      "priority": "P2",
       "assignmentGroup": "Service Desk",
       "flags": [],
       "route": null,
@@ -740,7 +740,7 @@
     "description": "My Mac shows a 'password expired' message at login, but the change screen does not accept my old password. I am working remotely.",
     "expected": {
       "category": "password_reset",
-      "priority": "P3",
+      "priority": "P2",
       "assignmentGroup": "Service Desk",
       "flags": [],
       "route": null,
@@ -791,7 +791,7 @@
     "description": "My surname was updated in the system last week and now my old username fails, but the new one says the account does not exist. I tried both on the portal. Call me on 312-555-0166 at lunchtime.",
     "expected": {
       "category": "password_reset",
-      "priority": "P3",
+      "priority": "P2",
       "assignmentGroup": "Service Desk",
       "flags": [],
       "route": null,
@@ -910,7 +910,7 @@
     "description": "The S: drive shows a red cross and says 'network path not found'. I get to other drives. I need the quarterly folder for a review in the afternoon.",
     "expected": {
       "category": "network",
-      "priority": "P3",
+      "priority": "P2",
       "assignmentGroup": "Network",
       "flags": [],
       "route": null,
@@ -927,7 +927,7 @@
     "description": "wiki.corp.internal gives 'server not found' for me and two people in my row. By IP address, 192.0.2.15, the page loads. Looks like a DNS thing.",
     "expected": {
       "category": "network",
-      "priority": "P2",
+      "priority": "P3",
       "assignmentGroup": "Network",
       "flags": ["outage_or_duplicate"],
       "route": "review",
