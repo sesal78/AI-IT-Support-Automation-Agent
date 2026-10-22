@@ -63,9 +63,60 @@ describe("recordDatasetRun retries and pacing (P3-T10m)", () => {
     expect(wait).toBeLessThanOrEqual(7_000);
   });
 
-  it("caps a long Retry-After at 30 s and never waits below 0", () => {
+  it("caps a long Retry-After at 30 s", () => {
     expect(retryWaitMs("120", 1, 0)).toBe(30_000);
-    expect(retryWaitMs(new Date(0).toUTCString(), 1, 60_000)).toBe(0);
+    expect(retryWaitMs(new Date(120_000).toUTCString(), 1, 0)).toBe(30_000);
+  });
+
+  it.each([["-1"], ["1.5"], [""], ["abc"], [new Date(0).toUTCString()]])(
+    "falls back to the backoff for Retry-After %j",
+    (value) => {
+      const now = Date.parse("2026-10-22T08:00:00Z");
+      expect(retryWaitMs(value, 1, now)).toBe(1_000);
+      expect(retryWaitMs(value, 3, now)).toBe(4_000);
+    },
+  );
+
+  it("takes Retry-After 3 as 3 s and a future HTTP date as the time until it", () => {
+    const now = Date.parse("2026-10-22T08:00:00Z");
+    expect(retryWaitMs("3", 1, now)).toBe(3_000);
+    expect(retryWaitMs("Thu, 22 Oct 2026 08:00:05 GMT", 1, now)).toBe(5_000);
+  });
+
+  it("retries a network error with the backoff and fails loudly after 5 tries", async () => {
+    const h = setup();
+    let failures = 0;
+    const fetch = async (input: URL): Promise<Response> => {
+      if (input.pathname === ITEMS_PATH) {
+        failures += 1;
+        await h.options.fetch(input);
+        throw new TypeError("fetch failed");
+      }
+      return h.options.fetch(input);
+    };
+    await expect(
+      recordDatasetRun(CONFIG, "r1", [item("E001")], { ...h.options, fetch }),
+    ).rejects.toThrow("POST /api/public/dataset-items: request failed (TypeError) after 5 tries");
+    expect(failures).toBe(LANGFUSE_MAX_TRIES);
+    const gaps = h
+      .itemStarts()
+      .slice(1)
+      .map((s, i) => s.at - h.itemStarts()[i]!.at);
+    expect(gaps).toEqual([1_000, 2_000, 4_000, 8_000]);
+  });
+
+  it("recovers when a network error is followed by an answer", async () => {
+    const h = setup();
+    let first = true;
+    const fetch = async (input: URL): Promise<Response> => {
+      if (input.pathname === ITEMS_PATH && first) {
+        first = false;
+        throw new TypeError("fetch failed");
+      }
+      return h.options.fetch(input);
+    };
+    const result = await recordDatasetRun(CONFIG, "r1", [item("E001")], { ...h.options, fetch });
+    expect(result.items).toBe(1);
   });
 
   it("backs off 1, 2, 4, 8 s without Retry-After and fails loudly after 5 tries", async () => {

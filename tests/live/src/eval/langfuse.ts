@@ -56,16 +56,18 @@ export interface LangfuseClock {
 const isRetryable = (status: number) => status === 429 || status >= 500;
 
 /**
- * The wait before retry `retry` (1 for the first): Retry-After in seconds or
- * as an HTTP date when it parses, else 1, 2, 4, 8 s; never below 0 or above
- * `LANGFUSE_MAX_RETRY_WAIT_MS`.
+ * The wait before retry `retry` (1 for the first), at most
+ * `LANGFUSE_MAX_RETRY_WAIT_MS`. Retry-After counts only as whole seconds
+ * (`/^\d+$/`) or as an HTTP date (it has letters) that is now or later; any
+ * other value, such as "-1", "1.5" or a past date, falls back to 1, 2, 4, 8 s.
  */
 export function retryWaitMs(retryAfter: string | null, retry: number, now: number): number {
   let wait = LANGFUSE_BACKOFF_MS * 2 ** (retry - 1);
   const value = retryAfter?.trim() ?? "";
+  const date = /[A-Za-z]/.test(value) ? Date.parse(value) : Number.NaN;
   if (/^\d+$/.test(value)) wait = Number(value) * 1_000;
-  else if (value !== "" && !Number.isNaN(Date.parse(value))) wait = Date.parse(value) - now;
-  return Math.min(Math.max(wait, 0), LANGFUSE_MAX_RETRY_WAIT_MS);
+  else if (!Number.isNaN(date) && date >= now) wait = date - now;
+  return Math.min(wait, LANGFUSE_MAX_RETRY_WAIT_MS);
 }
 
 interface LangfuseApi {
@@ -84,9 +86,9 @@ interface LangfuseApi {
  * as-is, so the Basic credentials never leave for another host.
  *
  * Paced and retried (P3-T10m): a request starts at least `LANGFUSE_PACE_MS`
- * after the one before, and a 429 or 5xx is sent again after `retryWaitMs`, up
- * to `LANGFUSE_MAX_TRIES` tries in all; the last such answer throws
- * LangfuseRequestError with its status. A network failure is not retried.
+ * after the one before, and a 429, a 5xx or a network failure is sent again
+ * after `retryWaitMs`, up to `LANGFUSE_MAX_TRIES` tries in all; the last one
+ * throws LangfuseRequestError with its status or error class.
  */
 function createLangfuseApi(
   config: LangfuseConfig,
@@ -105,7 +107,7 @@ function createLangfuseApi(
     url: URL,
     body: unknown,
     extra: Record<string, string>,
-  ): Promise<{ status: number; json: unknown; retryAfter: string | null }> {
+  ): Promise<{ status: number; json: unknown; retryAfter: string | null } | { failed: string }> {
     if (lastStart !== null) {
       const wait = lastStart + LANGFUSE_PACE_MS - clock.now();
       if (wait > 0) await clock.sleep(wait);
@@ -126,7 +128,7 @@ function createLangfuseApi(
       });
       text = await response.text();
     } catch (error) {
-      throw new LangfuseRequestError(endpoint, `request failed (${errorClassName(error)})`);
+      return { failed: `request failed (${errorClassName(error)})` };
     }
     let json: unknown = null;
     if (text.trim() !== "") {
@@ -146,11 +148,15 @@ function createLangfuseApi(
         throw new LangfuseRequestError(endpoint, "origin refused");
       }
       for (let tries = 1; ; tries += 1) {
-        const { status, json, retryAfter } = await send(endpoint, method, url, body, extra);
-        if (!isRetryable(status)) return { status, json };
-        if (tries === LANGFUSE_MAX_TRIES) {
-          throw new LangfuseRequestError(endpoint, `status ${status} after ${tries} tries`);
+        const sent = await send(endpoint, method, url, body, extra);
+        if ("status" in sent && !isRetryable(sent.status)) {
+          return { status: sent.status, json: sent.json };
         }
+        if (tries === LANGFUSE_MAX_TRIES) {
+          const problem = "status" in sent ? `status ${sent.status}` : sent.failed;
+          throw new LangfuseRequestError(endpoint, `${problem} after ${tries} tries`);
+        }
+        const retryAfter = "status" in sent ? sent.retryAfter : null;
         await clock.sleep(retryWaitMs(retryAfter, tries, clock.now()));
       }
     },
