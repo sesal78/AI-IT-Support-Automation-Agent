@@ -153,18 +153,30 @@ describe("createTriageJudge", () => {
       JSON.stringify((priority.criteria as Record<string, unknown>)[label]).toLowerCase();
 
     expect(JSON.stringify(priority.instructions)).toContain("impact");
-    expect(text("P1")).toContain("many people");
-    expect(text("P1")).toContain("security");
+    // P1 keeps every README case and its old breadth; under-rating a P1 costs
+    // more than over-rating, so nothing in it pushes a ticket down.
+    for (const words of [
+      "business-stopping",
+      "many people",
+      "critical system down",
+      "about to fail",
+      "key business service",
+      "active security event",
+      "compromised credentials",
+      "lost or stolen device",
+    ]) {
+      expect(text("P1")).toContain(words);
+    }
     expect(text("P2")).toContain("cannot work");
     expect(text("P2")).toContain("no workaround");
     expect(text("P2")).toContain("deadline");
     expect(text("P3")).toContain("keep working");
     expect(text("P3")).toContain("workaround");
     for (const word of ["question", "request", "cosmetic"]) expect(text("P4")).toContain(word);
-    // The over-rating guards: one failing task is not P2, one team is not P1.
+    // The over-rating guard: one failing task is not P2. P1 has no such guard.
     const criteria = priority.criteria as Record<string, Record<string, unknown>>;
     expect(String(criteria.P2!.not_for).toLowerCase()).toContain("keep working");
-    expect(String(criteria.P1!.not_for).toLowerCase()).toContain("one person");
+    expect(criteria.P1).not.toHaveProperty("not_for");
   });
 
   // Eval p3-eval-a: "can an agent act without asking anything?" scored a median

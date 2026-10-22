@@ -34,9 +34,9 @@ const QUESTIONS = {
   priority: choice(
     "What priority does the IT support ticket in `ticket` get under these rules? Judge the impact the ticket states, not how urgent its wording sounds.",
     {
+      // README P1, kept broad: under-rating a P1 costs more than over-rating it.
       P1: {
-        what: "Business-stopping: many people or a critical system cannot work, or an active security event such as an attack or infection happening now.",
-        not_for: "One person or one team that cannot work, when no security event is active.",
+        what: "Business-stopping, or many people or a critical system down or about to fail (a key business service is down), or an active security event: for example compromised credentials or accounts, malware, or a lost or stolen device with data.",
       },
       P2: {
         what: "A person or team cannot work at all and has no workaround, or a deadline today is at risk.",
