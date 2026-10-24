@@ -1,17 +1,30 @@
 export { referencedSchemas, unqualifiedCreates } from "./schema-refs.js";
 export { createDbClient, dbEnvShape, type DbClient } from "./client.js";
-export { DbError } from "./errors.js";
+export { DbError, StatusConflictError } from "./errors.js";
 export {
+  aiReservationSchema,
   createRepositories,
+  kbArticleRowSchema,
+  kbSearchResultSchema,
   redactionSchema,
   ticketEventSchema,
   ticketSchema,
   triageSchema,
+  type AiProvider,
+  type AiReservation,
+  type AiReservationInput,
+  type AiTokenUsage,
+  type KbArticleRow,
+  type KbSearchResult,
+  type AiUsageMonth,
   type NewRedaction,
   type NewTicket,
   type NewTriage,
   type Redaction,
   type Repositories,
+  type SchemaProbe,
+  type SecurityEventRow,
+  type SensitiveCheck,
   type Ticket,
   type TicketEvent,
   type Triage,

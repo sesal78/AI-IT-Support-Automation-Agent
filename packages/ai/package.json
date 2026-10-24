@@ -18,7 +18,13 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
+    "@ai-it-support/shared": "workspace:*",
+    "@ai-sdk/openai-compatible": "3.0.55",
     "@typesafe-ai/sdk": "0.6.0",
+    "ai": "7.0.114",
     "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "msw": "2.15.0"
   }
 }

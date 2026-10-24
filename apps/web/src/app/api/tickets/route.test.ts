@@ -57,6 +57,7 @@ function ticketRow(id: string, idempotencyKey: string) {
     servicenow_sys_id: null,
     servicenow_number: null,
     idempotency_key: idempotencyKey,
+    is_test: false,
     created_at: "2026-09-30T10:00:00.000Z",
   };
 }
@@ -129,7 +130,8 @@ describe("POST /api/tickets", () => {
       requester_email: valid.email,
       requester_name: valid.name,
       department: valid.department,
-      idempotency_key: expect.stringMatching(/^[0-9a-f]{64}$/),
+      idempotency_key: expect.stringMatching(/^web:b:[0-9a-f]{64}$/),
+      is_test: false,
     });
     expect(addEvent).toHaveBeenCalledTimes(1);
     expect(addEvent).toHaveBeenCalledWith(json.ticketId, "received");
@@ -261,10 +263,73 @@ describe("POST /api/tickets", () => {
     expect((await second.json()).ticketId).toBe(id);
     expect(createTicket).toHaveBeenCalledTimes(2);
     for (const call of createTicket.mock.calls) {
-      expect(call[0].idempotency_key).toBe("key-1");
+      expect(call[0].idempotency_key).toBe("web:k:key-1");
     }
     expect(trigger).toHaveBeenCalledTimes(1);
     expect(addEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("stores a client-sent email: key under the web namespace", async () => {
+    const POST = await loadPost();
+    const res = await POST(request(valid, { headers: { "Idempotency-Key": "email:abc" } }));
+    expect(res.status).toBe(201);
+    expect(createTicket).toHaveBeenCalledTimes(1);
+    expect(createTicket).toHaveBeenCalledWith(
+      expect.objectContaining({ source: "web", idempotency_key: "web:k:email:abc" }),
+    );
+  });
+
+  describe("P3-T4b: disjoint web key forms, against a keyed store", () => {
+    // A store that dedupes on idempotency_key the way the tickets table does.
+    beforeEach(() => {
+      const byKey = new Map<string, ReturnType<typeof ticketRow>>();
+      createTicket.mockImplementation(async (input: { idempotency_key: string }) => {
+        const existing = byKey.get(input.idempotency_key);
+        if (existing) return { ticket: existing, created: false };
+        const ticket = ticketRow(randomUUID(), input.idempotency_key);
+        byKey.set(input.idempotency_key, ticket);
+        return { ticket, created: true };
+      });
+    });
+
+    it("a header equal to another body's hash cannot claim that body's ticket", async () => {
+      const POST = await loadPost();
+      const first = await POST(request(valid));
+      expect(first.status).toBe(201);
+      const firstId = (await first.json()).ticketId;
+      const storedKey: string = createTicket.mock.calls[0][0].idempotency_key;
+      expect(storedKey).toMatch(/^web:b:[0-9a-f]{64}$/);
+      const bodyHash = storedKey.slice("web:b:".length);
+
+      const other = { ...valid, title: "A different problem" };
+      for (const header of [bodyHash, `b:${bodyHash}`]) {
+        const res = await POST(request(other, { headers: { "Idempotency-Key": header } }));
+        expect(res.status).toBe(201);
+        const json = await res.json();
+        expect(json.duplicate).toBeUndefined();
+        expect(json.ticketId).not.toBe(firstId);
+      }
+      expect(createTicket.mock.calls.map((call) => call[0].idempotency_key)).toEqual([
+        storedKey,
+        `web:k:${bodyHash}`,
+        `web:k:b:${bodyHash}`,
+      ]);
+      expect(trigger).toHaveBeenCalledTimes(3);
+    });
+
+    it("the same body and header twice return the same ticketId and trigger once", async () => {
+      const POST = await loadPost();
+      const headers = { "Idempotency-Key": "retry-7" };
+      const first = await (await POST(request(valid, { headers }))).json();
+      const second = await (await POST(request(valid, { headers }))).json();
+      expect(second.ticketId).toBe(first.ticketId);
+      expect(second.duplicate).toBe(true);
+      expect(createTicket.mock.calls.map((call) => call[0].idempotency_key)).toEqual([
+        "web:k:retry-7",
+        "web:k:retry-7",
+      ]);
+      expect(trigger).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("returns 201 queued:false and records enqueue_failed when the trigger call fails", async () => {
@@ -307,6 +372,59 @@ describe("POST /api/tickets", () => {
       SUPABASE_URL: "https://example.supabase.co",
       SUPABASE_SERVICE_ROLE_KEY: "fake-service-role-key",
       SUPABASE_DB_SCHEMA: "itsupport",
+    });
+  });
+
+  describe("test switches (public boundary)", () => {
+    const smuggled: Array<[string, Record<string, unknown>]> = [
+      ["testOverrides", { testOverrides: { llmCallCap: 0 } }],
+      ["test_overrides", { test_overrides: { llmCallCap: 0 } }],
+      ["TestOverrides", { TestOverrides: { llmCallCap: 0 } }],
+      ["isTest", { isTest: true }],
+      ["is_test", { is_test: true }],
+      ["nested ticket", { ticket: { testOverrides: { llmCallCap: 0 }, is_test: true } }],
+      ["constructor", { constructor: { prototype: { testOverrides: { llmCallCap: 0 } } } }],
+    ];
+
+    for (const e2e of ["false", "true"]) {
+      it.each(smuggled)("ignores body field %s with E2E_MODE=" + e2e, async (_name, extra) => {
+        vi.stubEnv("E2E_MODE", e2e);
+        const POST = await loadPost();
+        const res = await POST(request({ ...valid, ...extra }));
+        expect(res.status).toBe(201);
+        expect(createTicket.mock.calls[0]?.[0]).toMatchObject({ is_test: e2e === "true" });
+        const payload = trigger.mock.calls[0]?.[1] as Record<string, unknown>;
+        expect(Object.keys(payload)).toEqual(["ticketId"]);
+      });
+    }
+
+    it("ignores __proto__ and duplicate-key JSON smuggling", async () => {
+      const POST = await loadPost();
+      const raw = JSON.stringify(valid).slice(0, -1);
+      const protoBody = raw + ',"__proto__":{"testOverrides":{"llmCallCap":0},"is_test":true}}';
+      const dupBody = raw + ',"is_test":true,"is_test":false,"testOverrides":{"llmCallCap":0}}';
+      for (const body of [protoBody, dupBody]) {
+        expect((await POST(request(body))).status).toBe(201);
+      }
+      for (const call of createTicket.mock.calls) expect(call[0]).toMatchObject({ is_test: false });
+      for (const call of trigger.mock.calls) {
+        expect(Object.keys(call[1] as object)).toEqual(["ticketId"]);
+      }
+    });
+
+    it("stores is_test true for a form ticket when E2E_MODE=true", async () => {
+      vi.stubEnv("E2E_MODE", "true");
+      const POST = await loadPost();
+      const res = await POST(request(valid));
+      const { ticketId } = await res.json();
+      expect(createTicket.mock.calls[0]?.[0]).toMatchObject({ is_test: true });
+      expect(trigger).toHaveBeenCalledWith("intake-ticket", { ticketId });
+    });
+
+    it("rejects an E2E_MODE value other than true or false at boot", async () => {
+      vi.stubEnv("E2E_MODE", "TRUE");
+      const POST = loadPost();
+      await expect(POST).rejects.toThrow();
     });
   });
 });

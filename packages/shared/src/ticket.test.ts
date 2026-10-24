@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { INTAKE_TICKET_TASK_ID, ticketSubmissionSchema } from "./ticket.js";
+import { INTAKE_TICKET_TASK_ID, TRIAGE_TICKET_TASK_ID, ticketSubmissionSchema } from "./ticket.js";
 
 const valid = {
   name: "Jo Bloggs",
@@ -63,5 +63,11 @@ describe("ticketSubmissionSchema", () => {
 describe("INTAKE_TICKET_TASK_ID", () => {
   it("is the Trigger.dev task id of the intake task", () => {
     expect(INTAKE_TICKET_TASK_ID).toBe("intake-ticket");
+  });
+});
+
+describe("TRIAGE_TICKET_TASK_ID", () => {
+  it("is the Trigger.dev task id of the triage task", () => {
+    expect(TRIAGE_TICKET_TASK_ID).toBe("triage-ticket");
   });
 });

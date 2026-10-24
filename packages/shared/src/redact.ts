@@ -4,20 +4,97 @@
 // `[REDACTED_<TYPE>]` before the next rule runs. The whole pipeline then
 // repeats until a pass changes nothing, so the result is a fixed point and a
 // second redact() call is a no-op (idempotent by construction). This loop
-// always terminates: every match contains a digit, `@`, `:` or `=`, and
-// placeholders contain none of them, so each changing pass strictly shrinks
-// the count of those characters.
+// always terminates: every match contains a digit, a lower-case letter, `@`,
+// `:`, `=` or the upper-case prefix `AKIA`, and placeholders contain none of
+// them (their brackets also stop an `AKIA` forming across an edge), so each
+// changing pass strictly shrinks the count of those outside placeholders (an
+// `sk-` key or Slack token holds lower-case letters in its prefix, a JWT in its
+// `eyJ`, an IPv6 address a digit and a `:`; the digit in `IPV4` or `IPV6`
+// follows a letter, so no match starts there). The one
+// exception, a GitHub token body after an email placeholder, removes one
+// `EMAIL]_` pair and creates none (its placeholder starts with `[`); only an
+// EMAIL match, which shrinks the count above, can create such a pair. A JWT's
+// rest after an email placeholder may hold none of them either. It then
+// shrinks the count of characters outside placeholders, or, when it holds none,
+// the count of placeholders other than JWT ones; no match raises either count
+// without shrinking the first count above.
 //
 // Boundaries: a space separates tokens, while `-` and `.` join digits into one
 // number. A rule therefore never starts or ends inside a word or a dash/dot
 // joined number, but it may sit right next to other digits across a space
 // (e.g. a card followed by its CVV). A candidate rejected by its checksum does
 // not consume text: scanning resumes one character later.
+// IPv6: hex digits, `:` and the dots of an IPv4 tail (a `.` between digits)
+// form a run. A run with a valid address tail at a group boundary (the start
+// or after a `:`) is replaced as one, in one pass: a key or port glued to
+// the address by one `:` cannot be told from a group (`db:2001:…:7334`,
+// `2001:…:7334:443`), so it goes too and no part of the address stays. A
+// run that starts right after a word character starts inside that word: it
+// is replaced from after the word's `:` (`eth0:`, `remote:`), or from inside
+// the word when 3 or more of its hex characters, a digit among them, may
+// start the address (`vlan100:fe80::1`, `x2001:db8::1`). A run that ends
+// right before a word character stays; a single trailing `:` is punctuation;
+// a zone ID (`%eth0`) stays. A run is read at most three times and only its
+// last 45 characters are tried, so this stays linear.
 // Every pattern is anchored with lookbehinds so a match can only start at the
 // beginning of a run, and all repetition is bounded or unambiguous, which
 // keeps matching linear on adversarial input.
+//
+// Key rules are added on top of the older rules (all the others).
+// Invariant: whatever the older rules remove at their own fixed point is also
+// gone from redact()'s output. It holds by construction: redact() first runs
+// the older rules alone to their fixed point, exactly as before the key rules
+// existed, and every later step only replaces more text with placeholders.
+// The full rule set then runs to its fixed point, so redact() stays
+// idempotent. A run of keys never starts right after a word character, but a
+// `-` in front is fine (`prod-<key>`). Keys glued with no separator are split
+// left to right from the run's start, so a key-shaped window inside a token
+// body is never taken; a run that starts after a word character is left whole
+// (`x<key><key>`). The split is deterministic (`AKIA` and `ghp_` differ in
+// their first letter), so matching stays linear. A key is one unbroken run of
+// word characters (letters, digits and the `_` of `ghp_`), and every older
+// rule rejects a word character in front of its start, so no older match
+// starts inside a key.
+//
+// `sk-` keys and Slack tokens are open-ended. Their rules match the prefix
+// only; the body is then read and judged on the original text. Every rule
+// application records what each placeholder replaced, so a placeholder counts
+// as the body characters its original held. A key ends where that original
+// run of body characters ends (a placeholder that runs past the end goes with
+// the key, so a card inside a key gives one placeholder; one whose original
+// starts outside the body alphabet stays out). The `sk-` rule runs before the
+// Slack rule, so a Slack token holding an `sk-` key logs both, while an `sk-`
+// key covers a Slack token glued after it. A body that is read is never read
+// again, so each key is found in one pass.
+//
+// A JWT is read the same way, on the original text: `eyJ` starts three or
+// more dot-joined base64url parts (the first three at least 10 long, any later
+// one at least 1), each with up to two `=` of padding. Its rule runs after
+// the number rules, which first use any boundary an AWS or GitHub key made,
+// and before the open keys, so an `sk-` body never takes its `eyJ`.
+// When there is no JWT, no later start inside its first part can give one
+// (the rest of the read is the same), so scanning resumes after that part.
+// An email may take a JWT's first parts as labels (`jo@x.com.eyJ…`); the
+// JWT is then read from inside the email's original, and its rest after the
+// email placeholder is replaced.
 
-export type RedactionType = "SECRET" | "EMAIL" | "CARD" | "SSN" | "IPV4" | "PHONE" | "AU_TFN";
+// Also the order of the log.
+const TYPES = [
+  "SECRET",
+  "EMAIL",
+  "AWS_KEY",
+  "API_KEY",
+  "GITHUB_TOKEN",
+  "SLACK_TOKEN",
+  "JWT",
+  "CARD",
+  "SSN",
+  "IPV6",
+  "IPV4",
+  "PHONE",
+  "AU_TFN",
+] as const;
+export type RedactionType = (typeof TYPES)[number];
 
 export interface RedactionResult {
   text: string;
@@ -31,6 +108,113 @@ interface Rule {
   accept?: (match: string) => boolean;
   /** Returns the accepted prefix of a candidate match ("" rejects it). */
   fit?: (match: string) => string;
+  /** Splits a match into parts replaced one by one ([] rejects it). */
+  split?: (match: string, next: string) => Array<[RedactionType, number]>;
+  /** The match is a prefix; the key's body follows it. */
+  open?: Open;
+  /** Reads the whole match from its start: its end, or minus where to resume. */
+  read?: (text: string, p: number, orig: Origin) => number;
+}
+
+interface Open {
+  char: RegExp;
+  /** The leading run of body characters in a placeholder's original. */
+  run: RegExp;
+  min: number;
+}
+
+const SK: Open = { char: /[\w-]/, run: /^[\w-]*/, min: 16 };
+const XOX: Open = { char: /[A-Za-z0-9-]/, run: /^[A-Za-z0-9-]*/, min: 10 };
+const PLACEHOLDER = /\[REDACTED_[A-Z0-9_]+\]/g;
+const PLACEHOLDER_AT = /\[REDACTED_[A-Z0-9_]+\]/y;
+const countPlaceholders = (s: string): number => s.match(PLACEHOLDER)?.length ?? 0;
+
+/** The original text of the k-th placeholder from a position. */
+type Origin = (k: number) => string;
+
+/**
+ * Reads an open key's body from `p`. Returns its end, or -1 when its original
+ * run of body characters is shorter than the minimum.
+ */
+function bodyEnd(text: string, p: number, key: Open, orig: Origin): number {
+  let raw = 0;
+  for (let k = 0; p < text.length;) {
+    PLACEHOLDER_AT.lastIndex = p;
+    if (PLACEHOLDER_AT.test(text)) {
+      const original = orig(k++);
+      const run = key.run.exec(original)![0].length;
+      if (run === 0) break; // its original is not body text
+      raw += run;
+      p = PLACEHOLDER_AT.lastIndex;
+      if (run < original.length) break;
+    } else if (key.char.test(text[p]!)) {
+      raw++;
+      p++;
+    } else break;
+  }
+  return raw >= key.min ? p : -1;
+}
+
+/**
+ * Reads a JWT on the original text: `head` from `h`, then `text` from `p`.
+ * Returns [its end in `text` (-1 for none), where its first part ended (a
+ * position in `head` as minus one minus its index), whether it reached `text`].
+ */
+function jwtRead(
+  text: string,
+  p: number,
+  orig: Origin,
+  head = "",
+  h = 0,
+): [number, number, boolean] {
+  let part = 0;
+  let len = 0;
+  let pad = 0;
+  let end = -1;
+  let resume = text.length;
+  const feed = (c: string, at: number, after: number): boolean => {
+    if (/[\w-]/.test(c) && pad === 0) len++;
+    else if (c === "=" && len > 0 && pad < 2) pad++;
+    else if (c === "." && len >= (part < 3 ? 10 : 1)) {
+      if (part++ === 0) resume = at;
+      len = pad = 0;
+    } else {
+      if (part === 0) resume = at;
+      return false;
+    }
+    if (part >= 2 && len >= (part === 2 ? 10 : 1)) end = after;
+    return true;
+  };
+  for (; h < head.length; h++) if (!feed(head[h]!, -1 - h, -1)) return [end, resume, false];
+  for (let k = 0; p < text.length;) {
+    PLACEHOLDER_AT.lastIndex = p;
+    const at = PLACEHOLDER_AT.test(text);
+    const unit = at ? orig(k++) : text[p]!;
+    const after = at ? PLACEHOLDER_AT.lastIndex : p + 1;
+    for (const c of unit) if (!feed(c, p, after)) return [end, resume, true];
+    p = after;
+  }
+  return [end, resume, true];
+}
+
+/** A JWT's end, or minus the position to resume scanning from. */
+function jwtEnd(text: string, p: number, orig: Origin): number {
+  if (text.startsWith("eyJ", p)) {
+    const [end, resume] = jwtRead(text, p, orig);
+    return end >= 0 ? end : -resume;
+  }
+  // After an email that took the JWT's first parts as labels.
+  const email = orig(-1);
+  const start = /(?<!\w)eyJ/g;
+  start.lastIndex = email.indexOf("@");
+  while (start.exec(email)) {
+    const [end, resume, reachedText] = jwtRead(text, p, orig, email, start.lastIndex - 3);
+    if (end >= 0) return end;
+    // A later start reads the same rest with fewer parts, so it fails too.
+    if (resume >= 0 || reachedText) break;
+    start.lastIndex = -1 - resume;
+  }
+  return -(p + 1);
 }
 
 const digitsOf = (s: string): string => s.replace(/\D/g, "");
@@ -58,7 +242,87 @@ function tfnValid(s: string): boolean {
   return sum % 11 === 0;
 }
 
+// Fixed length: AKIA plus 16 upper-case letters or digits, or ghp_ plus 36
+// letters or digits.
+const KEY = "(?:AKIA[A-Z0-9]{16}|ghp_[A-Za-z0-9]{36})";
+
+/**
+ * Splits a glued run into its keys, left to right from its start. Every key
+ * but the last has a whole key behind it; the last one also needs the end or
+ * a character outside its body alphabet behind it, else it is left as is.
+ */
+function splitKeys(run: string, next: string): Array<[RedactionType, number]> {
+  const keys: Array<[RedactionType, number]> = [];
+  for (let i = 0; i < run.length; i += keys[keys.length - 1]![1]) {
+    keys.push(run[i] === "A" ? ["AWS_KEY", 20] : ["GITHUB_TOKEN", run[i] === "_" ? 37 : 40]);
+  }
+  if ((keys[keys.length - 1]![0] === "AWS_KEY" ? /[A-Z0-9]/ : /[A-Za-z0-9]/).test(next)) {
+    keys.pop();
+  }
+  return keys;
+}
+
 const OCTET = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
+const IPV4_TAIL = new RegExp(`^(?:${OCTET}\\.){3}${OCTET}$`);
+
+/**
+ * An IPv6 address: 8 groups of 1–4 hex digits, or at most 7 with one `::`.
+ * The last group may be an IPv4 tail, which stands for two.
+ */
+function ipv6Valid(s: string): boolean {
+  const halves = s.split("::");
+  const groups = halves.flatMap((half) => (half === "" ? [] : half.split(":")));
+  if (!s.endsWith(":") && IPV4_TAIL.test(groups[groups.length - 1]!)) {
+    groups.splice(-1, 1, "0", "0");
+  }
+  return (
+    groups.every((group) => /^[\dA-Fa-f]{1,4}$/.test(group)) &&
+    (halves.length === 1 ? groups.length === 8 : halves.length === 2 && groups.length < 8)
+  );
+}
+
+/** Whether text[i] is in a run: a hex digit, `:`, or a `.` between digits. */
+function inRun(text: string, i: number): boolean {
+  const c = text.charAt(i);
+  return (
+    /[\dA-Fa-f:]/.test(c) || (c === "." && /^\d\d$/.test(text.charAt(i - 1) + text.charAt(i + 1)))
+  );
+}
+
+/**
+ * Reads the IPv6 address of the run around `at`: its end when it starts at
+ * `at`, else minus where to resume (its start, or the run's end).
+ */
+function ipv6End(text: string, at: number): number {
+  let start = at;
+  while (inRun(text, start - 1)) start--;
+  let end = start;
+  let colon = -1;
+  for (; inRun(text, end); end++) if (colon < 0 && text[end] === ":") colon = end;
+  if (colon < 0 || (/\w/.test(text.charAt(end)) && text[end - 1] !== ":")) return -end;
+  const stop = text[end - 1] === ":" && text[end - 2] !== ":" ? end - 1 : end;
+  const take = (from: number): number => (from === at ? stop : from > at ? -from : -end);
+  // The first group is in a word: glued to a letter, or longer than 4.
+  let word = colon;
+  while (/\w/.test(text.charAt(word - 1))) word--;
+  const inWord = word !== start || colon - start > 4;
+  // 3 or more of its hex characters, a digit among them, may start the
+  // address (`vlan100:`, `x2001:`): the run goes from inside the word.
+  const hex = text.slice(start, colon);
+  if (inWord && /^[\dA-Fa-f]{3,}$/.test(hex) && /\d/.test(hex)) {
+    if (ipv6Valid("0" + text.slice(colon, stop))) return take(start);
+  }
+  // Else the address starts after a word's `:` (`eth0:`) or a leading `:`.
+  const first = inWord || (colon === start && text[start + 1] !== ":") ? colon + 1 : start;
+  for (let i = Math.max(first, stop - 45); i < stop; i++) {
+    if (i !== first && text[i - 1] !== ":") continue;
+    const address = text.slice(i, stop);
+    // The run from `first` goes as one: a key or port in it cannot be told
+    // from a group, so no part of the address stays.
+    if (/\d/.test(address) && ipv6Valid(address)) return take(first);
+  }
+  return -end;
+}
 
 const RULES: Rule[] = [
   {
@@ -74,6 +338,15 @@ const RULES: Rule[] = [
       /(?<![\w.%+-])[\w.%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?![A-Za-z0-9-])/g,
   },
   {
+    // AWS keys and GitHub tokens (splitKeys names each key's type): a run of
+    // whole keys glued together. An email whose last label is `ghp` takes the
+    // prefix first (`jo@x.ghp` + `_<body>`), so a run may also start with a
+    // token body right after an email placeholder.
+    type: "AWS_KEY",
+    pattern: new RegExp(`(?<=\\[REDACTED_EMAIL\\])_[A-Za-z0-9]{36}${KEY}*|(?<!\\w)${KEY}+`, "g"),
+    split: splitKeys,
+  },
+  {
     // 13–19 contiguous digits, 4-4-4-(1..4) groups, or 4-6-(4..5) Amex/Diners
     // groups, with one consistent space or dash separator.
     type: "CARD",
@@ -84,6 +357,12 @@ const RULES: Rule[] = [
   {
     type: "SSN",
     pattern: /(?<!\w|\d-)\d{3}-\d{2}-\d{4}(?!\w|-\d)/g,
+  },
+  {
+    // The first character of a run; ipv6End reads the run.
+    type: "IPV6",
+    pattern: /[\dA-Fa-f:]/g,
+    read: ipv6End,
   },
   {
     type: "IPV4",
@@ -120,52 +399,125 @@ const RULES: Rule[] = [
     pattern: /(?<!\w|\d-)\d{3}([ -]?)\d{3}\1\d{3}(?!\w|-\d)/g,
     accept: tfnValid,
   },
+  // Last in a pass, so the other rules first use any boundary a key made.
+  // A JWT, or its rest after an email that took its first parts.
+  { type: "JWT", pattern: /(?<!\w)eyJ|(?<=\[REDACTED_EMAIL\])(?!\[REDACTED_JWT\])/g, read: jwtEnd },
+  { type: "API_KEY", pattern: /(?<!\w)sk-/g, open: SK },
+  { type: "SLACK_TOKEN", pattern: /(?<!\w)xox[abp]-/g, open: XOX },
 ];
 
-/** Applies one rule; returns the new text and the number of replacements. */
-function applyRule(text: string, rule: Rule): { text: string; count: number } {
+/**
+ * The accepted parts of a candidate match as [type, length] ([] rejects it; a
+ * number rejects it and says where to resume).
+ */
+function partsOf(
+  rule: Rule,
+  text: string,
+  m: RegExpExecArray,
+  orig: Origin,
+): Array<[RedactionType, number]> | number {
+  if (rule.read) {
+    const stop = rule.read(text, m.index, orig);
+    return stop < 0 ? -stop : [[rule.type, stop - m.index]];
+  }
+  const end = m.index + m[0].length;
+  if (rule.open) {
+    const stop = bodyEnd(text, end, rule.open, orig);
+    return stop < 0 ? [] : [[rule.type, stop - m.index]];
+  }
+  if (rule.split) return rule.split(m[0], text.charAt(end));
+  const hit = rule.fit ? rule.fit(m[0]) : !rule.accept || rule.accept(m[0]) ? m[0] : "";
+  return hit === "" ? [] : [[rule.type, hit.length]];
+}
+
+interface State {
+  text: string;
+  /** The original text of each placeholder in `text`, in order. */
+  origins: string[];
+}
+
+/** Applies one rule; returns the new state and the type of each replacement. */
+function applyRule({ text, origins }: State, rule: Rule): State & { hits: RedactionType[] } {
   const { pattern } = rule;
   pattern.lastIndex = 0;
   let out = "";
   let last = 0;
-  let count = 0;
+  let seen = 0; // origins[0..i) belong to the placeholders before `seen`
+  let i = 0;
+  let copied = 0;
+  const next: string[] = [];
+  const hits: RedactionType[] = [];
   let m: RegExpExecArray | null;
   while ((m = pattern.exec(text)) !== null) {
-    const hit = rule.fit ? rule.fit(m[0]) : !rule.accept || rule.accept(m[0]) ? m[0] : "";
-    if (hit === "") {
+    i += countPlaceholders(text.slice(seen, m.index));
+    seen = m.index;
+    const base = i;
+    const parts = partsOf(rule, text, m, (k) => origins[base + k]!);
+    if (typeof parts === "number" || parts.length === 0) {
       // Rejected candidates consume nothing; retry from the next character.
-      pattern.lastIndex = m.index + 1;
+      pattern.lastIndex = typeof parts === "number" ? parts : m.index + 1;
       continue;
     }
-    out += text.slice(last, m.index) + `[REDACTED_${rule.type}]`;
-    last = m.index + hit.length;
-    pattern.lastIndex = last;
-    count++;
+    out += text.slice(last, m.index);
+    while (copied < i) next.push(origins[copied++]!);
+    for (const [type, length] of parts) {
+      next.push(text.slice(seen, seen + length).replace(PLACEHOLDER, () => origins[i++]!));
+      out += `[REDACTED_${type}]`;
+      seen += length;
+      hits.push(type);
+    }
+    copied = i;
+    last = pattern.lastIndex = seen;
   }
-  return { text: out + text.slice(last), count };
+  while (copied < origins.length) next.push(origins[copied++]!);
+  return { text: out + text.slice(last), origins: next, hits };
 }
 
-export function redact(text: string): RedactionResult {
-  if (typeof text !== "string") {
-    throw new TypeError(`redact() expects a string, got ${text === null ? "null" : typeof text}`);
-  }
-  const counts = new Map<RedactionType, number>();
-  let out = text;
+const KEY_TYPES = new Set<string>(["AWS_KEY", "API_KEY", "GITHUB_TOKEN", "SLACK_TOKEN", "JWT"]);
+const LEGACY_RULES = RULES.filter((r) => !KEY_TYPES.has(r.type));
+
+type Counts = Map<RedactionType, number>;
+
+/** Repeats the given rules, in order, until a pass changes nothing. */
+function toFixedPoint(state: State, rules: Rule[], counts: Counts): State {
   let changed = true;
   while (changed) {
     changed = false;
-    for (const rule of RULES) {
-      const res = applyRule(out, rule);
-      if (res.count > 0) {
-        out = res.text;
+    for (const rule of rules) {
+      const res = applyRule(state, rule);
+      if (res.hits.length > 0) {
+        state = res;
         changed = true;
-        counts.set(rule.type, (counts.get(rule.type) ?? 0) + res.count);
+        for (const type of res.hits) counts.set(type, (counts.get(type) ?? 0) + 1);
       }
     }
   }
-  const log = RULES.filter((r) => counts.has(r.type)).map((r) => ({
-    type: r.type as string,
-    count: counts.get(r.type)!,
+  return state;
+}
+
+function run(text: string, stages: Rule[][]): RedactionResult {
+  if (typeof text !== "string") {
+    throw new TypeError(`redact() expects a string, got ${text === null ? "null" : typeof text}`);
+  }
+  const counts: Counts = new Map();
+  let state: State = { text, origins: text.match(PLACEHOLDER) ?? [] };
+  for (const rules of stages) state = toFixedPoint(state, rules, counts);
+  const log = TYPES.filter((type) => counts.has(type)).map((type) => ({
+    type: type as string,
+    count: counts.get(type)!,
   }));
-  return { text: out, log };
+  return { text: state.text, log };
+}
+
+export function redact(text: string): RedactionResult {
+  return run(text, [LEGACY_RULES, RULES]);
+}
+
+/**
+ * The rule set without the key rules (IPv6 is not a key rule: it must run
+ * before IPv4 in the first stage). Not exported from the package
+ * index: it exists so a test can compare redact() against it.
+ */
+export function redactLegacy(text: string): RedactionResult {
+  return run(text, [LEGACY_RULES]);
 }

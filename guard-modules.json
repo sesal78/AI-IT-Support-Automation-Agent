@@ -1,0 +1,12 @@
+[
+  { "path": "packages/shared/src/redact.ts", "statements": 90, "mutation": 80, "related": false },
+  {
+    "path": "apps/web/src/lib/intake/request.ts",
+    "statements": 90,
+    "mutation": 80,
+    "tests": ["apps/web/src/app/api/tickets/route.test.ts"]
+  },
+  { "path": "apps/web/src/lib/internal/auth.ts", "statements": 90, "mutation": 80 },
+  { "path": "packages/shared/src/policy.ts", "statements": 90, "mutation": 80 },
+  { "path": "packages/shared/src/status.ts", "statements": 90, "mutation": null }
+]

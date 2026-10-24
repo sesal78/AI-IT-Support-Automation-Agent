@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { BudgetExceededError } from "./meter.js";
 import {
+  CAP_REACHED_CHECKER,
   SENSITIVE_TOPICS,
   classifySensitive,
   type SensitiveChecker,
@@ -89,6 +91,58 @@ describe("classifySensitive", () => {
     };
     await expect(classifySensitive({ title: "t", description: "d" }, checker, 0.5)).rejects.toThrow(
       "typesafe down",
+    );
+  });
+
+  it("passes the ticket ID to the checker when given", async () => {
+    const checker = fakeChecker(scores(0));
+    await classifySensitive({ title: "T", description: "D", ticketId: "ticket-1" }, checker, 0.5);
+    expect(checker.check).toHaveBeenCalledWith({
+      title: "T",
+      description: "D",
+      ticketId: "ticket-1",
+    });
+  });
+});
+
+describe("classifySensitive when the TypeSafe budget is refused", () => {
+  const refused: SensitiveChecker = {
+    check: async () => {
+      throw new BudgetExceededError("typesafe");
+    },
+  };
+
+  it("keeps the keyword flags and is sensitive", async () => {
+    const result = await classifySensitive(
+      { title: "Files", description: "I am being terminated tomorrow" },
+      refused,
+      0.5,
+    );
+    expect(CAP_REACHED_CHECKER).toBe("keywords+cap_reached");
+    expect(result).toEqual({
+      sensitive: true,
+      flags: ["termination"],
+      checker: "keywords+cap_reached",
+    });
+  });
+
+  it("is sensitive with no flags when no keyword hits", async () => {
+    const result = await classifySensitive(
+      { title: "Laptop", description: "my laptop is slow" },
+      refused,
+      0.5,
+    );
+    expect(result).toEqual({ sensitive: true, flags: [], checker: "keywords+cap_reached" });
+  });
+
+  it("still propagates an error that is not a budget refusal", async () => {
+    const checker: SensitiveChecker = {
+      check: async () => {
+        throw new Error("BudgetExceededError look-alike");
+      },
+    };
+    await expect(classifySensitive({ title: "t", description: "d" }, checker, 0.5)).rejects.toThrow(
+      "look-alike",
     );
   });
 });

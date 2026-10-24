@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +14,8 @@ const allowedDirs = new Set([
   "legacy",
   "supabase",
   ".github",
+  "evals",
+  "tests",
 ]);
 
 // Root-level config files. Anything else at the root must be justified here.
@@ -21,11 +24,14 @@ const allowedFiles = new Set([
   ".nvmrc",
   ".prettierrc.json",
   ".prettierignore",
+  ".semgrepignore",
+  ".gitleaks.toml",
   ".env.example",
   "README.md",
   "package.json",
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
+  "guard-modules.json",
   "turbo.json",
   "tsconfig.base.json",
   "eslint.config.mjs",
@@ -41,6 +47,9 @@ const ignoredEntries = new Set([
   "node_modules",
   ".turbo",
   "coverage",
+  // Stryker (pnpm test:mutation)
+  "reports",
+  ".stryker-tmp",
 ]);
 
 describe("repo layout", () => {
@@ -53,6 +62,21 @@ describe("repo layout", () => {
       .map((entry) => entry.name);
 
     expect(unexpected).toEqual([]);
+  });
+
+  it("git-ignores Stryker's report and temp folders and never allow-lists them as tracked", () => {
+    for (const dir of ["reports", ".stryker-tmp"]) {
+      expect(allowedDirs.has(dir), dir).toBe(false);
+      const check = spawnSync("git", ["check-ignore", "--quiet", `${dir}/mutation.json`], {
+        cwd: repoRoot,
+      });
+      expect(check.status, dir).toBe(0);
+      // Anchored to the root: a nested folder of the same name stays tracked.
+      const nested = spawnSync("git", ["check-ignore", "--quiet", `apps/web/src/${dir}/a.ts`], {
+        cwd: repoRoot,
+      });
+      expect(nested.status, `apps/web/src/${dir}`).toBe(1);
+    }
   });
 
   it("keeps the old n8n build under legacy/", () => {

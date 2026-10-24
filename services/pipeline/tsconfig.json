@@ -1,4 +1,12 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["src", "test", "vitest.config.ts", "trigger.config.ts"]
+  "include": [
+    "src",
+    "test",
+    "integration",
+    "test-support",
+    "vitest.config.ts",
+    "vitest.integration.config.ts",
+    "trigger.config.ts"
+  ]
 }

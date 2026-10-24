@@ -1,11 +1,9 @@
 import { defineConfig } from "@trigger.dev/sdk";
-
-// Trigger.dev cloud project "AI IT Support Agent" (org Topues), created in
-// human step H2 on 2026-09-27. The ref is not a secret.
-const PROJECT_REF = "proj_sefqgwbhymcyikibqjmo";
+import { resolveProjectRef } from "./src/project-ref.js";
 
 export default defineConfig({
-  project: PROJECT_REF,
+  // TRIGGER_PROJECT_REF when set (the e2e project), else the main project.
+  project: resolveProjectRef(process.env),
   dirs: ["./src/trigger"],
   maxDuration: 300,
   retries: {

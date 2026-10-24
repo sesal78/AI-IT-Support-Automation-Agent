@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { buildKbQuery, IllegalTransitionError } from "@ai-it-support/shared";
 import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDbClient, type DbClient } from "../src/client.js";
+import { DbError } from "../src/errors.js";
 import { createRepositories, type NewTicket, type Repositories } from "../src/repositories.js";
 import { clientFor } from "./pg-container.js";
 import { removeRestStack, startRestStack, type RestStack } from "./rest-stack.js";
@@ -174,5 +176,278 @@ describe("repositories over supabase-js + PostgREST", () => {
         redaction_log: [{ type: "PHONE", count: 1 }],
       },
     ]);
+  });
+});
+
+describe("searchKb over supabase-js + PostgREST", () => {
+  const SLUG = `it-kb-${randomUUID()}`;
+
+  beforeAll(async () => {
+    await sql().query(
+      `insert into itsupport.kb_articles (slug, title, content, category, assignment_group)
+       values ($1, 'VPN will not connect', 'Restart the VPN client and connect again from home.', 'network', 'Network')`,
+      [SLUG],
+    );
+  });
+
+  it("finds the article for the built query", async () => {
+    const query = buildKbQuery("My VPN will not connect from home");
+    expect(query).toBe("vpn or connect or home");
+    const hits = await repos.searchKb(query, 5);
+    expect(hits.map((hit) => hit.slug)).toContain(SLUG);
+    expect(hits[0]?.rank).toBeGreaterThan(0);
+  });
+
+  it("finds Wi-Fi and WiFi articles when the spelling is the only shared term", async () => {
+    const spellings = [
+      ["wifi-hyphen", "Wi-Fi network forget rejoin"],
+      ["wifi-joined", "WiFi network forget rejoin"],
+    ] as const;
+    for (const [suffix, title] of spellings) {
+      await sql().query(
+        `insert into itsupport.kb_articles (slug, title, content, category, assignment_group)
+         values ($1, $2, 'Forget the network and rejoin it.', 'network', 'Network')`,
+        [`${SLUG}-${suffix}`, title],
+      );
+    }
+    const hits = await repos.searchKb(buildKbQuery("wi-fi gone"), 20);
+    expect(hits.map((hit) => hit.slug)).toEqual(
+      expect.arrayContaining([`${SLUG}-wifi-hyphen`, `${SLUG}-wifi-joined`]),
+    );
+  });
+
+  it("returns [] for a blank query and clamps the limit", async () => {
+    expect(await repos.searchKb("")).toEqual([]);
+    expect(await repos.searchKb(buildKbQuery("the and of it is"))).toEqual([]);
+    expect((await repos.searchKb("vpn", 0)).length).toBeLessThanOrEqual(1);
+    expect((await repos.searchKb("vpn", 1000)).length).toBeLessThanOrEqual(20);
+  });
+
+  const inputs = [
+    "",
+    "the and of it is",
+    "!!! ??? ...",
+    "x".repeat(5000),
+    Array.from({ length: 1000 }, (_, i) => `word${i}`)
+      .join(" ")
+      .slice(0, 5000),
+    "call [REDACTED_PHONE] about the printer",
+    `"vpn" -wifi (router) OR laptop AND mouse`,
+    "vpn:* & wifi | !router <-> dock",
+    "'; drop table itsupport.kb_articles; --",
+    "foo[REDACTED_EMAIL]bar [redacted_x] [[[ ]]]",
+    "Caf\u00e9 na\u00efve \u043f\u0440\u0438\u0432\u0435\u0442 \u4f60\u597d \u{1F600} vpn\tdown\nrouter",
+  ];
+  it.each(inputs)("runs the built query for %j without an error", async (text) => {
+    const hits = await repos.searchKb(buildKbQuery(text));
+    expect(Array.isArray(hits)).toBe(true);
+  });
+
+  it("the attack inputs left the table intact", async () => {
+    const { rows } = await sql().query("select to_regclass('itsupport.kb_articles')::text as t");
+    expect(rows[0]).toEqual({ t: "itsupport.kb_articles" });
+  });
+});
+
+describe("reserveAiCall and completeAiCall over supabase-js + PostgREST", () => {
+  const base = { kind: "it-meter", calls: 1, capCalls: 1_000_000, environment: "it" } as const;
+
+  it("reserveAiCall writes a row with null tokens; completeAiCall sets them", async () => {
+    const reservation = await repos.reserveAiCall({ ...base, provider: "llm" });
+    expect(reservation.allowed).toBe(true);
+    expect(reservation.callId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(reservation.usedCalls).toBeGreaterThanOrEqual(1);
+
+    const before = await sql().query(
+      "select provider, kind, calls, tokens_in, tokens_out, environment from itsupport.ai_calls where id = $1",
+      [reservation.callId],
+    );
+    expect(before.rows).toEqual([
+      {
+        provider: "llm",
+        kind: "it-meter",
+        calls: 1,
+        tokens_in: null,
+        tokens_out: null,
+        environment: "it",
+      },
+    ]);
+
+    await repos.completeAiCall(reservation.callId as string, { tokensIn: 120, tokensOut: 30 });
+    const after = await sql().query(
+      "select tokens_in, tokens_out from itsupport.ai_calls where id = $1",
+      [reservation.callId],
+    );
+    expect(after.rows).toEqual([{ tokens_in: 120, tokens_out: 30 }]);
+  });
+
+  it("reserves several calls at once and links a ticket", async () => {
+    const { ticket: row } = await repos.createTicket(ticket(`it-${randomUUID()}`));
+    const reservation = await repos.reserveAiCall({
+      ...base,
+      provider: "typesafe",
+      calls: 7,
+      ticketId: row.id,
+    });
+    const { rows } = await sql().query(
+      "select calls, ticket_id from itsupport.ai_calls where id = $1",
+      [reservation.callId],
+    );
+    expect(rows).toEqual([{ calls: 7, ticket_id: row.id }]);
+  });
+
+  it("refuses with no row when the cap is 0", async () => {
+    const reservation = await repos.reserveAiCall({
+      ...base,
+      provider: "llm",
+      kind: "it-refused",
+      capCalls: 0,
+    });
+    expect(reservation).toMatchObject({ allowed: false, callId: null });
+    const { rows } = await sql().query(
+      "select count(*)::int as n from itsupport.ai_calls where kind = 'it-refused'",
+    );
+    expect(rows[0].n).toBe(0);
+  });
+
+  it("completeAiCall throws DbError for an unknown call id and for a malformed one", async () => {
+    await expect(
+      repos.completeAiCall(randomUUID(), { tokensIn: 1, tokensOut: 1 }),
+    ).rejects.toBeInstanceOf(DbError);
+    await expect(
+      repos.completeAiCall("not-a-uuid", { tokensIn: 1, tokensOut: 1 }),
+    ).rejects.toBeInstanceOf(DbError);
+  });
+});
+
+describe("pipeline repositories over supabase-js + PostgREST", () => {
+  const status = async (id: string): Promise<string> => {
+    const { rows } = await sql().query("select status from itsupport.tickets where id = $1", [id]);
+    return (rows[0] as { status: string }).status;
+  };
+
+  it("setTicketStatus moves new -> redacted once, then is a no-op", async () => {
+    const { ticket: created } = await repos.createTicket(ticket(`it-${randomUUID()}`));
+    expect(await repos.setTicketStatus(created.id, "redacted")).toEqual({ changed: true });
+    expect(await repos.setTicketStatus(created.id, "redacted")).toEqual({ changed: false });
+    expect(await status(created.id)).toBe("redacted");
+  });
+
+  it("setTicketStatus rejects new -> triaged and leaves the row unchanged", async () => {
+    const { ticket: created } = await repos.createTicket(ticket(`it-${randomUUID()}`));
+    await expect(repos.setTicketStatus(created.id, "triaged")).rejects.toBeInstanceOf(
+      IllegalTransitionError,
+    );
+    expect(await status(created.id)).toBe("new");
+  });
+
+  it("setTicketStatus throws DbError for an unknown ticket", async () => {
+    await expect(repos.setTicketStatus(randomUUID(), "redacted")).rejects.toBeInstanceOf(DbError);
+  });
+
+  it("two parallel redacted -> triaged calls end triaged with exactly one changed: true", async () => {
+    for (let round = 0; round < 5; round++) {
+      const { ticket: created } = await repos.createTicket(ticket(`it-${randomUUID()}`));
+      await sql().query("update itsupport.tickets set status = 'redacted' where id = $1", [
+        created.id,
+      ]);
+      const results = await Promise.all([
+        repos.setTicketStatus(created.id, "triaged"),
+        repos.setTicketStatus(created.id, "triaged"),
+      ]);
+      expect(results.filter((r) => r.changed)).toHaveLength(1);
+      expect(await status(created.id)).toBe("triaged");
+    }
+  });
+
+  it("saveTriageResult writes the 13 columns and keeps the sensitive-check columns", async () => {
+    const { ticket: created } = await repos.createTicket(ticket(`it-${randomUUID()}`));
+    await repos.saveTriage({
+      ticket_id: created.id,
+      sensitive: true,
+      sensitive_flags: ["termination"],
+      checker: "keywords",
+    });
+    const before = await repos.getTriage(created.id);
+    expect(before).toMatchObject({ category: null, triaged_at: null, kb_article_ids: null });
+
+    const kbId = randomUUID();
+    const saved = await repos.saveTriageResult(created.id, {
+      category: "network",
+      subcategory: "vpn",
+      priority: "P3",
+      urgency: "medium",
+      assignmentGroup: "Network",
+      route: "review",
+      probabilities: { network: 0.75 },
+      flags: ["needs_info"],
+      groundingScore: 0.5,
+      kbArticleIds: [kbId],
+      suggestedFix: { steps: ["restart"] },
+      modelVersions: { llm: "m1" },
+    });
+    expect(saved.triaged_at).not.toBeNull();
+
+    const { rows } = await sql().query(
+      `select sensitive, sensitive_flags, checker, category, subcategory, priority, urgency,
+              assignment_group, route, probabilities, flags, grounding_score::float8 as grounding_score,
+              kb_article_ids, suggested_fix, model_versions, triaged_at is not null as triaged
+       from itsupport.triage_results where ticket_id = $1`,
+      [created.id],
+    );
+    expect(rows).toEqual([
+      {
+        sensitive: true,
+        sensitive_flags: ["termination"],
+        checker: "keywords",
+        category: "network",
+        subcategory: "vpn",
+        priority: "P3",
+        urgency: "medium",
+        assignment_group: "Network",
+        route: "review",
+        probabilities: { network: 0.75 },
+        flags: ["needs_info"],
+        grounding_score: 0.5,
+        kb_article_ids: [kbId],
+        suggested_fix: { steps: ["restart"] },
+        model_versions: { llm: "m1" },
+        triaged: true,
+      },
+    ]);
+    expect(await repos.getTriage(created.id)).toEqual(saved);
+  });
+
+  it("saveTriageResult throws DbError when the ticket has no triage row", async () => {
+    const { ticket: created } = await repos.createTicket(ticket(`it-${randomUUID()}`));
+    await expect(
+      repos.saveTriageResult(created.id, {
+        category: "inquiry",
+        subcategory: null,
+        priority: "P4",
+        urgency: "low",
+        assignmentGroup: "Service Desk",
+        route: "auto",
+        probabilities: {},
+        flags: [],
+        groundingScore: null,
+        kbArticleIds: [],
+        suggestedFix: null,
+        modelVersions: {},
+      }),
+    ).rejects.toBeInstanceOf(DbError);
+  });
+
+  it("getRedaction returns null without a redaction and the row with one", async () => {
+    const { ticket: created } = await repos.createTicket(ticket(`it-${randomUUID()}`));
+    expect(await repos.getRedaction(created.id)).toBeNull();
+    const saved = await repos.saveRedaction({
+      ticket_id: created.id,
+      redacted_title: "VPN down",
+      redacted_description: "no access",
+      redaction_log: [],
+    });
+    expect(await repos.getRedaction(created.id)).toEqual(saved);
+    expect(await repos.getTriage(created.id)).toBeNull();
   });
 });

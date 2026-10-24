@@ -1,4 +1,12 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["src", "test", "vitest.config.ts"]
+  "compilerOptions": { "rewriteRelativeImportExtensions": true },
+  "include": [
+    "src",
+    "test",
+    "test-support",
+    "integration",
+    "vitest.config.ts",
+    "vitest.integration.config.ts"
+  ]
 }

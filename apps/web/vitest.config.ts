@@ -22,6 +22,7 @@ export default defineProject({
     // phase 1 vars still loads the env module. Tests that check these vars
     // stub or unset them explicitly.
     env: {
+      INTERNAL_API_TOKEN: "fakeInternalApiToken0123456789ABCDEF",
       TURNSTILE_SECRET_KEY: "fake-turnstile-secret-key",
       TURNSTILE_SITE_KEY: "fake-turnstile-site-key",
     },

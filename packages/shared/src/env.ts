@@ -22,13 +22,142 @@ export const intakeEnvShape = {
 };
 
 /**
+ * Internal API bearer token (apps/web only). Letters and digits only, 32 or
+ * more: a generated app token must survive env files and URL-free headers.
+ */
+export const internalEnvShape = {
+  INTERNAL_API_TOKEN: z
+    .string()
+    .regex(/^[A-Za-z0-9]{32,}$/, "must be at least 32 letters or digits"),
+};
+
+/**
+ * End-to-end test mode flag (apps/web). Only the exact strings `true` and
+ * `false` are accepted, so a typo such as `TRUE` or `1` fails at boot.
+ */
+export const e2eEnvShape = {
+  E2E_MODE: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+};
+
+// A plain decimal from 0 to 1. z.coerce.number() would turn " " into 0 and accept
+// "0x1", "0b1" and "1e-1"; a policy threshold must fail closed instead.
+const unitThreshold = (fallback: number) =>
+  z
+    .string()
+    .regex(/^(?:0(?:\.\d+)?|1(?:\.0+)?)$/, "must be a decimal number from 0 to 1")
+    .transform(Number)
+    .default(fallback);
+
+/**
  * Sensitive-topic check env for the intake-ticket task (services/pipeline).
  * SENSITIVE_THRESHOLD is the TypeSafe Noul probability at or above which a
  * topic is flagged; phase 3 evals tune the 0.5 starting value.
  */
 export const sensitiveCheckEnvShape = {
   TYPESAFE_API_KEY: z.string().min(1),
-  SENSITIVE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
+  SENSITIVE_THRESHOLD: unitThreshold(0.5),
+};
+
+/**
+ * Policy engine thresholds (services/pipeline). Each is a number from 0 to 1.
+ * Injection, needs-info and outage rules fire at or above their threshold;
+ * low confidence fires below TRIAGE_CONFIDENCE_MIN. Phase 3 evals tune these.
+ */
+export const policyEnvShape = {
+  TRIAGE_CONFIDENCE_MIN: unitThreshold(0.7),
+  INJECTION_THRESHOLD: unitThreshold(0.5),
+  NEEDS_INFO_THRESHOLD: unitThreshold(0.5),
+  OUTAGE_THRESHOLD: unitThreshold(0.5),
+};
+
+/**
+ * Fix-step grounding (services/pipeline, packages/ai `createGroundingScorer`).
+ * Steps whose normalised grounding score is below GROUNDING_MIN are flagged.
+ */
+export const groundingEnvShape = {
+  GROUNDING_MIN: unitThreshold(0.6),
+};
+
+/**
+ * A monthly AI call cap: plain decimal digits only, 0 to 1,000,000,000. A
+ * typo such as `abc`, `-1`, `1e3`, `1.5` or ` 5` fails at boot rather than
+ * becoming a wrong cap (spend control fails closed). `0` is valid and refuses
+ * every call. An unset or empty variable takes the default.
+ */
+const callCap = (fallback: number) =>
+  z
+    .string()
+    .regex(/^[0-9]{1,10}$/, "must be a whole number of calls, digits only")
+    .transform(Number)
+    .pipe(z.number().max(1_000_000_000, "must be at most 1000000000"))
+    .default(fallback);
+
+/** Monthly AI call caps for the metered wrapper (packages/ai meter, services/pipeline). */
+export const aiBudgetEnvShape = {
+  LLM_MONTHLY_CALL_CAP: callCap(2000),
+  TYPESAFE_MONTHLY_CALL_CAP: callCap(20000),
+};
+
+/**
+ * Deploy-time variable for services/pipeline: the Trigger.dev project that
+ * `trigger.config.ts` targets. Optional; unset means the main project.
+ * `services/pipeline/src/project-ref.ts` applies the same rule without zod.
+ */
+export const triggerProjectEnvShape = {
+  TRIGGER_PROJECT_REF: z
+    .string()
+    .regex(/^proj_[a-z0-9]+$/, "must be proj_ followed by lower-case letters and digits")
+    .optional(),
+};
+
+/** An https URL that carries no credentials (`parseEnv` never echoes it). */
+const httpsUrl = () =>
+  z.url().refine((value) => {
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" && url.username === "" && url.password === "";
+    } catch {
+      return false;
+    }
+  }, "must be an https URL without credentials");
+
+/**
+ * Langfuse Cloud trace export (services/pipeline). The base URL must be https
+ * and carry no credentials; `parseEnv` never echoes the secret key.
+ */
+export const langfuseEnvShape = {
+  LANGFUSE_PUBLIC_KEY: z.string().min(1),
+  LANGFUSE_SECRET_KEY: z.string().min(1),
+  LANGFUSE_BASE_URL: httpsUrl(),
+};
+
+/**
+ * Fix-step LLM on OpenCode Go (services/pipeline, packages/ai `createFixDrafter`).
+ * LLM_BASE_URL is the OpenAI-compatible base, e.g. `https://opencode.ai/zen/go/v1`;
+ * the client appends `/chat/completions`. `parseEnv` never echoes the key.
+ */
+export const llmEnvShape = {
+  LLM_API_KEY: z.string().min(1),
+  LLM_BASE_URL: httpsUrl(),
+  LLM_MODEL: z.string().min(1),
+};
+
+// Header-safe: visible ASCII only, so `fetch` never builds an error that quotes the value.
+const headerValue = z.string().regex(/^[!-~]+$/, "must be visible ASCII characters with no spaces");
+
+/**
+ * Live-suite variables (tests/live only). The base URL rule and the staging
+ * refusal live in `loadLiveConfig`, which also reads INTERNAL_API_TOKEN and the
+ * Langfuse keys. STAGING_BASE_URL is optional.
+ */
+export const liveEnvShape = {
+  E2E_BASE_URL: z.url(),
+  CF_ACCESS_CLIENT_ID: headerValue,
+  CF_ACCESS_CLIENT_SECRET: headerValue,
+  STAGING_BASE_URL: z.url().optional(),
 };
 
 type PathSegment = PropertyKey | { key: PropertyKey };

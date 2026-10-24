@@ -1,0 +1,11 @@
+# gitleaks config (plan §9). The default rules all stay on. The one change is
+# the allow-list below: a single file, matched by its exact path. No rule is
+# disabled, and no other path, regex, commit or stopword is allow-listed.
+# packages/shared/test/canary-allowlist.test.ts fails on any wider entry.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "PII canary test fixtures: published documentation examples, not real secrets (plan §4.3)"
+paths = ['''^packages/shared/src/canaries\.ts$''']
