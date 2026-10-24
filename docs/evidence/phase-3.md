@@ -32,7 +32,7 @@ reviews of plan §2.1 (lean mode, PROJECT §11 2026-10-08).
 - Security: #117 (Next.js 16.3.6 → 16.4.2, GHSA-2464-fhr4-w9xw, GHSA-673q-mjm6-r5xr)
 - Docs: #51, #73
 
-## Live suite on e2e (DoD 7)
+## Live suite on e2e (universal DoD 7)
 
 Run on the current deploy, two in a row, 12/12 each:
 
@@ -98,7 +98,7 @@ Judge calibration (T3.A.05, `pnpm eval:calibrate`): J1 v1 10/10, J2 v1 10/10
 
 Thresholds: defaults kept (PROJECT §11, 2026-10-24, O4).
 
-## PII canaries (DoD 9)
+## PII canaries (universal DoD 9)
 
 - Langfuse: T3.L.04 trace scan, 0 hard hits in both runs (canary runs
   `321z8a395a98`, 5/5 observations; `014zc6f26973`, 5/5 observations).
@@ -110,7 +110,7 @@ Thresholds: defaults kept (PROJECT §11, 2026-10-24, O4).
   Next.js start banner `0.0.0.0`, not ticket data).
 - Slack, ServiceNow, Sentry, email: not touched in phase 3.
 
-## Rollback rehearsal (T3.R.01, DoD 8)
+## Rollback rehearsal (T3.R.01, universal DoD 8)
 
 Seun chose to roll back to the previous build `eb818cf` (Next.js 16.3.6) for
 about 10 minutes behind Cloudflare Access.
@@ -128,7 +128,7 @@ about 10 minutes behind Cloudflare Access.
 Runbook rule: a rollback is a redeploy of the previous commit, on both
 Dokploy and Trigger.dev.
 
-## Goal check (DoD 10)
+## Goal check (universal DoD 10)
 
 Three tickets through the real form path on e2e (Turnstile test keys), read
 back through the internal API (§2.5) and Langfuse:
