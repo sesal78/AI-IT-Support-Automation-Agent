@@ -2,7 +2,7 @@
 
 Recorded 2026-10-24 by the agent (plan §2.2 step 9).
 
-**Status: DoD 8 fails (usage, see below). Phase 3 closes only if Seun accepts that gap.**
+**Status: complete.** DoD 8 (usage) fails; Seun accepted the gap on 2026-10-24 (option A). Release pending Seun.
 
 ## Build state
 
@@ -157,9 +157,10 @@ back through the internal API (§2.5) and Langfuse:
 
 - DoD 8 fails: the use comes mostly from the tuning loop (each full eval run
   is about 100 LLM and 1 800 TypeSafe calls; `p3-eval-c2` grew usage by 104
-  and 1 797). Needs Seun's decision.
-- Names in free text are not redacted (DoD 11 flags E012, E097). Needs
-  Seun's decision: accept for now or add a fix task.
+  and 1 797). Accepted by Seun 2026-10-24. Rule from phase 4 on: at most 2 full
+  eval runs per phase per month; tuning uses targeted subsets.
+- Names in free text are not redacted (DoD 11 flags E012, E097). Accepted by
+  Seun 2026-10-24 as a known gap (synthetic data only).
 - Fix-step quality misses: E007, E008, E026, E047, E089 (DoD 10).
 - Test counts per suite are in the CI run log (`40055114185`), not copied here.
 
