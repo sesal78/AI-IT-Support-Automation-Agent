@@ -65,7 +65,7 @@ The task that uses a point names it.
 ## Seun's answers (2026-10-25)
 
 1. TypeSafe budget: run the live verify in October, as soon as the code is ready. The live tasks still keep ticket counts low (rules above).
-2. Card copy and layout: design pass first. P4-T2b stays HELD until Seun approves a card mock-up from the orchestrator; the approved copy then replaces the working sentences in P4-T2b.
+2. Card copy and layout: design pass first. Seun approved the orchestrator's mock-up on 2026-10-25 (`card ok`), and P4-T2b now holds that layout. P4-T2b waits only for P4-T2a.
 3. Staging channel: `C0A4RJN780K` is the channel named `#ai-it-support-automation-agent`; it is also the workspace's #general (renamed). So it matches PROJECT §4/§6 and plan §2.1. Alerts default to it.
 
 ## Order
@@ -81,7 +81,7 @@ Start in `backlog`: P4-T1a, P4-T3a, P4-T3b, P4-T2a, P4-T8a.
 | 3   | P4-T3a | high-risk | —                              | backlog          |
 | 4   | P4-T3b | high-risk | —                              | backlog          |
 | 5   | P4-T2a | normal    | —                              | backlog          |
-| 6   | P4-T2b | normal    | P4-T2a, card design approval   | blocked (HELD)   |
+| 6   | P4-T2b | normal    | P4-T2a                         | blocked (HELD)   |
 | 7   | P4-T2c | normal    | P4-T2a                         | blocked (HELD)   |
 | 8   | P4-T7a | normal    | P4-T1a                         | blocked (HELD)   |
 | 9   | P4-T7b | normal    | P4-T7a                         | blocked (HELD)   |
@@ -443,7 +443,7 @@ Risk: **high-risk** (security-critical request verification) · Depends on: **P4
 
 ## Description
 
-Add `apps/web/src/lib/slack/handler.ts`: `createInteractivityHandler(deps)` returns `(request) => Promise<Response>`. Deps: the env values, `recordSecurityEvent`, a clock, and `decide(interaction)` (P4-T3d). Order: (1) a body over 128 KB → 413 and `body_too_large`, before any HMAC; (2) `verifySlackRequest` on the raw body text with `SLACK_SIGNING_SECRET` → 401 and `missing_signature`, `bad_signature` or `stale_timestamp`; (3) `parseInteraction` → 400 and `bad_payload`; (4) `checkReviewer` with `SLACK_REVIEWER_IDS` → 403 and `not_allow_listed`; (5) `decide(interaction)`, whose response is returned. Each refusal records one security event (source `slack`, sample `{ path, method }` only). If recording fails, the refusal is still returned and the log line has the error class name only. Bodies and headers are the fixed ones in "Names used across tasks". Add `slackInteractivityEnvShape` to `packages/shared/src/env.ts`: `SLACK_SIGNING_SECRET` (at least 32 letters or digits), `SLACK_REVIEWER_IDS` (a comma-separated list without spaces of 1–20 distinct IDs that match the user ID rule, parsed into a list), `SLACK_CHANNEL_ID` (the channel ID rule). Add it to `apps/web/src/env.ts` (required), with fake values in the three web config files. Add the boolean `slackInteractivity` to `/api/health/config`. Add `handler.ts` to `guard-modules.json` with `statements: 90` and `mutation: 80`.
+Add `apps/web/src/lib/slack/handler.ts`: `createInteractivityHandler(deps)` returns `(request) => Promise<Response>`. Deps: the env values, `recordSecurityEvent`, a clock, and `decide(interaction)` (P4-T3d). Order: (1) a body over 128 KB → 413 and `body_too_large`, before any HMAC (a `content-length` header over the limit is refused at once; otherwise the body stream is read with a running byte count and stops at the first byte over 128 KB); (2) `verifySlackRequest` on the raw body text with `SLACK_SIGNING_SECRET` → 401 and `missing_signature`, `bad_signature` or `stale_timestamp`; (3) `parseInteraction` → 400 and `bad_payload`; (4) `checkReviewer` with `SLACK_REVIEWER_IDS` → 403 and `not_allow_listed`; (5) `decide(interaction)`, whose response is returned. Each refusal records one security event (source `slack`, sample `{ path, method }` only). If recording fails, the refusal is still returned and the log line has the error class name only. Bodies and headers are the fixed ones in "Names used across tasks". Add `slackInteractivityEnvShape` to `packages/shared/src/env.ts`: `SLACK_SIGNING_SECRET` (at least 32 letters or digits), `SLACK_REVIEWER_IDS` (a comma-separated list without spaces of 1–20 distinct IDs that match the user ID rule, parsed into a list), `SLACK_CHANNEL_ID` (the channel ID rule). Add it to `apps/web/src/env.ts` (required), with fake values in the three web config files. Add the boolean `slackInteractivity` to `/api/health/config`. Add `handler.ts` to `guard-modules.json` with `statements: 90` and `mutation: 80`.
 Env: `SLACK_SIGNING_SECRET`, `SLACK_REVIEWER_IDS`, `SLACK_CHANNEL_ID` (new, web app, required; add to `.env.example` with placeholders).
 New dependency: none.
 Target repo: D:/Homebase/Sandbox/ai-it-support-agent
@@ -484,7 +484,7 @@ Risk: **high-risk** (decision handler) · Depends on: **P4-T3c, P4-T7a**
 
 ## Description
 
-Add `decide(interaction)` and the route `apps/web/src/app/api/slack/interactivity/route.ts` (`dynamic = "force-dynamic"`, POST only). `decide`: `getReview(reviewId)`, then `getTicket(review.ticket_id)`, then `checkReviewBinding` (404 / 403 with its security event). Then `decideReview(id, decision, userId)`. When the row changed → `wait.completeToken(<stored wait_token_id>, { reviewId, decision })` from `@trigger.dev/sdk` → `200 { outcome: "recorded" }`. When the stored decision equals the request's → the completion is sent again (a no-op once done) → `200 { outcome: "already_decided" }`. When the stored decision is the other one → `200 { outcome: "already_decided" }`, no completion. When it is `timeout` → `200 { outcome: "late" }`, no completion. For `already_decided` and `late`, the handler posts `{ response_type: "ephemeral", replace_original: false, text }` with fixed text (`This ticket was already decided.` / `This review timed out; the ticket is in the manual queue.`) to the `response_url`, best effort (a failure is logged by class name). A failed completion → `500 { error: "internal_error" }`; the stored decision stays. A database error → 500. The token ID never comes from the payload and is never in a response or a log line.
+Add `decide(interaction)` in `apps/web/src/lib/slack/decide.ts` (listed in `guard-modules.json` with `statements: 90`, `mutation: 80`, plan T4.S.05) and the route `apps/web/src/app/api/slack/interactivity/route.ts` (`dynamic = "force-dynamic"`, POST only). `decide`: `getReview(reviewId)`, then `getTicket(review.ticket_id)`, then `checkReviewBinding` (404 / 403 with its security event). Then `decideReview(id, decision, userId)`. When the row changed → `wait.completeToken(<stored wait_token_id>, { reviewId, decision })` from `@trigger.dev/sdk` → `200 { outcome: "recorded" }`. When the stored decision equals the request's → the completion is sent again (a no-op once done) → `200 { outcome: "already_decided" }`. When the stored decision is the other one → `200 { outcome: "already_decided" }`, no completion. When it is `timeout` → `200 { outcome: "late" }`, no completion. For `already_decided` and `late`, the handler posts `{ response_type: "ephemeral", replace_original: false, text }` with fixed text (`This ticket was already decided.` / `This review timed out; the ticket is in the manual queue.`) to the `response_url`, best effort (a failure is logged by class name). A failed completion → `500 { error: "internal_error" }`; the stored decision stays. A database error → 500. The token ID never comes from the payload and is never in a response or a log line.
 Env: none new (`TRIGGER_SECRET_KEY` exists).
 New dependency: none.
 Target repo: D:/Homebase/Sandbox/ai-it-support-agent
@@ -497,7 +497,9 @@ Target repo: D:/Homebase/Sandbox/ai-it-support-agent
 - [ ] **T4.I.06**: `completeToken` throws → `500 { error: "internal_error" }`, and the review keeps `approve`. The same request again → `completeToken` is called again and the answer is `200 already_decided`; `decideReview` changed a row only once.
 - [ ] An unknown review → 404 with `unknown_review`; another message ts → 403 `binding_mismatch`; a test ticket with `E2E_MODE=false` → 403 `env_mismatch`; a non-test ticket with `E2E_MODE=true` → 403 `env_mismatch`. None of these calls `decideReview` or `completeToken`.
 - [ ] **T4.S.04** (local half): with the staging config (`E2E_MODE=false`), a validly signed decision for a test ticket is refused with 403 and changes nothing.
-- [ ] A `response_url` post that throws still gives 200 with the outcome.
+- [ ] A `response_url` post that throws still gives 200 with the outcome. The post uses `redirect: "error"`, so a 3xx answer from the hook is not followed (test: a mocked 302 → no second request, still 200).
+- [ ] Approve twice and approve-then-reject each send exactly one ephemeral `already decided` notice to the `response_url` on the second click.
+- [ ] `pnpm test:mutation -- --all` exits 0 with `decide.ts` at 80 % or more.
 - [ ] With the stored `wait_token_id` set to a marker, no response and no log line holds the marker; log lines carry the review ID, the ticket ID and the outcome only.
 - [ ] The route answers POST through `createInteractivityHandler` with the real deps (route test with the deps faked) and 405 for other methods.
 - [ ] `pnpm test:mutation -- --all` exits 0 with `handler.ts` at 80 % or more.
@@ -536,7 +538,7 @@ Target repo: D:/Homebase/Sandbox/ai-it-support-agent
 - [ ] `createPipelineAlert` without the Slack env posts nothing; with `SLACK_ALERT_CHANNEL_ID` unset it posts to `SLACK_CHANNEL_ID`; with it set, to that channel.
 - [ ] The posted line holds only the kind, the ticket ID and the environment (markers passed in other fields never appear).
 - [ ] Integration: three `recordSecurityEvent` calls for one (source, kind) in one minute return 1, 2 and 3.
-- [ ] The `healthcheck` result has `configured.slack`, true only when both names are set; its keys are the previous six plus `slack`, and the existing healthcheck tests pass with that one change.
+- [ ] The `healthcheck` result has `configured.slack`, true only when both names are set; its keys are the previous six plus `slack`, and `pnpm --filter @ai-it-support/pipeline test` passes with only the expected-keys list in the existing healthcheck tests changed to add `slack`.
 - [ ] The phase 3 alert and triage tests pass.
 
 ## Non-Goals
