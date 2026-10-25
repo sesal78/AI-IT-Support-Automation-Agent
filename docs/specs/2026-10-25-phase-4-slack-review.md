@@ -2,7 +2,7 @@
 
 Source: `docs/specs/2026-10-04-phases-3-8-plan.md` §6.2 (goal, migration, task table, DoD, test plan `T4.*`, release UAT, goal check), with §1–§5 (§2.5 internal API, §2.6 status model, §4.4 secrets in tests, §5 H14/H15); `docs/PROJECT.md` §5, §7–§9, §11; the format and names of `docs/specs/2026-10-04-phase-3-ai-triage-kb.md`.
 Build-loop target repo: `D:/Homebase/Sandbox/ai-it-support-agent` (branch `dev`).
-Status: approved by Seun on 2026-10-25 (file all 24 tasks; live tests in October; card design pass before P4-T2b).
+Status: approved by Seun on 2026-10-25 (file all 24 tasks; live tests in October; card design approved 2026-10-25).
 
 Goal (plan §6.2): a ticket routed to `review` posts a redacted card to its environment's Slack channel, and the run pauses (`wait.forToken`). Approve resumes it to `approved`. Reject ends it in the manual queue (`rejected`), with no incident ever. No answer before the timeout escalates it to the manual queue (`escalated_manual`). Every decision is signature-verified, allow-listed and audit-logged.
 
@@ -24,7 +24,7 @@ Decisions used: plan D2 (Seun applies migrations), D6 (24 h timeout; 2 min on e2
 - Do not schema-qualify built-in SQL functions. The schema-scope test allows only `itsupport` and `extensions`.
 - Agents never connect to the shared database and never apply a migration (H15). They never read or print a key-store value. A test process never holds the real Slack signing secret or the service-role key (plan §2.1, §4.4).
 - `.github/workflows/ci.yml` does not change in phase 4.
-- A guard module (Slack signature, interaction rules, interactivity handler) is listed in `guard-modules.json` with `statements: 90` and `mutation: 80` by the task that creates it (plan T4.S.05).
+- A guard module (Slack signature, interaction rules, interactivity handler, decision module) is listed in `guard-modules.json` with `statements: 90` and `mutation: 80` by the task that creates it (plan T4.S.05).
 - AI budget: TypeSafe is at 86 % of its October cap until 2026-11-01, and the rule of 2026-10-24 allows at most 2 full eval runs per phase per month. Phase 4 makes no full eval run. Local and CI tests never call TypeSafe or the LLM (they are mocked with `msw`). A live scenario creates as few tickets as it can (at most 2), reuses them for its sub-checks, and reports the sum of `aiCallCount` of its tickets in its evidence. The 20-ticket replay T4.L.05 and the waiting-run check T4.F.01 are `heavy`: the default run leaves them out, and they run only with `--only`.
 - Real Slack is reached only by the live scenarios, only in `#itsupport-e2e`, and only through the guarded channel helper (P4-T8a) or the e2e pipeline itself.
 
@@ -1015,7 +1015,7 @@ Target repo: D:/Homebase/Sandbox/ai-it-support-agent
 | T4.S.02 | Local: P4-T2b. Live: orchestrator verify, script from P4-T8c                             |
 | T4.S.03 | Local: P4-T9b. Live: orchestrator verify, script from P4-T8c                             |
 | T4.S.04 | Local: P4-T3d, P4-T9b. Live: orchestrator verify, script from P4-T8c                     |
-| T4.S.05 | Floors switched on by P4-T3a, P4-T3b, P4-T3c (proven again in P4-T3d); gate from P3-T15d |
+| T4.S.05 | Floors switched on by P4-T3a, P4-T3b, P4-T3c and P4-T3d (`decide.ts`); gate from P3-T15d |
 | T4.S.06 | P4-T8a                                                                                   |
 | T4.X.01 | Local: P4-T2b. Live (judge J4): orchestrator verify, script from P4-T8b                  |
 | T4.F.01 | Orchestrator verify: scripts from P4-T8d, deploy and rollback by hand                    |
