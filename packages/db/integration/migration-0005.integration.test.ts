@@ -98,7 +98,7 @@ const reviewsExists = async () =>
 const catalog = async () =>
   (
     await client().query<{ item: string }>(`
-      select 'rel ' || c.relname || ' ' || c.relkind || ' ' || pg_get_userbyid(c.relowner) || ' '
+      select 'rel ' || c.relname || ' ' || c.relkind::text || ' ' || pg_get_userbyid(c.relowner) || ' '
         || coalesce(c.relacl::text, '-') || ' ' || c.relrowsecurity || c.relforcerowsecurity as item
       from pg_catalog.pg_class c where c.relnamespace = 'itsupport'::regnamespace
       union all
@@ -131,7 +131,7 @@ const catalog = async () =>
       where n.nspname = 'itsupport'
       union all
       select 'defacl ' || pg_get_userbyid(d.defaclrole) || ' ' || d.defaclnamespace::regnamespace::text
-        || ' ' || d.defaclobjtype || ' ' || d.defaclacl::text
+        || ' ' || d.defaclobjtype::text || ' ' || d.defaclacl::text
       from pg_catalog.pg_default_acl d
       order by 1`)
   ).rows.map((row) => row.item);
@@ -230,9 +230,9 @@ describe("migration 0005 (reviews) on 0001-0004 with Supabase-like default privi
 
   it("a ticket has at most one triage review: the second fails with 23505 (both proposal_id null)", async () => {
     expect(await attempt(review())).toEqual({ ok: true });
-    expect(await attempt(`${review()}; ${review({ wait_token_id: "'waitpoint_test_2'" })}`)).toEqual(
-      fails("23505", "reviews_ticket_kind_proposal_key"),
-    );
+    expect(
+      await attempt(`${review()}; ${review({ wait_token_id: "'waitpoint_test_2'" })}`),
+    ).toEqual(fails("23505", "reviews_ticket_kind_proposal_key"));
     // Another ticket, or an auto-fix review of the same ticket, does not collide.
     expect(
       await attempt(
@@ -314,7 +314,8 @@ describe("migration 0005 (reviews) on 0001-0004 with Supabase-like default privi
     // A fresh ticket with no other rows, so only the reviews foreign key can block the delete.
     const fresh = `insert into itsupport.tickets (source, raw_title, raw_description, requester_email, idempotency_key)
       values ('web', 'Probe', 'Probe', 'probe@example.test', 'web:it-0005-probe')`;
-    const freshId = "(select id from itsupport.tickets where idempotency_key = 'web:it-0005-probe')";
+    const freshId =
+      "(select id from itsupport.tickets where idempotency_key = 'web:it-0005-probe')";
     const del = `delete from itsupport.tickets where idempotency_key = 'web:it-0005-probe'`;
     expect(await attempt(`${fresh}; ${del}`)).toEqual({ ok: true });
     expect(await attempt(`${fresh}; ${review({ ticket_id: freshId })}; ${del}`)).toEqual(
@@ -401,9 +402,7 @@ describe("migration 0005 (reviews) on 0001-0004 with Supabase-like default privi
        where has_table_privilege(r, 'itsupport.reviews', p) order by 1, 2`,
       [[...ALL_RIGHTS, "maintain"]],
     );
-    expect(rows).toEqual(
-      ["insert", "select", "update"].map((p) => ({ r: "service_role", p })),
-    );
+    expect(rows).toEqual(["insert", "select", "update"].map((p) => ({ r: "service_role", p })));
     const columns = await client().query(
       `select r from unnest(array['public', 'anon', 'authenticated']) r
        where has_any_column_privilege(r, 'itsupport.reviews', 'select, insert, update, references')`,
@@ -424,9 +423,22 @@ describe("migration 0005 (reviews) on 0001-0004 with Supabase-like default privi
     const variants: [string, string[]][] = [
       ["grant delete on itsupport.reviews to service_role", ["grants", "privileges service_role"]],
       ["grant select on itsupport.reviews to anon", ["grants", "privileges anon"]],
-      ["grant select (slack_ts) on itsupport.reviews to authenticated", ["grants", "privileges authenticated"]],
-      ["grant references on itsupport.reviews to public", ["grants", "privileges public"]],
-      ["revoke update on itsupport.reviews from service_role", ["grants", "privileges service_role"]],
+      [
+        "grant select (slack_ts) on itsupport.reviews to authenticated",
+        ["grants", "privileges authenticated"],
+      ],
+      // A right for public reaches every role, so every privileges row flips.
+      [
+        "grant references on itsupport.reviews to public",
+        [
+          "grants",
+          ...["public", "anon", "authenticated", "service_role"].map((r) => `privileges ${r}`),
+        ],
+      ],
+      [
+        "revoke update on itsupport.reviews from service_role",
+        ["grants", "privileges service_role"],
+      ],
       ["create policy probe on itsupport.reviews using (true)", ["rls"]],
       ["alter table itsupport.reviews disable row level security", ["rls"]],
       [
@@ -438,7 +450,10 @@ describe("migration 0005 (reviews) on 0001-0004 with Supabase-like default privi
         "alter table itsupport.reviews drop constraint reviews_slack_user_check",
         ["checks", "constraint itsupport.reviews.reviews_slack_user_check"],
       ],
-      ["alter table itsupport.reviews alter column slack_ts set not null", ["column itsupport.reviews.slack_ts"]],
+      [
+        "alter table itsupport.reviews alter column slack_ts set not null",
+        ["column itsupport.reviews.slack_ts"],
+      ],
     ];
     for (const [sql, wrong] of variants) {
       await client().query("begin");
@@ -449,9 +464,7 @@ describe("migration 0005 (reviews) on 0001-0004 with Supabase-like default privi
           rows.filter((row) => !row.ok).map((row) => row.object),
           sql,
         ).toEqual(
-          wrong
-            .map((w) => (w.includes("itsupport.reviews") ? w : `${w} itsupport.reviews`))
-            .sort(),
+          wrong.map((w) => (w.includes("itsupport.reviews") ? w : `${w} itsupport.reviews`)).sort(),
         );
       } finally {
         await client().query("rollback");
