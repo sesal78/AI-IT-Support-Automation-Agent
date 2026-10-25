@@ -2,7 +2,7 @@
 
 Source: `docs/specs/2026-10-04-phases-3-8-plan.md` §6.2 (goal, migration, task table, DoD, test plan `T4.*`, release UAT, goal check), with §1–§5 (§2.5 internal API, §2.6 status model, §4.4 secrets in tests, §5 H14/H15); `docs/PROJECT.md` §5, §7–§9, §11; the format and names of `docs/specs/2026-10-04-phase-3-ai-triage-kb.md`.
 Build-loop target repo: `D:/Homebase/Sandbox/ai-it-support-agent` (branch `dev`).
-Status: draft, awaiting Seun's approval. Nothing is filed in ClickUp yet.
+Status: approved by Seun on 2026-10-25 (file all 24 tasks; live tests in October; card design pass before P4-T2b).
 
 Goal (plan §6.2): a ticket routed to `review` posts a redacted card to its environment's Slack channel, and the run pauses (`wait.forToken`). Approve resumes it to `approved`. Reject ends it in the manual queue (`rejected`), with no incident ever. No answer before the timeout escalates it to the manual queue (`escalated_manual`). Every decision is signature-verified, allow-listed and audit-logged.
 
@@ -62,11 +62,11 @@ The task that uses a point names it.
 14. Phase 4 adds no dependency and no CI change.
 15. Live runs: `pnpm test:live --phase 4` selects the `T4.*` scenarios without the `heavy` ones, so phase 3 scenarios (20+ tickets) are not re-run. `T4.L.05` also measures DoD 1 (20 samples of `review_requested` − `policy_decided`).
 
-## Open questions for Seun
+## Seun's answers (2026-10-25)
 
-1. TypeSafe budget: October use is at 86 % of the cap until 2026-11-01, above the 80 % stop line of plan §2.3. A `--phase 4` live run needs about 130 TypeSafe calls (7 tickets of about 18 calls) and a T4.L.05 run about 360. Run the live verify (O4) in October (two default runs plus one or two replays, about 1 000 calls), or hold it until 2026-11-01?
-2. Card copy and layout: P4-T2b uses the plan's content list in its order, plain Block Kit, the buttons `Approve` / `Reject` and the working sentences written there. Accept them for the demo, or do a design pass first?
-3. Staging channel: the staging review channel is the workspace's #general (`C0A4RJN780K`), not `#ai-it-support-automation-agent` as PROJECT §4/§6 and plan §2.1 item 6 say, and alerts default to the same channel. Confirm, or name another channel for reviews or for `SLACK_ALERT_CHANNEL_ID`?
+1. TypeSafe budget: run the live verify in October, as soon as the code is ready. The live tasks still keep ticket counts low (rules above).
+2. Card copy and layout: design pass first. P4-T2b stays HELD until Seun approves a card mock-up from the orchestrator; the approved copy then replaces the working sentences in P4-T2b.
+3. Staging channel: `C0A4RJN780K` is the channel named `#ai-it-support-automation-agent`; it is also the workspace's #general (renamed). So it matches PROJECT §4/§6 and plan §2.1. Alerts default to it.
 
 ## Order
 
@@ -81,7 +81,7 @@ Start in `backlog`: P4-T1a, P4-T3a, P4-T3b, P4-T2a, P4-T8a.
 | 3   | P4-T3a | high-risk | —                              | backlog          |
 | 4   | P4-T3b | high-risk | —                              | backlog          |
 | 5   | P4-T2a | normal    | —                              | backlog          |
-| 6   | P4-T2b | normal    | P4-T2a                         | blocked (HELD)   |
+| 6   | P4-T2b | normal    | P4-T2a, card design approval   | blocked (HELD)   |
 | 7   | P4-T2c | normal    | P4-T2a                         | blocked (HELD)   |
 | 8   | P4-T7a | normal    | P4-T1a                         | blocked (HELD)   |
 | 9   | P4-T7b | normal    | P4-T7a                         | blocked (HELD)   |
