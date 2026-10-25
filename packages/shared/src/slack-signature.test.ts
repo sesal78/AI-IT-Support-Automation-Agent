@@ -207,6 +207,15 @@ describe("verifySlackRequest: headers", () => {
     expect(verify({ ...good, "x-slack-signature": [sig, wrong] })).toEqual(bad("bad_signature"));
     expect(verify({ ...good, "x-slack-signature": [wrong, sig] })).toEqual(bad("bad_signature"));
     expect(verify({ ...good, "x-slack-signature": [sig, sig] })).toEqual(bad("bad_signature"));
+    // An empty extra value must not join back into the good signature.
+    expect(verify({ ...good, "x-slack-signature": [sig, ""] })).toEqual(bad("bad_signature"));
+    expect(verify({ ...good, "x-slack-signature": ["", sig] })).toEqual(bad("bad_signature"));
+    expect(verify({ ...good, "x-slack-signature": [sig.slice(0, 10), sig.slice(10)] })).toEqual(
+      bad("bad_signature"),
+    );
+    expect(verify({ ...good, "x-slack-request-timestamp": [ts.slice(0, 4), ts.slice(4)] })).toEqual(
+      bad("stale_timestamp"),
+    );
     // The same name twice in different cases.
     expect(verify({ ...good, "X-Slack-Signature": wrong })).toEqual(bad("bad_signature"));
     expect(verify({ "X-Slack-Signature": sig, ...good })).toEqual(bad("bad_signature"));
@@ -362,6 +371,14 @@ describe("verifySlackRequest: secret, body and leaks", () => {
     expect(() => signSlackRequest({ secret: SECRET, timestamp: "1", body: 5 as never })).toThrow(
       new TypeError("body must be a string"),
     );
+  });
+
+  it("checks the body before the headers", () => {
+    for (const headers of [{}, { "x-slack-request-timestamp": "1" }, signed()]) {
+      expect(() =>
+        verifySlackRequest({ secret: SECRET, headers, body: 5 as never, nowSeconds: NOW }),
+      ).toThrow(new TypeError("body must be a string"));
+    }
   });
 
   it("throws a TypeError naming headers for missing headers", () => {
