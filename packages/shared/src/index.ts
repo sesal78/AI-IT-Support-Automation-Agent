@@ -47,7 +47,11 @@ export {
   KB_QUERY_MIN_WORD_LENGTH,
 } from "./kb-query.js";
 
-export { internalTicketViewSchema, type InternalTicketView } from "./internal-ticket.js";
+export {
+  internalReviewSchema,
+  internalTicketViewSchema,
+  type InternalTicketView,
+} from "./internal-ticket.js";
 export {
   internalSecurityEventsSchema,
   internalUsageSchema,

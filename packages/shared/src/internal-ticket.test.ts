@@ -65,3 +65,37 @@ describe("internalTicketViewSchema", () => {
     expect(internalTicketViewSchema.safeParse({ ...valid, reviews: [1] }).success).toBe(false);
   });
 });
+
+describe("internalTicketViewSchema reviews", () => {
+  const review = {
+    id: ID,
+    kind: "triage",
+    decision: "approve",
+    decidedBy: "U0000000001",
+    decidedAt: AT,
+    slackTs: "1730000000.000100",
+    createdAt: AT,
+  };
+  const parse = (reviews: unknown[]) =>
+    internalTicketViewSchema.safeParse({ ...valid, reviews }).success;
+
+  it("accepts a decided review and an open one with null decision fields", () => {
+    expect(parse([review])).toBe(true);
+    expect(
+      parse([{ ...review, decision: null, decidedBy: null, decidedAt: null, slackTs: null }]),
+    ).toBe(true);
+  });
+
+  it("rejects an unknown key, such as the wait token, in a review", () => {
+    expect(parse([{ ...review, waitTokenId: "marker" }])).toBe(false);
+    expect(parse([{ ...review, wait_token_id: "marker" }])).toBe(false);
+  });
+
+  it("rejects a missing key, an unknown kind and an unknown decision", () => {
+    const { slackTs: _slackTs, ...missing } = review;
+    expect(parse([missing])).toBe(false);
+    expect(parse([{ ...review, kind: "other" }])).toBe(false);
+    expect(parse([{ ...review, decision: "maybe" }])).toBe(false);
+    expect(parse([{ ...review, id: "not-a-uuid" }])).toBe(false);
+  });
+});

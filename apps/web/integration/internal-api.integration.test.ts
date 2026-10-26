@@ -375,13 +375,16 @@ describe("usage", () => {
 });
 
 describe("health config", () => {
-  type Health = { features: { database: boolean; migration0003: boolean } };
+  type Health = {
+    features: { database: boolean; migration0003: boolean; migration0005: boolean };
+  };
 
   it("reports migration0003 true on the full stack", async () => {
     const app = await load(stack(), false); // fresh module: empty probe cache
     const body = (await (await app.health.GET()).json()) as Health;
     expect(body.features.database).toBe(true);
     expect(body.features.migration0003).toBe(true);
+    expect(body.features.migration0005).toBe(true);
   });
 
   it("reports migration0003 false on a stack with only 0001 and 0002", async () => {
@@ -391,6 +394,7 @@ describe("health config", () => {
       const body = (await (await app.health.GET()).json()) as Health;
       expect(body.features.database).toBe(true);
       expect(body.features.migration0003).toBe(false);
+      expect(body.features.migration0005).toBe(false);
     } finally {
       await removeRestStack(old);
     }

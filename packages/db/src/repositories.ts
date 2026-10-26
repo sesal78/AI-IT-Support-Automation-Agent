@@ -97,6 +97,21 @@ export const kbArticleRowSchema = z.object({
   assignment_group: z.string(),
 });
 
+export const reviewSchema = z.object({
+  id: z.uuid(),
+  ticket_id: z.uuid(),
+  kind: z.enum(["triage", "autofix"]),
+  proposal_id: z.uuid().nullable(),
+  slack_user_id: z.string().nullable(),
+  decision: z.enum(["approve", "reject", "timeout"]).nullable(),
+  decided_at: timestamp.nullable(),
+  wait_token_id: z.string(),
+  slack_ts: z.string().nullable(),
+  created_at: timestamp,
+});
+
+const kbTitleSchema = kbArticleRowSchema.pick({ id: true, slug: true, title: true });
+
 export const aiReservationSchema = z.object({
   allowed: z.boolean(),
   used_calls: z.number().int(),
@@ -107,6 +122,10 @@ export type Ticket = z.infer<typeof ticketSchema>;
 export type TicketEvent = z.infer<typeof ticketEventSchema>;
 export type Redaction = z.infer<typeof redactionSchema>;
 export type Triage = z.infer<typeof triageSchema>;
+
+export type Review = z.infer<typeof reviewSchema>;
+export type ReviewDecision = NonNullable<Review["decision"]>;
+export type KbArticleTitle = z.infer<typeof kbTitleSchema>;
 
 export type KbSearchResult = z.infer<typeof kbSearchResultSchema>;
 export type KbArticleRow = z.infer<typeof kbArticleRowSchema>;
@@ -129,6 +148,13 @@ const VIEW_TRIAGE_COLUMNS =
   "flags,probabilities,grounding_score,kb_article_ids,suggested_fix,model_versions,triaged_at";
 const VIEW_EVENT_COLUMNS = "type,at";
 const VIEW_EVENT_LIMIT = 500;
+// The reviews view for the internal API: wait_token_id is never in this list.
+const VIEW_REVIEW_COLUMNS = "id,kind,slack_user_id,decision,decided_at,slack_ts,created_at";
+const VIEW_REVIEW_LIMIT = 100;
+// The full row for the review functions (the decision handler needs wait_token_id).
+const REVIEW_COLUMNS =
+  "id,ticket_id,kind,proposal_id,slack_user_id,decision,decided_at,wait_token_id,slack_ts,created_at";
+const KB_TITLE_COLUMNS = "id,slug,title";
 const KB_ARTICLE_COLUMNS = "id,slug,title,content,category,assignment_group";
 const SECURITY_EVENT_COLUMNS = "source,kind,window_start,count";
 const MAX_SECURITY_EVENTS = 500;
@@ -160,6 +186,15 @@ const viewTriageSchema = z.object({
   suggested_fix: z.record(z.string(), z.json()).nullable(),
   model_versions: z.record(z.string(), z.string()).nullable(),
   triaged_at: timestamp.nullable(),
+});
+const viewReviewSchema = reviewSchema.pick({
+  id: true,
+  kind: true,
+  slack_user_id: true,
+  decision: true,
+  decided_at: true,
+  slack_ts: true,
+  created_at: true,
 });
 const viewEventSchema = z.object({ type: z.string(), at: timestamp });
 const securityEventRowSchema = z.object({
@@ -225,11 +260,16 @@ interface SupabaseResult {
 }
 
 const UNIQUE_VIOLATION = "23505";
+const REVIEW_DECISIONS: readonly string[] = ["approve", "reject", "timeout"];
+// A Slack user ID: the same rule as the reviewer allow-list.
+const SLACK_USER_ID = /^U[A-Z0-9]{8,}$/;
+const uuidSchema = z.uuid();
 const PROBE_TIMEOUT_MS = 3000;
 
 export interface SchemaProbe {
   database: boolean;
   migration0003: boolean;
+  migration0005: boolean;
 }
 // The kb_search RPC clamps p_limit to this range; searchKb does the same.
 const KB_SEARCH_MIN_LIMIT = 1;
@@ -250,6 +290,17 @@ function parseRow<T>(operation: string, schema: z.ZodType<T>, result: SupabaseRe
     throw new DbError(operation, `unexpected response shape at ${paths.join(", ")}`);
   }
   return parsed.data;
+}
+
+function assertUuid(operation: string, name: string, value: unknown): asserts value is string {
+  if (!uuidSchema.safeParse(value).success)
+    throw new TypeError(`${operation}: ${name} must be a UUID`);
+}
+
+function assertText(operation: string, name: string, value: unknown): asserts value is string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new TypeError(`${operation}: ${name} must be a non-empty string`);
+  }
 }
 
 export function createRepositories(client: DbClient) {
@@ -509,25 +560,38 @@ export function createRepositories(client: DbClient) {
       const ticket = parseRow(op, viewTicketSchema.nullable(), ticketResult);
       if (!ticket) return null;
 
-      const [redactionResult, triageResult, callsResult, eventsResult] = await Promise.all([
-        client
-          .from("ticket_redactions")
-          .select(VIEW_REDACTION_COLUMNS)
-          .eq("ticket_id", id)
-          .maybeSingle(),
-        client.from("triage_results").select(VIEW_TRIAGE_COLUMNS).eq("ticket_id", id).maybeSingle(),
-        client.from("ai_calls").select("id", { count: "exact", head: true }).eq("ticket_id", id),
-        client
-          .from("ticket_events")
-          .select(VIEW_EVENT_COLUMNS)
-          .eq("ticket_id", id)
-          .order("at", { ascending: true })
-          .order("id", { ascending: true })
-          .limit(VIEW_EVENT_LIMIT),
-      ]);
+      const [redactionResult, triageResult, callsResult, eventsResult, reviewsResult] =
+        await Promise.all([
+          client
+            .from("ticket_redactions")
+            .select(VIEW_REDACTION_COLUMNS)
+            .eq("ticket_id", id)
+            .maybeSingle(),
+          client
+            .from("triage_results")
+            .select(VIEW_TRIAGE_COLUMNS)
+            .eq("ticket_id", id)
+            .maybeSingle(),
+          client.from("ai_calls").select("id", { count: "exact", head: true }).eq("ticket_id", id),
+          client
+            .from("ticket_events")
+            .select(VIEW_EVENT_COLUMNS)
+            .eq("ticket_id", id)
+            .order("at", { ascending: true })
+            .order("id", { ascending: true })
+            .limit(VIEW_EVENT_LIMIT),
+          client
+            .from("reviews")
+            .select(VIEW_REVIEW_COLUMNS)
+            .eq("ticket_id", id)
+            .order("created_at", { ascending: true })
+            .order("id", { ascending: true })
+            .limit(VIEW_REVIEW_LIMIT),
+        ]);
       const redaction = parseRow(op, viewRedactionSchema.nullable(), redactionResult);
       const triage = parseRow(op, viewTriageSchema.nullable(), triageResult);
       const events = parseRow(op, z.array(viewEventSchema), eventsResult);
+      const reviews = parseRow(op, z.array(viewReviewSchema), reviewsResult);
       if (callsResult.error) throw supabaseError(op, callsResult.error);
 
       // Fields are copied one by one, so a column the database returns
@@ -563,10 +627,144 @@ export function createRepositories(client: DbClient) {
           : null,
         aiCallCount: callsResult.count ?? 0,
         events: events.map((event) => ({ type: event.type, at: event.at })),
-        reviews: [],
+        reviews: reviews.map((review) => ({
+          id: review.id,
+          kind: review.kind,
+          decision: review.decision,
+          decidedBy: review.slack_user_id,
+          decidedAt: review.decided_at,
+          slackTs: review.slack_ts,
+          createdAt: review.created_at,
+        })),
         notifications: [],
         autofix: [],
       };
+    },
+
+    /**
+     * Inserts the ticket's triage review. A ticket has at most one (unique key
+     * on ticket, kind and proposal): on a duplicate the existing row is
+     * returned unchanged and the new `waitTokenId` is not stored. Any other
+     * database error throws DbError.
+     */
+    async createTriageReview(input: { ticketId: string; waitTokenId: string }): Promise<Review> {
+      const op = "createTriageReview";
+      assertUuid(op, "ticketId", input.ticketId);
+      assertText(op, "waitTokenId", input.waitTokenId);
+      const inserted = await client
+        .from("reviews")
+        .insert({ ticket_id: input.ticketId, kind: "triage", wait_token_id: input.waitTokenId })
+        .select(REVIEW_COLUMNS)
+        .single();
+      if (inserted.error?.code !== UNIQUE_VIOLATION) return parseRow(op, reviewSchema, inserted);
+      const existing = await client
+        .from("reviews")
+        .select(REVIEW_COLUMNS)
+        .eq("ticket_id", input.ticketId)
+        .eq("kind", "triage")
+        .is("proposal_id", null)
+        .single();
+      return parseRow(op, reviewSchema, existing);
+    },
+
+    /** Returns the review, or null when no review has this id. Non-UUID: TypeError. */
+    async getReview(id: string): Promise<Review | null> {
+      const op = "getReview";
+      assertUuid(op, "id", id);
+      const result = await client.from("reviews").select(REVIEW_COLUMNS).eq("id", id).maybeSingle();
+      return parseRow(op, reviewSchema.nullable(), result);
+    },
+
+    /** Returns the ticket's triage review, or null when it has none. Non-UUID: TypeError. */
+    async getTriageReview(ticketId: string): Promise<Review | null> {
+      const op = "getTriageReview";
+      assertUuid(op, "ticketId", ticketId);
+      const result = await client
+        .from("reviews")
+        .select(REVIEW_COLUMNS)
+        .eq("ticket_id", ticketId)
+        .eq("kind", "triage")
+        .is("proposal_id", null)
+        .maybeSingle();
+      return parseRow(op, reviewSchema.nullable(), result);
+    },
+
+    /**
+     * Records the Slack message timestamp of the review card, only while
+     * `slack_ts` is still null (one conditional UPDATE). `changed: false`
+     * when it was already set (the stored value is kept) or the id is unknown.
+     */
+    async setReviewSlackTs(id: string, ts: string): Promise<{ changed: boolean }> {
+      const op = "setReviewSlackTs";
+      assertUuid(op, "id", id);
+      assertText(op, "ts", ts);
+      const result = await client
+        .from("reviews")
+        .update({ slack_ts: ts })
+        .eq("id", id)
+        .is("slack_ts", null)
+        .select("id");
+      const rows = parseRow(op, z.array(z.object({ id: z.uuid() })), result);
+      if (rows.length > 1) throw new DbError(op, "unexpected response shape at (rows)");
+      return { changed: rows.length === 1 };
+    },
+
+    /**
+     * Records a review decision with ONE conditional UPDATE (`where decision
+     * is null`), so exactly one of any number of parallel callers wins. The
+     * winner gets `changed: true`; everyone else gets `changed: false` and the
+     * stored row. `timeout` needs `slackUserId` null; `approve` and `reject`
+     * need a Slack user ID (`U` plus 8 or more capitals or digits). Anything
+     * else throws a TypeError before any database call. An unknown id throws DbError.
+     */
+    async decideReview(
+      id: string,
+      decision: ReviewDecision,
+      slackUserId: string | null,
+    ): Promise<{ changed: boolean; review: Review }> {
+      const op = "decideReview";
+      assertUuid(op, "id", id);
+      if (!REVIEW_DECISIONS.includes(decision)) throw new TypeError(`${op}: unknown decision`);
+      if (decision === "timeout") {
+        if (slackUserId !== null) throw new TypeError(`${op}: a timeout has no Slack user`);
+      } else if (typeof slackUserId !== "string" || !SLACK_USER_ID.test(slackUserId)) {
+        throw new TypeError(`${op}: ${decision} needs a Slack user ID`);
+      }
+      const result = await client
+        .from("reviews")
+        .update({ decision, decided_at: new Date().toISOString(), slack_user_id: slackUserId })
+        .eq("id", id)
+        .is("decision", null)
+        .select(REVIEW_COLUMNS);
+      const rows = parseRow(op, z.array(reviewSchema), result);
+      const [won] = rows;
+      if (rows.length > 1) throw new DbError(op, "unexpected response shape at (rows)");
+      if (won) return { changed: true, review: won };
+
+      // Lost the race, or the id is unknown: read what is stored.
+      const read = await client.from("reviews").select(REVIEW_COLUMNS).eq("id", id).maybeSingle();
+      const stored = parseRow(op, reviewSchema.nullable(), read);
+      if (!stored) throw new DbError(op, "no reviews row with this id");
+      return { changed: false, review: stored };
+    },
+
+    /**
+     * Id, slug and title of the knowledge base articles with these ids, in
+     * input order. Unknown ids are left out and a repeated id is returned
+     * once. An empty list makes no database call; a non-UUID is a TypeError.
+     */
+    async getKbArticlesByIds(ids: readonly string[]): Promise<KbArticleTitle[]> {
+      const op = "getKbArticlesByIds";
+      for (const id of ids) assertUuid(op, "ids", id);
+      const unique = [...new Set(ids)];
+      if (unique.length === 0) return [];
+      const result = await client.from("kb_articles").select(KB_TITLE_COLUMNS).in("id", unique);
+      const rows = parseRow(op, z.array(kbTitleSchema), result);
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      return unique.flatMap((id) => {
+        const row = byId.get(id);
+        return row ? [row] : [];
+      });
     },
 
     /**
@@ -620,7 +818,8 @@ export function createRepositories(client: DbClient) {
      * Cheap schema probe for the public health endpoint. Never throws and
      * never returns error text: any failure, timeout included, is `false`.
      * `database` is a select on tickets; `migration0003` needs selects on
-     * tickets.is_test, kb_articles, ai_calls and security_events to work.
+     * tickets.is_test, kb_articles, ai_calls and security_events to work;
+     * `migration0005` needs a select on reviews.id.
      */
     async probeSchema(timeoutMs = PROBE_TIMEOUT_MS): Promise<SchemaProbe> {
       const works = async (table: string, column: string): Promise<boolean> => {
@@ -643,14 +842,20 @@ export function createRepositories(client: DbClient) {
         }
       };
 
-      if (!(await works("tickets", "id"))) return { database: false, migration0003: false };
+      if (!(await works("tickets", "id"))) {
+        return { database: false, migration0003: false, migration0005: false };
+      }
       const results = await Promise.all([
         works("tickets", "is_test"),
         works("kb_articles", "id"),
         works("ai_calls", "id"),
         works("security_events", "id"),
       ]);
-      return { database: true, migration0003: results.every(Boolean) };
+      return {
+        database: true,
+        migration0003: results.every(Boolean),
+        migration0005: await works("reviews", "id"),
+      };
     },
 
     /**

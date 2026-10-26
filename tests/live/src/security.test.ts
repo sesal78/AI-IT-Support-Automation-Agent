@@ -233,6 +233,7 @@ describe("T3.S.03", () => {
                   features: {
                     database: true,
                     migration0003: true,
+                    migration0005: true,
                     pipelineTrigger: true,
                     turnstile: true,
                     internalApi: true,

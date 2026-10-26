@@ -5,6 +5,7 @@ export const CACHE_TTL_MS = 60_000;
 export interface SchemaProbeResult {
   database: boolean;
   migration0003: boolean;
+  migration0005: boolean;
 }
 
 /** Env-derived values. Booleans and the version only: never the env values themselves. */
@@ -22,7 +23,7 @@ interface Options {
   now?: () => number;
 }
 
-const DOWN: SchemaProbeResult = { database: false, migration0003: false };
+const DOWN: SchemaProbeResult = { database: false, migration0003: false, migration0005: false };
 // Error class name only: messages and stacks can carry connection details.
 const errorName = (error: unknown) => (error instanceof Error ? error.name : "unknown");
 
@@ -38,7 +39,11 @@ export function createHealthConfigProvider({ probe, flags, now = Date.now }: Opt
   async function runProbe(): Promise<SchemaProbeResult> {
     try {
       const result = await probe();
-      return { database: result.database === true, migration0003: result.migration0003 === true };
+      return {
+        database: result.database === true,
+        migration0003: result.migration0003 === true,
+        migration0005: result.migration0005 === true,
+      };
     } catch (error) {
       console.error(`[health-config] probe failed: ${errorName(error)}`);
       return DOWN;

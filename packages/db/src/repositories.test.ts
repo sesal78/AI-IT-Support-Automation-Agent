@@ -432,10 +432,14 @@ describe("probeSchema", () => {
   const tableOf = (call: Captured | undefined) => call?.url.pathname.split("/").pop();
 
   it("reports both true when every probe succeeds, selecting only one row", async () => {
-    const calls = respond(ok([]), ok([]), ok([]), ok([]), ok([]));
-    expect(await repos.probeSchema()).toEqual({ database: true, migration0003: true });
+    const calls = respond(ok([]), ok([]), ok([]), ok([]), ok([]), ok([]));
+    expect(await repos.probeSchema()).toEqual({
+      database: true,
+      migration0003: true,
+      migration0005: true,
+    });
     expect(calls.map(tableOf).sort()).toEqual(
-      ["ai_calls", "kb_articles", "security_events", "tickets", "tickets"].sort(),
+      ["ai_calls", "kb_articles", "reviews", "security_events", "tickets", "tickets"].sort(),
     );
     expect(calls.some((c) => c.url.searchParams.get("select") === "is_test")).toBe(true);
     for (const call of calls) expect(call.url.searchParams.get("limit")).toBe("1");
@@ -446,7 +450,23 @@ describe("probeSchema", () => {
       const url = new URL(String(input));
       return url.pathname.endsWith("/kb_articles") ? pgError("42P01", 404) : ok([]);
     });
-    expect(await repos.probeSchema()).toEqual({ database: true, migration0003: false });
+    expect(await repos.probeSchema()).toEqual({
+      database: true,
+      migration0003: false,
+      migration0005: true,
+    });
+  });
+
+  it("reports migration0005 false, and the rest true, when only the reviews probe fails", async () => {
+    vi.stubGlobal("fetch", async (input: string | URL) => {
+      const url = new URL(String(input));
+      return url.pathname.endsWith("/reviews") ? pgError("42P01", 404) : ok([]);
+    });
+    expect(await repos.probeSchema()).toEqual({
+      database: true,
+      migration0003: true,
+      migration0005: false,
+    });
   });
 
   it("reports migration0003 false when tickets.is_test is missing", async () => {
@@ -454,25 +474,41 @@ describe("probeSchema", () => {
       const url = new URL(String(input));
       return url.searchParams.get("select") === "is_test" ? pgError("42703") : ok([]);
     });
-    expect(await repos.probeSchema()).toEqual({ database: true, migration0003: false });
+    expect(await repos.probeSchema()).toEqual({
+      database: true,
+      migration0003: false,
+      migration0005: true,
+    });
   });
 
   it("reports both false, without throwing, when the database is unreachable", async () => {
     vi.stubGlobal("fetch", async () => {
       throw new TypeError(`fetch failed ${RAW_DESCRIPTION}`);
     });
-    expect(await repos.probeSchema()).toEqual({ database: false, migration0003: false });
+    expect(await repos.probeSchema()).toEqual({
+      database: false,
+      migration0003: false,
+      migration0005: false,
+    });
   });
 
   it("reports both false on a Supabase error for the tickets probe", async () => {
     vi.stubGlobal("fetch", async () => pgError("28000", 401));
-    expect(await repos.probeSchema()).toEqual({ database: false, migration0003: false });
+    expect(await repos.probeSchema()).toEqual({
+      database: false,
+      migration0003: false,
+      migration0005: false,
+    });
   });
 
   it("times out a hanging probe and counts it as false", async () => {
     vi.stubGlobal("fetch", () => new Promise(() => {}));
     const started = Date.now();
-    expect(await repos.probeSchema(50)).toEqual({ database: false, migration0003: false });
+    expect(await repos.probeSchema(50)).toEqual({
+      database: false,
+      migration0003: false,
+      migration0005: false,
+    });
     expect(Date.now() - started).toBeLessThan(2000);
   });
 });
@@ -676,12 +712,13 @@ describe("getTicketView", () => {
       { type: "received", at: now, payload: { m: "x".repeat(20) } },
       { type: "redacted", at: "2026-09-29T10:01:00+00:00" },
     ]),
+    reviews: ok([]),
   });
 
   it("selects named columns only, never a raw column", async () => {
     const calls = database(full());
     await repos.getTicketView(ticketId);
-    expect(calls.length).toBe(5);
+    expect(calls.length).toBe(6);
     for (const call of calls) {
       const columns = (call.url.searchParams.get("select") ?? "").split(",");
       for (const raw of Object.keys(RAW)) expect(columns).not.toContain(raw);
@@ -1015,5 +1052,405 @@ describe("getRedaction and getTriage", () => {
   it("getTriage throws DbError on a Supabase error", async () => {
     respond(pgError("XX000", 500));
     await expectDbError(repos.getTriage(ticketId), "getTriage");
+  });
+});
+
+describe("reviews", () => {
+  const reviewId = randomUUID();
+  const USER = "U0000000001";
+  const TOKEN_MARKER = "wait-token-marker-123";
+  const reviewRow = {
+    id: reviewId,
+    ticket_id: ticketId,
+    kind: "triage",
+    proposal_id: null,
+    slack_user_id: null,
+    decision: null,
+    decided_at: null,
+    wait_token_id: TOKEN_MARKER,
+    slack_ts: null,
+    created_at: now,
+  };
+  const decidedRow = { ...reviewRow, slack_user_id: USER, decision: "approve", decided_at: now };
+  const selectOf = (call: Captured | undefined) => call?.url.searchParams.get("select");
+  const COLUMNS =
+    "id,ticket_id,kind,proposal_id,slack_user_id,decision,decided_at,wait_token_id,slack_ts,created_at";
+
+  describe("createTriageReview", () => {
+    it("inserts a triage review, selecting named columns", async () => {
+      const calls = respond(ok(reviewRow, 201));
+      const review = await repos.createTriageReview({ ticketId, waitTokenId: TOKEN_MARKER });
+      expect(review).toEqual(reviewRow);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.method).toBe("POST");
+      expect(calls[0]?.url.pathname).toBe("/rest/v1/reviews");
+      expect(calls[0]?.body).toEqual({
+        ticket_id: ticketId,
+        kind: "triage",
+        wait_token_id: TOKEN_MARKER,
+      });
+      expect(selectOf(calls[0])).toBe(COLUMNS);
+    });
+
+    it("returns the existing row on 23505 with a read that filters on ticket, kind and no proposal", async () => {
+      const calls = respond(pgError("23505", 409), ok(reviewRow));
+      const review = await repos.createTriageReview({ ticketId, waitTokenId: "second-token" });
+      expect(review).toEqual(reviewRow);
+      expect(calls).toHaveLength(2);
+      expect(calls[1]?.method).toBe("GET");
+      expect(calls[1]?.url.searchParams.get("ticket_id")).toBe(`eq.${ticketId}`);
+      expect(calls[1]?.url.searchParams.get("kind")).toBe("eq.triage");
+      expect(calls[1]?.url.searchParams.get("proposal_id")).toBe("is.null");
+      expect(selectOf(calls[1])).toBe(COLUMNS);
+    });
+
+    it.each(["23503", "42501", "23514", "PGRST116"])(
+      "throws DbError, not the existing row, on error %s",
+      async (code) => {
+        const calls = respond(pgError(code, 400));
+        const error = await expectDbError(
+          repos.createTriageReview({ ticketId, waitTokenId: "t" }),
+          "createTriageReview",
+        );
+        expect(error.code).toBe(code);
+        expect(calls).toHaveLength(1);
+      },
+    );
+
+    it("throws DbError when the row cannot be read back after 23505", async () => {
+      respond(pgError("23505", 409), pgError("PGRST116", 406));
+      await expectDbError(
+        repos.createTriageReview({ ticketId, waitTokenId: "t" }),
+        "createTriageReview",
+      );
+    });
+
+    it.each([
+      ["a non-UUID ticket", { ticketId: "nope", waitTokenId: "t" }],
+      ["an empty token", { ticketId, waitTokenId: "" }],
+      ["a blank token", { ticketId, waitTokenId: "   " }],
+    ])("rejects %s before any request", async (_name, input) => {
+      const calls = respond();
+      await expect(repos.createTriageReview(input)).rejects.toThrow(TypeError);
+      expect(calls).toHaveLength(0);
+    });
+  });
+
+  describe("getReview and getTriageReview", () => {
+    it("getReview returns the row with named columns", async () => {
+      const calls = respond(ok(reviewRow));
+      expect(await repos.getReview(reviewId)).toEqual(reviewRow);
+      expect(calls[0]?.url.searchParams.get("id")).toBe(`eq.${reviewId}`);
+      expect(selectOf(calls[0])).toBe(COLUMNS);
+    });
+
+    it("getReview returns null for an unknown id", async () => {
+      respond(ok(null, 200));
+      expect(await repos.getReview(randomUUID())).toBeNull();
+    });
+
+    it("getTriageReview filters on ticket, kind triage and no proposal", async () => {
+      const calls = respond(ok(reviewRow));
+      expect(await repos.getTriageReview(ticketId)).toEqual(reviewRow);
+      expect(calls[0]?.url.searchParams.get("ticket_id")).toBe(`eq.${ticketId}`);
+      expect(calls[0]?.url.searchParams.get("kind")).toBe("eq.triage");
+      expect(calls[0]?.url.searchParams.get("proposal_id")).toBe("is.null");
+      expect(selectOf(calls[0])).toBe(COLUMNS);
+    });
+
+    it("getTriageReview returns null when the ticket has none", async () => {
+      respond(ok(null, 200));
+      expect(await repos.getTriageReview(ticketId)).toBeNull();
+    });
+
+    it.each([
+      ["getReview", (v: string) => repos.getReview(v)],
+      ["getTriageReview", (v: string) => repos.getTriageReview(v)],
+    ])("%s throws TypeError for a non-UUID with no request", async (_name, call) => {
+      const calls = respond();
+      await expect(call("not-a-uuid")).rejects.toThrow(TypeError);
+      await expect(call("")).rejects.toThrow(TypeError);
+      expect(calls).toHaveLength(0);
+    });
+
+    it.each([
+      ["getReview", () => repos.getReview(reviewId)],
+      ["getTriageReview", () => repos.getTriageReview(ticketId)],
+    ])("%s throws DbError naming the operation on a Supabase error", async (name, call) => {
+      respond(pgError("42501", 403));
+      await expectDbError(call(), name);
+    });
+
+    it("throws DbError when the stored row has an unexpected shape", async () => {
+      respond(ok({ ...reviewRow, decision: "maybe" }));
+      await expectDbError(repos.getReview(reviewId), "getReview");
+    });
+  });
+
+  describe("setReviewSlackTs", () => {
+    it("updates only while slack_ts is null and reports changed", async () => {
+      const calls = respond(ok([{ id: reviewId }]));
+      expect(await repos.setReviewSlackTs(reviewId, "1730000000.000100")).toEqual({
+        changed: true,
+      });
+      expect(calls[0]?.method).toBe("PATCH");
+      expect(calls[0]?.url.searchParams.get("id")).toBe(`eq.${reviewId}`);
+      expect(calls[0]?.url.searchParams.get("slack_ts")).toBe("is.null");
+      expect(calls[0]?.body).toEqual({ slack_ts: "1730000000.000100" });
+      expect(selectOf(calls[0])).toBe("id");
+    });
+
+    it("reports changed false when no row matched", async () => {
+      respond(ok([]));
+      expect(await repos.setReviewSlackTs(reviewId, "1730000000.000200")).toEqual({
+        changed: false,
+      });
+    });
+
+    it("throws DbError when more than one row comes back", async () => {
+      respond(ok([{ id: reviewId }, { id: randomUUID() }]));
+      await expectDbError(repos.setReviewSlackTs(reviewId, "1.1"), "setReviewSlackTs");
+    });
+
+    it.each([
+      ["a non-UUID id", "nope", "1.1"],
+      ["an empty ts", reviewId, ""],
+      ["a blank ts", reviewId, "  "],
+    ])("rejects %s before any request", async (_name, id, ts) => {
+      const calls = respond();
+      await expect(repos.setReviewSlackTs(id, ts)).rejects.toThrow(TypeError);
+      expect(calls).toHaveLength(0);
+    });
+
+    it("throws DbError naming the operation on a Supabase error", async () => {
+      respond(pgError("42501", 403));
+      await expectDbError(repos.setReviewSlackTs(reviewId, "1.1"), "setReviewSlackTs");
+    });
+  });
+
+  describe("decideReview", () => {
+    it("sets the decision with one conditional update and returns the winner's row", async () => {
+      const calls = respond(ok([decidedRow]));
+      const outcome = await repos.decideReview(reviewId, "approve", USER);
+      expect(outcome).toEqual({ changed: true, review: decidedRow });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.method).toBe("PATCH");
+      expect(calls[0]?.url.searchParams.get("id")).toBe(`eq.${reviewId}`);
+      expect(calls[0]?.url.searchParams.get("decision")).toBe("is.null");
+      expect(selectOf(calls[0])).toBe(COLUMNS);
+      const body = calls[0]?.body as Record<string, unknown>;
+      expect(Object.keys(body).sort()).toEqual(["decided_at", "decision", "slack_user_id"]);
+      expect(body.decision).toBe("approve");
+      expect(body.slack_user_id).toBe(USER);
+      expect(Number.isNaN(Date.parse(String(body.decided_at)))).toBe(false);
+    });
+
+    it("sends a null user for a timeout", async () => {
+      const timedOut = { ...reviewRow, decision: "timeout", decided_at: now };
+      const calls = respond(ok([timedOut]));
+      expect(await repos.decideReview(reviewId, "timeout", null)).toEqual({
+        changed: true,
+        review: timedOut,
+      });
+      expect((calls[0]?.body as Record<string, unknown>).slack_user_id).toBeNull();
+    });
+
+    it("returns the stored row with changed false when the update matched nothing", async () => {
+      const calls = respond(ok([]), ok(decidedRow));
+      const outcome = await repos.decideReview(reviewId, "reject", "U0000000002");
+      expect(outcome).toEqual({ changed: false, review: decidedRow });
+      expect(calls).toHaveLength(2);
+      expect(calls[1]?.method).toBe("GET");
+      expect(calls[1]?.url.searchParams.get("id")).toBe(`eq.${reviewId}`);
+      expect(selectOf(calls[1])).toBe(COLUMNS);
+    });
+
+    it("throws DbError for an unknown review id", async () => {
+      respond(ok([]), ok(null, 200));
+      await expectDbError(repos.decideReview(randomUUID(), "approve", USER), "decideReview");
+    });
+
+    it("throws DbError when more than one row is updated", async () => {
+      respond(ok([decidedRow, decidedRow]));
+      await expectDbError(repos.decideReview(reviewId, "approve", USER), "decideReview");
+    });
+
+    it("throws DbError, without a read-back, when the update fails", async () => {
+      const calls = respond(pgError("42501", 403));
+      await expectDbError(repos.decideReview(reviewId, "approve", USER), "decideReview");
+      expect(calls).toHaveLength(1);
+    });
+
+    it("throws DbError when the read-back fails", async () => {
+      respond(ok([]), pgError("42501", 403));
+      await expectDbError(repos.decideReview(reviewId, "approve", USER), "decideReview");
+    });
+
+    it.each([
+      ["timeout with a user", reviewId, "timeout", USER],
+      ["timeout with an empty user", reviewId, "timeout", ""],
+      ["approve with a null user", reviewId, "approve", null],
+      ["reject with a null user", reviewId, "reject", null],
+      ["approve with an empty user", reviewId, "approve", ""],
+      ["approve with a blank user", reviewId, "approve", "         "],
+      ["approve with a lower-case user", reviewId, "approve", "u0000000001"],
+      ["approve with a short user", reviewId, "approve", "U1234567"],
+      ["approve with a channel ID", reviewId, "approve", "C0000000001"],
+      ["approve with a user plus a suffix", reviewId, "approve", "U0000000001 x"],
+      ["approve with a newline in the user", reviewId, "approve", "U0000000001\n"],
+      ["an unknown decision", reviewId, "maybe", USER],
+      ["an empty decision", reviewId, "", USER],
+      ["a non-UUID id", "nope", "approve", USER],
+    ])("throws TypeError with no request for %s", async (_name, id, decision, user) => {
+      const calls = respond();
+      await expect(
+        repos.decideReview(id, decision as "approve", user as string | null),
+      ).rejects.toThrow(TypeError);
+      expect(calls).toHaveLength(0);
+    });
+
+    it("accepts the e2e and staging style reviewer IDs", async () => {
+      respond(ok([decidedRow]), ok([decidedRow]));
+      await repos.decideReview(reviewId, "approve", "UE2EREVIEWER");
+      await repos.decideReview(reviewId, "reject", "U0A5ATR4WJD");
+    });
+  });
+
+  describe("getKbArticlesByIds", () => {
+    const a = randomUUID();
+    const b = randomUUID();
+    const c = randomUUID();
+    const titleRow = (id: string, slug: string) => ({ id, slug, title: `Title ${slug}` });
+
+    it("returns rows in input order, leaves unknown ids out, selecting id, slug and title", async () => {
+      const calls = respond(ok([titleRow(a, "a"), titleRow(b, "b")]));
+      expect(await repos.getKbArticlesByIds([b, a, c])).toEqual([
+        titleRow(b, "b"),
+        titleRow(a, "a"),
+      ]);
+      expect(selectOf(calls[0])).toBe("id,slug,title");
+      expect(calls[0]?.url.pathname).toBe("/rest/v1/kb_articles");
+    });
+
+    it("returns each article once for a repeated id, in first-seen order", async () => {
+      const calls = respond(ok([titleRow(a, "a"), titleRow(b, "b")]));
+      expect(await repos.getKbArticlesByIds([b, a, b, a])).toEqual([
+        titleRow(b, "b"),
+        titleRow(a, "a"),
+      ]);
+      expect(calls[0]?.url.searchParams.get("id")).toBe(`in.(${b},${a})`);
+    });
+
+    it("makes no request for an empty list", async () => {
+      const calls = respond();
+      expect(await repos.getKbArticlesByIds([])).toEqual([]);
+      expect(calls).toHaveLength(0);
+    });
+
+    it("throws TypeError for a non-UUID id with no request", async () => {
+      const calls = respond();
+      await expect(repos.getKbArticlesByIds([a, "1),(drop"])).rejects.toThrow(TypeError);
+      expect(calls).toHaveLength(0);
+    });
+
+    it("throws DbError naming the operation on a Supabase error", async () => {
+      respond(pgError("42501", 403));
+      await expectDbError(repos.getKbArticlesByIds([a]), "getKbArticlesByIds");
+    });
+  });
+
+  describe("getTicketView reviews", () => {
+    const viewTicket = {
+      id: ticketId,
+      status: "approved",
+      is_test: true,
+      source: "web",
+      created_at: now,
+    };
+    const viewReview = {
+      id: reviewId,
+      kind: "triage",
+      slack_user_id: USER,
+      decision: "approve",
+      decided_at: now,
+      slack_ts: "1730000000.000100",
+      created_at: now,
+    };
+
+    function database(reviewBody: Response): Captured[] {
+      const calls: Captured[] = [];
+      vi.stubGlobal("fetch", async (input: string | URL, init: RequestInit = {}) => {
+        const url = new URL(String(input));
+        calls.push({
+          method: init.method ?? "GET",
+          url,
+          headers: new Headers(init.headers),
+          body: undefined,
+        });
+        const table = url.pathname.split("/").pop();
+        if (table === "tickets") return ok(viewTicket);
+        if (table === "ai_calls") {
+          return new Response(null, { status: 200, headers: { "content-range": "*/0" } });
+        }
+        if (table === "reviews") return reviewBody.clone();
+        if (table === "ticket_events") return ok([]);
+        return ok(null, 200);
+      });
+      return calls;
+    }
+
+    it("maps an approved review and never selects wait_token_id", async () => {
+      const calls = database(ok([{ ...viewReview, wait_token_id: TOKEN_MARKER }]));
+      const view = await repos.getTicketView(ticketId);
+      expect(view?.reviews).toEqual([
+        {
+          id: reviewId,
+          kind: "triage",
+          decision: "approve",
+          decidedBy: USER,
+          decidedAt: now,
+          slackTs: "1730000000.000100",
+          createdAt: now,
+        },
+      ]);
+      expect(JSON.stringify(view)).not.toContain(TOKEN_MARKER);
+      const reviews = calls.find((c) => c.url.pathname.endsWith("/reviews"));
+      expect(selectOf(reviews)).toBe(
+        "id,kind,slack_user_id,decision,decided_at,slack_ts,created_at",
+      );
+      expect(selectOf(reviews)?.split(",")).not.toContain("wait_token_id");
+      expect(reviews?.url.searchParams.get("ticket_id")).toBe(`eq.${ticketId}`);
+      expect(reviews?.url.searchParams.get("order")).toBe("created_at.asc,id.asc");
+      for (const call of calls) expect(selectOf(call)).not.toBe("*");
+    });
+
+    it("gives reviews: [] for a ticket without reviews", async () => {
+      database(ok([]));
+      expect((await repos.getTicketView(ticketId))?.reviews).toEqual([]);
+    });
+
+    it("maps an open review with null decision fields", async () => {
+      database(
+        ok([
+          { ...viewReview, slack_user_id: null, decision: null, decided_at: null, slack_ts: null },
+        ]),
+      );
+      expect((await repos.getTicketView(ticketId))?.reviews).toEqual([
+        {
+          id: reviewId,
+          kind: "triage",
+          decision: null,
+          decidedBy: null,
+          decidedAt: null,
+          slackTs: null,
+          createdAt: now,
+        },
+      ]);
+    });
+
+    it("throws DbError without row data when the reviews query fails", async () => {
+      database(pgError("42P01", 404));
+      await expectDbError(repos.getTicketView(ticketId), "getTicketView");
+    });
   });
 });

@@ -6,10 +6,24 @@ const timestamp = z.iso.datetime({ offset: true });
 const nullable = <T extends z.ZodType>(schema: T) => schema.nullable();
 
 /**
+ * One Slack review of a ticket. `decidedBy` is a Slack user ID, not a name.
+ * The wait token behind the review is never part of the view.
+ */
+export const internalReviewSchema = z.strictObject({
+  id: z.uuid(),
+  kind: z.enum(["triage", "autofix"]),
+  decision: nullable(z.enum(["approve", "reject", "timeout"])),
+  decidedBy: nullable(z.string()),
+  decidedAt: nullable(timestamp),
+  slackTs: nullable(z.string()),
+  createdAt: timestamp,
+});
+
+/**
  * Body of GET /api/internal/tickets/:id. Strict on purpose: the view is the
  * PII boundary, so it has no key for the raw title, raw description, requester
  * name, requester email or department, and an unknown key is an error.
- * `reviews`, `notifications` and `autofix` stay empty lists until their tables exist.
+ * `notifications` and `autofix` stay empty lists until their tables exist.
  */
 export const internalTicketViewSchema = z.strictObject({
   id: z.uuid(),
@@ -39,7 +53,7 @@ export const internalTicketViewSchema = z.strictObject({
   ),
   aiCallCount: z.number().int().nonnegative(),
   events: z.array(z.strictObject({ type: z.string(), at: timestamp })),
-  reviews: z.array(z.never()),
+  reviews: z.array(internalReviewSchema),
   notifications: z.array(z.never()),
   autofix: z.array(z.never()),
 });
