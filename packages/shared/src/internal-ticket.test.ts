@@ -92,7 +92,8 @@ describe("internalTicketViewSchema reviews", () => {
   });
 
   it("rejects a missing key, an unknown kind and an unknown decision", () => {
-    const { slackTs: _slackTs, ...missing } = review;
+    const missing: Partial<typeof review> = { ...review };
+    delete missing.slackTs;
     expect(parse([missing])).toBe(false);
     expect(parse([{ ...review, kind: "other" }])).toBe(false);
     expect(parse([{ ...review, decision: "maybe" }])).toBe(false);
