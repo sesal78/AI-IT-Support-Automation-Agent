@@ -20,10 +20,14 @@ import {
 export const POSTGREST_IMAGE = "postgrest/postgrest:v16.4";
 
 const SCHEMA = "itsupport";
+// Every up file, in order, so each REST-stack test runs on the schema the
+// shared database will have (0004 locks the sequences, 0005 adds reviews).
 export const MIGRATIONS = [
   "0001_itsupport_foundation.sql",
   "0002_itsupport_intake.sql",
   "0003_itsupport_triage_kb.sql",
+  "0004_itsupport_lock_sequences.sql",
+  "0005_itsupport_reviews.sql",
 ];
 const migrationsDir = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -111,7 +115,7 @@ async function waitForRest(url: string, key: string, timeoutMs: number): Promise
 }
 
 /**
- * Starts Postgres 17 with migrations 0001 to 0003 applied, then PostgREST exposing `itsupport`.
+ * Starts Postgres 17 with migrations 0001 to 0005 applied, then PostgREST exposing `itsupport`.
  * `migrations` (file names in order) lets a test start an older shape, e.g. 0001 and 0002 only.
  */
 export async function startRestStack(
