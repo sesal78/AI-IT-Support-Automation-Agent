@@ -11,10 +11,25 @@ import {
   stop,
 } from "./migration-0003-harness.js";
 
-// Migration 0005, part 1: the itsupport.reviews table (plan §6.2). 0001 to
-// 0004 are applied first, with Supabase-like default privileges set before
-// 0001, so the table is created while those defaults would grant it to anon,
-// authenticated and service_role.
+// Migration 0005: the itsupport.reviews table (plan §6.2).
+//
+// Part 1 (P4-T1a): 0001 to 0004 are applied first, with Supabase-like default
+// privileges set before 0001, so the table is created while those defaults
+// would grant it to anon, authenticated and service_role.
+//
+// Part 2 (P4-T1b, T4.I.07): before 0005 runs, the two phase-2 tickets are
+// brought to the shape phase 3 leaves on the shared database (SEED_PHASE3):
+// one `triaged` and one `review_pending`, triage rows with the route review,
+// events up to `triaged`, KB articles, ai_calls and security_events rows. So
+// every test below runs 0005 on top of phase-3 data, as human step H15 will.
+// The last block adds one decided review, then runs the whole up file, the
+// whole down file and the up file again. After each step it compares the row
+// count and an md5 of the rows (ordered by primary key) of every itsupport
+// table, listed from the catalog, so only the review row may change; then
+// 0001's down file must still drop the whole schema.
+//
+// All data is fake (the repo is public): example.test addresses, U000TEST
+// Slack user IDs, fixed test UUIDs, waitpoint_test_* tokens.
 
 const up = (n: string) => read(`migrations/${n}.sql`);
 const down = (n: string) => read(`migrations/${n}.down.sql`);
@@ -89,6 +104,108 @@ const check5 = async (sql = read(CHECK5)) => {
 const notOk5 = async () => (await check5()).filter((row) => !row.ok).map((row) => row.object);
 const reviewsExists = async () =>
   (await client().query("select to_regclass('itsupport.reviews') is not null as e")).rows[0].e;
+
+/**
+ * Phase-3-shaped rows on top of startWithPhase2Rows (two tickets, each with a
+ * redaction, a sensitive-check triage row and events up to sensitive_checked),
+ * written the way phase 3's intake and triage tasks write them.
+ */
+const SEED_PHASE3 = `
+  insert into itsupport.kb_articles (slug, title, content, category, assignment_group) values
+    ('vpn-reconnect', 'Reconnect the VPN client',
+     'Quit the VPN client, sign in again and pick the nearest gateway.', 'network', 'Network'),
+    ('printer-tray-jam', 'Clear a paper jam in tray 2',
+     'Open tray 2, remove the jammed sheet and reseat the tray.', 'hardware', 'Hardware');
+
+  update itsupport.tickets
+    set status = case idempotency_key when 'web:it-0003-a' then 'triaged' else 'review_pending' end;
+
+  update itsupport.triage_results r
+    set category = s.category, subcategory = s.subcategory, priority = s.priority,
+      urgency = s.urgency, assignment_group = s.assignment_group, route = 'review',
+      probabilities = s.probabilities::jsonb, flags = s.flags::text[],
+      grounding_score = s.grounding_score::numeric,
+      kb_article_ids = array[(select a.id from itsupport.kb_articles a where a.slug = s.slug)],
+      suggested_fix = s.fix::jsonb,
+      model_versions = '{"judgments": "jev-test", "fix_steps": "llm-test"}'::jsonb,
+      triaged_at = timestamptz '2026-10-20 01:00:00+00'
+    from (values
+      ('web:it-0003-a', 'network', 'vpn', 'P2', 'high', 'Network',
+       '{"category": 0.91, "priority": 0.62}', '{needs_info}', '0.48', 'vpn-reconnect',
+       '{"steps": ["Quit the VPN client", "Sign in again"]}'),
+      ('email:it-0003-b', 'hardware', 'printer', 'P4', 'low', 'Hardware',
+       '{"category": 0.88, "priority": 0.71}', '{ungrounded_fix}', '0.35', 'printer-tray-jam',
+       '{"steps": ["Open tray 2", "Remove the jammed sheet"]}')
+    ) as s (key, category, subcategory, priority, urgency, assignment_group, probabilities,
+            flags, grounding_score, slug, fix)
+    join itsupport.tickets t on t.idempotency_key = s.key
+    where r.ticket_id = t.id;
+
+  insert into itsupport.ticket_events (ticket_id, type, payload)
+    select t.id, e.type, e.payload::jsonb
+    from itsupport.tickets t, (values
+      (1, 'kb_matched', '{"count": 1}'),
+      (2, 'fix_drafted', '{"steps": 2}'),
+      (3, 'policy_decided', '{"route": "review", "reasons": ["flags"]}'),
+      (4, 'triaged', '{"route": "review"}')
+    ) as e (n, type, payload)
+    order by t.idempotency_key, e.n;
+
+  insert into itsupport.ai_calls (ticket_id, provider, kind, calls, tokens_in, tokens_out, cost_usd, environment, at)
+    select t.id, c.provider, c.kind, c.calls, c.tokens_in, c.tokens_out, c.cost_usd, 'staging',
+      timestamptz '2026-10-20 00:59:00+00'
+    from itsupport.tickets t, (values
+      ('typesafe', 'sensitive_check', 1, null::integer, null::integer, 0.001),
+      ('typesafe', 'triage_judgments', 4, null, null, 0.004),
+      ('llm', 'fix_steps', 1, 812, 164, 0.0021)
+    ) as c (provider, kind, calls, tokens_in, tokens_out, cost_usd);
+
+  insert into itsupport.security_events (source, kind, window_start, count, sample) values
+    ('internal_api', 'bad_token', timestamptz '2026-10-20 00:58:00+00', 3,
+     '{"path": "/api/internal/tickets", "method": "POST"}');
+  select itsupport.security_event_record('pipeline', 'alert:typesafe_cap_reached', '{}');
+`;
+
+/** One decided triage review of the review_pending ticket (needs 0005). */
+const SEED_REVIEW = `insert into itsupport.reviews
+    (ticket_id, kind, slack_user_id, decision, decided_at, wait_token_id, slack_ts, created_at)
+  values (${OTHER}, 'triage', '${U1}', 'approve', timestamptz '2026-10-20 02:00:00+00',
+    'waitpoint_test_seed', '1700000000.000300', timestamptz '2026-10-20 01:00:00+00')`;
+
+type TableRows = Record<string, { rows: number; md5: string }>;
+const EMPTY = { rows: 0, md5: "d41d8cd98f00b204e9800998ecf8427e" }; // md5('')
+
+/**
+ * Row count and an md5 of all rows, ordered by primary key, for every table
+ * in itsupport. The table list and the keys come from the catalog, so a table
+ * added later is compared too; a table without a primary key fails loudly.
+ */
+const tableRows = async (): Promise<TableRows> => {
+  const tables = (
+    await client().query<{ name: string; pk: string | null }>(`
+      select c.relname as name,
+        (select string_agg(quote_ident(a.attname), ', ' order by k.ord)
+         from pg_catalog.pg_index i
+         cross join lateral unnest(i.indkey::int2[]) with ordinality as k (attnum, ord)
+         join pg_catalog.pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.attnum
+         where i.indrelid = c.oid and i.indisprimary) as pk
+      from pg_catalog.pg_class c
+      where c.relnamespace = 'itsupport'::regnamespace and c.relkind in ('r', 'p')
+      order by 1`)
+  ).rows;
+  const out: TableRows = {};
+  for (const { name, pk } of tables) {
+    if (!pk) throw new Error(`itsupport.${name} has no primary key to order its rows by`);
+    const { rows } = await client().query<{ rows: number; md5: string }>(
+      `select count(*)::int as rows, md5(coalesce(string_agg(t::text, E'\\n' order by ${pk}), '')) as md5
+       from itsupport."${name.replace(/"/g, '""')}" t`,
+    );
+    out[name] = rows[0]!;
+  }
+  return out;
+};
+const withoutReviews = (rows: TableRows): TableRows =>
+  Object.fromEntries(Object.entries(rows).filter(([name]) => name !== "reviews"));
 
 /**
  * A snapshot of everything in the itsupport schema and what refers to it:
@@ -170,14 +287,20 @@ const CHECK_OBJECTS = [
   "owner itsupport.reviews",
 ].sort();
 
+// The phase-2 columns of the seeded rows (taken after SEED_PHASE3).
 let phase2: Record<string, unknown[]> = {};
+// Every itsupport table's row count and md5 after SEED_PHASE3, before 0005.
+let seeded: TableRows = {};
 let before: string[] = [];
 let check3: { object: string; ok: boolean }[] = [];
 
 beforeAll(async () => {
-  phase2 = await startWithPhase2Rows(`create schema itsupport; ${defaults("grant")}`);
+  await startWithPhase2Rows(`create schema itsupport; ${defaults("grant")}`);
   applied(up("0003_itsupport_triage_kb"));
   applied(up("0004_itsupport_lock_sequences"));
+  await client().query(SEED_PHASE3);
+  phase2 = await snapshot();
+  seeded = await tableRows();
   before = await catalog();
   check3 = await check();
 });
@@ -185,6 +308,52 @@ beforeAll(async () => {
 afterAll(stop);
 
 describe("migration 0005 (reviews) on 0001-0004 with Supabase-like default privileges", () => {
+  it("the seed is phase-3-shaped: one triaged and one review_pending ticket, every table holds rows", async () => {
+    expect(
+      Object.fromEntries(Object.entries(seeded).map(([name, { rows }]) => [name, rows])),
+    ).toEqual({
+      tickets: 2,
+      ticket_redactions: 2,
+      triage_results: 2,
+      ticket_events: 14,
+      kb_articles: 2,
+      ai_calls: 6,
+      security_events: 2,
+    });
+    const tickets = await client().query(
+      `select t.idempotency_key, t.status, r.route, r.category, r.priority, r.triaged_at is not null as triaged,
+         cardinality(r.kb_article_ids) as kb,
+         (select e.type from itsupport.ticket_events e where e.ticket_id = t.id order by e.id desc limit 1) as last_event,
+         (select count(*)::int from itsupport.ai_calls c where c.ticket_id = t.id) as ai_calls
+       from itsupport.tickets t join itsupport.triage_results r on r.ticket_id = t.id order by 1`,
+    );
+    expect(tickets.rows).toEqual([
+      {
+        idempotency_key: "email:it-0003-b",
+        status: "review_pending",
+        route: "review",
+        category: "hardware",
+        priority: "P4",
+        triaged: true,
+        kb: 1,
+        last_event: "triaged",
+        ai_calls: 3,
+      },
+      {
+        idempotency_key: "web:it-0003-a",
+        status: "triaged",
+        route: "review",
+        category: "network",
+        priority: "P2",
+        triaged: true,
+        kb: 1,
+        last_event: "triaged",
+        ai_calls: 3,
+      },
+    ]);
+    expect(check3.filter((row) => !row.ok)).toEqual([]);
+  });
+
   it("before 0005 the check returns every row, each ok = false (wrong variant)", async () => {
     const rows = await check5();
     expect(rows.map((row) => row.object)).toEqual(CHECK_OBJECTS);
@@ -219,6 +388,7 @@ describe("migration 0005 (reviews) on 0001-0004 with Supabase-like default privi
     );
     expect(await notOk5()).toEqual([]);
     expect(await snapshot()).toEqual(phase2);
+    expect(await tableRows()).toEqual({ ...seeded, reviews: EMPTY });
   });
 
   it("up twice exits 0; constraints and grants are re-applied without error", async () => {
@@ -501,6 +671,7 @@ describe("migration 0005 (reviews) on 0001-0004 with Supabase-like default privi
       expect(await reviewsExists()).toBe(false);
       expect(await catalog()).toEqual(before);
       expect(await snapshot()).toEqual(phase2);
+      expect(await tableRows()).toEqual(seeded);
       expect(await check()).toEqual(check3);
       const rows = await check5();
       expect(rows.map((row) => row.object)).toEqual(CHECK_OBJECTS);
@@ -537,5 +708,85 @@ describe("migration 0005 (reviews) on 0001-0004 with Supabase-like default privi
     expect(await notOk5()).toEqual([]);
     expect(await attempt(review(), "service_role")).toEqual({ ok: true });
     expect((await check()).filter((row) => !row.ok)).toEqual([]);
+  });
+});
+
+// Runs after the block above, which leaves 0005 applied with no review row.
+describe("T4.I.07: up, down, up with the phase-3 rows and a decided review present", () => {
+  let base: TableRows = {};
+
+  it("one decided triage review is seeded for the review_pending ticket", async () => {
+    expect(await tableRows()).toEqual({ ...seeded, reviews: EMPTY });
+    await client().query(SEED_REVIEW);
+    base = await tableRows();
+    expect(base).toEqual({ ...seeded, reviews: expect.objectContaining({ rows: 1 }) });
+    const { rows } = await client().query(
+      `select t.status, r.kind, r.decision, r.slack_user_id, r.decided_at is not null as decided
+       from itsupport.reviews r join itsupport.tickets t on t.id = r.ticket_id`,
+    );
+    expect(rows).toEqual([
+      {
+        status: "review_pending",
+        kind: "triage",
+        decision: "approve",
+        slack_user_id: U1,
+        decided: true,
+      },
+    ]);
+  });
+
+  it("the whole up file exits 0 and changes no row, the review row included", async () => {
+    applied(up(M5));
+    expect(await tableRows()).toEqual(base);
+    expect(await notOk5()).toEqual([]);
+  });
+
+  it("the whole down file exits 0 and removes only the review row: every other table is unchanged", async () => {
+    applied(down(M5));
+    expect(await reviewsExists()).toBe(false);
+    expect(await tableRows()).toEqual(withoutReviews(base));
+    expect(withoutReviews(base)).toEqual(seeded);
+    expect(await catalog()).toEqual(before);
+    expect(await check()).toEqual(check3);
+  });
+
+  it("the up file again exits 0: other rows unchanged, reviews empty, the check only ok = true", async () => {
+    applied(up(M5));
+    expect(await tableRows()).toEqual({ ...seeded, reviews: EMPTY });
+    const rows = await check5();
+    expect(rows.map((row) => row.object)).toEqual(CHECK_OBJECTS);
+    expect(rows.filter((row) => row.ok !== true)).toEqual([]);
+    expect((await check()).filter((row) => !row.ok)).toEqual([]);
+  });
+
+  it("a second triage review for a seeded ticket fails with 23505", async () => {
+    // The first one is committed, as service_role (the pipeline's role).
+    await client().query("begin");
+    try {
+      await client().query("set local role service_role");
+      await client().query(review());
+      await client().query("commit");
+    } catch (error) {
+      await client().query("rollback");
+      throw error;
+    }
+    expect((await tableRows()).reviews?.rows).toBe(1);
+    expect(await attempt(review({ wait_token_id: "'waitpoint_test_2'" }), "service_role")).toEqual(
+      fails("23505", "reviews_ticket_kind_proposal_key"),
+    );
+    // The seeded review of the other ticket went with the down file, so its slot is free again.
+    expect(await attempt(review({ ticket_id: OTHER }), "service_role")).toEqual({ ok: true });
+  });
+
+  it("0001's down file still removes the whole schema with 0005 applied, and keeps vector", async () => {
+    applied(down("0001_itsupport_foundation"));
+    const { rows } = await client().query(
+      `select (select count(*)::int from pg_catalog.pg_namespace where nspname = 'itsupport') as schemas,
+         (select count(*)::int from pg_catalog.pg_class where relname = 'reviews'
+            and relnamespace not in (select oid from pg_catalog.pg_namespace
+              where nspname in ('pg_catalog', 'information_schema'))) as reviews,
+         (select count(*)::int from pg_catalog.pg_extension where extname = 'vector') as vector`,
+    );
+    expect(rows).toEqual([{ schemas: 0, reviews: 0, vector: 1 }]);
   });
 });
