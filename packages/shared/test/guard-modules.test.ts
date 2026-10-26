@@ -66,6 +66,18 @@ describe("guard-modules.json", () => {
     });
   });
 
+  // P4-T3b (plan T4.S.05): the Slack interaction rules carry both floors.
+  it("lists the Slack interaction rules with both floors", () => {
+    const interaction = guardModules.find(
+      ({ path }) => path === "apps/web/src/lib/slack/interaction.ts",
+    );
+    expect(interaction).toEqual({
+      path: "apps/web/src/lib/slack/interaction.ts",
+      statements: 90,
+      mutation: 80,
+    });
+  });
+
   it("lists only files that exist in the repo", () => {
     expect(missingGuardModules(guardModules, repoRoot)).toEqual([]);
   });
