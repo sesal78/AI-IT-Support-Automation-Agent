@@ -108,6 +108,31 @@ Dependencies added by this spec, beyond the plan's table: P4-T3d waits for the r
 After P4-T1b merges, the loop pauses once for H15. Nothing that reads `reviews` is deployed to the e2e app before H15 is done.
 Orchestrator steps (O1–O5) and human steps (H14, H15, H25) are at the end. They are not filed.
 
+## Bundles (2026-10-26)
+
+Seun's scope cut of 2026-10-26 (PROJECT §11) replaces the 19 remaining phase 4 tasks with 8 bundles. A bundle is one PR that meets the acceptance criteria of all its members; the member sections below stay as the specification. These rules from 2026-10-26 replace the matching lines in "Rules for every task":
+
+- Size: lean mode, ~450 changed lines per normal task (PROJECT §7), instead of ~200.
+- Risk: `high-risk` (2 reviews) only for migration 0005 (P4-T1a, P4-T1b) and the Slack signature and decision code (P4-T3a, P4-B3). P4-T3b (payload parsing) and every other bundle get 1 review.
+- Mutation: a builder runs mutation only for the guard modules it touches; CI runs the full `pnpm test:mutation -- --all` gate.
+
+Not bundled (done, built or in review): P4-T1a (done), P4-T1b, P4-T3a, P4-T3b, P4-T2a.
+
+A member's dependency on another member of the same bundle drops out; a dependency on a task in another bundle becomes that bundle. The table is in build order, which is a valid topological order.
+
+| Bundle | Title | Members (old IDs) | Risk | Depends on | Status at filing |
+| ------ | ----- | ----------------- | ---- | ---------- | ---------------- |
+| P4-B1 | Card builders + Slack Web API client | P4-T2b, P4-T2c | normal | P4-T2a | blocked (HELD) |
+| P4-B2 | Reviews repository + ticket view and health flag | P4-T7a, P4-T7b | normal | P4-T1a (merged) | backlog |
+| P4-B3 | Interactivity handler + decision + route | P4-T3c, P4-T3d | high-risk | P4-T3a, P4-T3b, P4-B2 | blocked (HELD) |
+| P4-B4 | Slack alerts + review-ticket post and wait | P4-T10, P4-T4a | normal | P4-B1, P4-B2 | blocked (HELD) |
+| P4-B5 | Resume, timeout and triage trigger | P4-T4b, P4-T5, P4-T4c | normal | P4-B4 | blocked (HELD) |
+| P4-B6 | Live Slack channel helper + signed-request helper | P4-T8a, P4-T6 | normal | P4-T3a | blocked (HELD) |
+| P4-B7 | Integration and local end-to-end suites | P4-T9a, P4-T9b, P4-T9c | normal | P4-B5, P4-B3, P4-T1b | blocked (HELD) |
+| P4-B8 | Live review, security and heavy scenarios | P4-T8b, P4-T8c, P4-T8d | normal | P4-B6, P4-B2, P4-B4 | blocked (HELD) |
+
+Superseded: the 19 old member tasks (P4-T2b, P4-T2c, P4-T7a, P4-T7b, P4-T3c, P4-T3d, P4-T10, P4-T4a, P4-T4b, P4-T5, P4-T4c, P4-T8a, P4-T6, P4-T9a, P4-T9b, P4-T9c, P4-T8b, P4-T8c, P4-T8d) stay in ClickUp as `blocked` with the tag `superseded` and a comment naming their bundle, so the build loop never picks them. P4-T7a and P4-T8a moved from `backlog` to `blocked`. The "Order" table above is kept as history; from 2026-10-26 the loop builds the bundles. The H15 pause after P4-T1b still applies.
+
 ---
 
 ## P4-T1a — Migration 0005, part 1: the `reviews` table
