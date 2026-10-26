@@ -38,7 +38,9 @@ export function assertNoLiveMarkup(message: SlackMessage): void {
     if (!hasLiveMrkdwn(block)) return;
     const id = isObj(block) ? block.block_id : undefined;
     throw new LiveMarkupError(
-      typeof id === "string" && id !== "" ? `block_id ${JSON.stringify(id)}` : `the block at index ${i}`,
+      typeof id === "string" && id !== ""
+        ? `block_id ${JSON.stringify(id)}`
+        : `the block at index ${i}`,
     );
   });
 }

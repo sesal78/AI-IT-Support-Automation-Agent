@@ -68,7 +68,13 @@ function checkBlock(out: Violation[], block: Obj, path: string): void {
     case "section": {
       over(out, "section.text.max", `${path}.text`, LIMITS.sectionText, textLen(block.text));
       if (Array.isArray(block.fields)) {
-        over(out, "section.fields.max", `${path}.fields`, LIMITS.sectionFields, block.fields.length);
+        over(
+          out,
+          "section.fields.max",
+          `${path}.fields`,
+          LIMITS.sectionFields,
+          block.fields.length,
+        );
         block.fields.forEach((f: unknown, i: number) =>
           over(
             out,

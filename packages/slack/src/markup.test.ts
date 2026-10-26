@@ -99,7 +99,9 @@ describe("assertNoLiveMarkup", () => {
   it("puts no angle bracket in the error", () => {
     let err: Error | undefined;
     try {
-      assertNoLiveMarkup({ blocks: [{ type: "section", block_id: "id1", text: mk("<!channel>") }] });
+      assertNoLiveMarkup({
+        blocks: [{ type: "section", block_id: "id1", text: mk("<!channel>") }],
+      });
     } catch (e) {
       err = e as Error;
     }
