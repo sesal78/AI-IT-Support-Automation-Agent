@@ -23,6 +23,7 @@ const GATE_FILES = [
   "packages/ai/vitest.config.ts",
   "packages/db/vitest.config.ts",
   "packages/shared/vitest.config.ts",
+  "packages/slack/vitest.config.ts",
   "services/pipeline/vitest.config.ts",
   "package.json",
   "pnpm-lock.yaml",
