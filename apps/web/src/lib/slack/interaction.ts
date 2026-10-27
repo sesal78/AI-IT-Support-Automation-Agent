@@ -158,6 +158,8 @@ export function checkReviewBinding(input: {
 }): Check {
   const { interaction, channelId, e2eMode, review, ticket } = input;
   if (review === null) return refuse(404, "unknown_review");
+  // A card whose ts was never stored binds to nothing, whatever the click carries.
+  if (review.slackTs === null) return refuse(403, "binding_mismatch");
   if (interaction.channelId !== channelId || interaction.messageTs !== review.slackTs) {
     return refuse(403, "binding_mismatch");
   }

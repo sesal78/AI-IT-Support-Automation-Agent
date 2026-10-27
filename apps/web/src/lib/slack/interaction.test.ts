@@ -569,6 +569,14 @@ describe("checkReviewBinding", () => {
     expect(checkReviewBinding({ ...base, review: { ...review, slackTs: null } })).toEqual(mismatch);
   });
 
+  it("returns 403 binding_mismatch when both the click ts and the stored slackTs are null", () => {
+    // parseInteraction never yields a null messageTs, but the check must not rely on that.
+    const nullTs = { ...expected, messageTs: null as unknown as string };
+    expect(
+      checkReviewBinding({ ...base, interaction: nullTs, review: { ...review, slackTs: null } }),
+    ).toEqual(mismatch);
+  });
+
   it("returns 403 env_mismatch for a test ticket with e2eMode false", () => {
     expect(checkReviewBinding({ ...base, ticket: { isTest: true } })).toEqual(envMismatch);
   });
