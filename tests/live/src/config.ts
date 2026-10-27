@@ -1,4 +1,10 @@
-import { internalEnvShape, langfuseEnvShape, liveEnvShape, parseEnv } from "@ai-it-support/shared";
+import {
+  internalEnvShape,
+  langfuseEnvShape,
+  liveEnvShape,
+  liveSlackEnvShape,
+  parseEnv,
+} from "@ai-it-support/shared";
 
 /** Thrown for a missing or refused variable. The message names variables, never values. */
 export class LiveConfigError extends Error {
@@ -20,6 +26,13 @@ export interface LiveConfig {
     readonly secretKey: string | undefined;
     readonly baseUrl: string | undefined;
   };
+  /** The e2e Slack variables; each is undefined when unset (scenarios then report not_run). */
+  readonly slack: {
+    readonly botToken: string | undefined;
+    readonly channelId: string | undefined;
+    readonly signingSecret: string | undefined;
+    readonly reviewerId: string | undefined;
+  };
   /** Every secret-bearing value read from the environment, for leak checks. */
   readonly secrets: readonly string[];
 }
@@ -30,12 +43,25 @@ const shape = {
   LANGFUSE_PUBLIC_KEY: langfuseEnvShape.LANGFUSE_PUBLIC_KEY.optional(),
   LANGFUSE_SECRET_KEY: langfuseEnvShape.LANGFUSE_SECRET_KEY.optional(),
   LANGFUSE_BASE_URL: langfuseEnvShape.LANGFUSE_BASE_URL.optional(),
+  ...liveSlackEnvShape,
 };
 
 // Lower-case, without one trailing dot: `qa.example.com.` is the same host as `qa.example.com`.
 const normalHost = (hostname: string): string => hostname.toLowerCase().replace(/\.$/, "");
 
 const STAGING_MESSAGE = "E2E_BASE_URL: live tests never run against staging";
+
+/**
+ * True when `hostname` is staging: the host of `stagingOrigin` (any case, one
+ * trailing dot ignored), or a host whose first label contains "staging".
+ */
+export function isStagingHost(hostname: string, stagingOrigin: string | undefined): boolean {
+  const host = normalHost(hostname);
+  if (stagingOrigin !== undefined && normalHost(new URL(stagingOrigin).hostname) === host) {
+    return true;
+  }
+  return (host.split(".")[0] ?? "").includes("staging");
+}
 
 /**
  * Reads the live-suite variables from `env` by name. Throws a LiveConfigError
@@ -45,6 +71,12 @@ const STAGING_MESSAGE = "E2E_BASE_URL: live tests never run against staging";
  * STAGING_BASE_URL, and its first label must not contain "staging".
  */
 export function loadLiveConfig(env: Record<string, string | undefined>): LiveConfig {
+  // The real (staging) signing secret must never be in a test process (plan
+  // §2.1). Set at all, even empty, is refused: the name alone means a loader
+  // mapped it here.
+  if (env["SLACK_SIGNING_SECRET"] !== undefined) {
+    throw new LiveConfigError("SLACK_SIGNING_SECRET: must not be set in the live-test process");
+  }
   let parsed;
   try {
     parsed = parseEnv(shape, env);
@@ -67,16 +99,9 @@ export function loadLiveConfig(env: Record<string, string | undefined>): LiveCon
     );
   }
 
-  let stagingOrigin: string | undefined;
-  if (parsed.STAGING_BASE_URL !== undefined) {
-    const staging = new URL(parsed.STAGING_BASE_URL);
-    if (normalHost(staging.hostname) === normalHost(base.hostname)) {
-      throw new LiveConfigError(STAGING_MESSAGE);
-    }
-    stagingOrigin = staging.origin;
-  }
-  const firstLabel = normalHost(base.hostname).split(".")[0] ?? "";
-  if (firstLabel.includes("staging")) throw new LiveConfigError(STAGING_MESSAGE);
+  const stagingOrigin =
+    parsed.STAGING_BASE_URL === undefined ? undefined : new URL(parsed.STAGING_BASE_URL).origin;
+  if (isStagingHost(base.hostname, stagingOrigin)) throw new LiveConfigError(STAGING_MESSAGE);
 
   const secrets = [
     parsed.INTERNAL_API_TOKEN,
@@ -84,6 +109,8 @@ export function loadLiveConfig(env: Record<string, string | undefined>): LiveCon
     parsed.CF_ACCESS_CLIENT_SECRET,
     parsed.LANGFUSE_PUBLIC_KEY,
     parsed.LANGFUSE_SECRET_KEY,
+    parsed.E2E_SLACK_BOT_TOKEN,
+    parsed.E2E_SLACK_SIGNING_SECRET,
   ].filter((value): value is string => value !== undefined);
 
   return {
@@ -98,6 +125,26 @@ export function loadLiveConfig(env: Record<string, string | undefined>): LiveCon
       secretKey: parsed.LANGFUSE_SECRET_KEY,
       baseUrl: parsed.LANGFUSE_BASE_URL,
     },
+    slack: {
+      botToken: parsed.E2E_SLACK_BOT_TOKEN,
+      channelId: parsed.E2E_SLACK_CHANNEL_ID,
+      signingSecret: parsed.E2E_SLACK_SIGNING_SECRET,
+      reviewerId: parsed.E2E_SLACK_REVIEWER_ID,
+    },
     secrets,
   };
+}
+
+const SLACK_FIELDS = {
+  E2E_SLACK_BOT_TOKEN: "botToken",
+  E2E_SLACK_CHANNEL_ID: "channelId",
+  E2E_SLACK_SIGNING_SECRET: "signingSecret",
+  E2E_SLACK_REVIEWER_ID: "reviewerId",
+} as const;
+
+export type SlackEnvName = keyof typeof SLACK_FIELDS;
+
+/** The names in `names` whose variable is unset, in the given order. */
+export function missingSlackEnv(config: LiveConfig, names: readonly SlackEnvName[]): string[] {
+  return names.filter((name) => config.slack[SLACK_FIELDS[name]] === undefined);
 }

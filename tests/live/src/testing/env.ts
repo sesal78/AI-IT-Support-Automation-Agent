@@ -15,3 +15,23 @@ export function markerEnv(origin: string) {
     STAGING_BASE_URL: `https://markerstaging${"q".repeat(10)}.example`,
   };
 }
+
+/** Fake e2e channel, bot user and reviewer IDs (never real ones). */
+export const TEST_SLACK = {
+  channelId: "C0E2E00001",
+  botUserId: "U0BOTUSER1",
+  reviewerId: "U0REVIEWER1",
+} as const;
+
+/**
+ * The four live Slack variables. The token and the signing secret are unique
+ * markers built from pieces, so no token-shaped literal sits in the source.
+ */
+export function markerSlackEnv() {
+  return {
+    E2E_SLACK_BOT_TOKEN: ["xoxb", `MarkerSlackToken${"t".repeat(20)}`].join("-"),
+    E2E_SLACK_CHANNEL_ID: TEST_SLACK.channelId,
+    E2E_SLACK_SIGNING_SECRET: `MarkerSigningSecret${"k".repeat(20)}`,
+    E2E_SLACK_REVIEWER_ID: TEST_SLACK.reviewerId,
+  };
+}

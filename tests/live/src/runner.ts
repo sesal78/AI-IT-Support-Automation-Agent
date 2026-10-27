@@ -35,6 +35,8 @@ export interface ScenarioContext {
 export interface Scenario {
   /** Test ID from the plan, for example `T3.S.02`. */
   readonly id: string;
+  /** Heavy scenarios (many tickets or long waits) run only when named with `--only`. */
+  readonly heavy?: boolean;
   run(context: ScenarioContext): Promise<ScenarioResult>;
 }
 
@@ -75,19 +77,64 @@ class UsageError extends Error {
   override readonly name = "UsageError";
 }
 
-function parseArgs(argv: readonly string[]): { only: string[] | undefined } {
+const PHASE = /^[1-9][0-9]?$/;
+
+function parseArgs(argv: readonly string[]): {
+  only: string[] | undefined;
+  phase: string | undefined;
+} {
   let only: string[] | undefined;
+  let phase: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
+    if (arg === "--") continue;
+    if (arg === "--phase" || arg.startsWith("--phase=")) {
+      const value = arg === "--phase" ? argv[++i] : arg.slice("--phase=".length);
+      if (value === undefined || !PHASE.test(value) || phase !== undefined) {
+        throw new UsageError("--phase needs one phase number (1-99)");
+      }
+      phase = value;
+      continue;
+    }
     let value: string | undefined;
     if (arg === "--only") value = argv[++i];
     else if (arg.startsWith("--only=")) value = arg.slice("--only=".length);
-    else if (arg === "--") continue;
-    else throw new UsageError("unknown argument (known: --only <id,id,...>)");
+    else throw new UsageError("unknown argument (known: --only <id,id,...>, --phase <n>)");
     if (value === undefined || value === "") throw new UsageError("--only needs test IDs");
     only = [...(only ?? []), ...value.split(",").filter((id) => id !== "")];
   }
-  return { only };
+  if (only !== undefined && phase !== undefined) {
+    throw new UsageError("--only and --phase cannot be combined");
+  }
+  return { only, phase };
+}
+
+/**
+ * The scenarios a run selects: the `--only` IDs in the given order (heavy ones
+ * included); else, with `--phase <n>`, the non-heavy scenarios whose ID starts
+ * with `T<n>.`; else every non-heavy scenario.
+ */
+export function selectScenarios(
+  registry: ReadonlyMap<string, Scenario>,
+  argv: readonly string[],
+): Scenario[] {
+  const { only, phase } = parseArgs(argv);
+  if (only !== undefined) {
+    const unknown = only.filter((id) => !registry.has(id));
+    if (unknown.length > 0) {
+      const shown = unknown.map((id) => (ID_PATTERN.test(id) ? id : "(malformed)"));
+      throw new UsageError(
+        `unknown test IDs: ${shown.join(", ")}. Known: ${[...registry.keys()].join(", ") || "(none)"}`,
+      );
+    }
+    return only.map((id) => registry.get(id)!);
+  }
+  const light = [...registry.values()].filter((scenario) => scenario.heavy !== true);
+  if (phase === undefined) return light;
+  const inPhase = light.filter((scenario) => scenario.id.startsWith(`T${phase}.`));
+  // An empty phase is a typo, not a green run.
+  if (inPhase.length === 0) throw new UsageError(`--phase ${phase}: no scenarios`);
+  return inPhase;
 }
 
 function cleanEvidence(evidence: unknown, secrets: readonly string[]): Evidence | null {
@@ -134,17 +181,7 @@ export async function runLive(options: RunLiveOptions): Promise<number> {
   let config: LiveConfig;
   try {
     registry = createRegistry(options.scenarios);
-    const { only } = parseArgs(options.argv);
-    if (only !== undefined) {
-      const unknown = only.filter((id) => !registry.has(id));
-      if (unknown.length > 0) {
-        const shown = unknown.map((id) => (ID_PATTERN.test(id) ? id : "(malformed)"));
-        throw new UsageError(
-          `unknown test IDs: ${shown.join(", ")}. Known: ${[...registry.keys()].join(", ") || "(none)"}`,
-        );
-      }
-    }
-    selected = only === undefined ? [...registry.values()] : only.map((id) => registry.get(id)!);
+    selected = selectScenarios(registry, options.argv);
     config = loadLiveConfig(options.env);
   } catch (error) {
     // Only our own errors carry safe messages; anything else shows its class.
