@@ -11,6 +11,9 @@ import {
   parseEnv,
   phase1EnvShape,
   sensitiveCheckEnvShape,
+  slackBotToken,
+  slackChannelId,
+  slackClientEnvShape,
   slackUserId,
   triggerProjectEnvShape,
 } from "./env.js";
@@ -332,5 +335,71 @@ describe("slackUserId", () => {
     "",
   ])("rejects %j", (id) => {
     expect(slackUserId().safeParse(id).success).toBe(false);
+  });
+});
+
+describe("slackClientEnvShape", () => {
+  // Fake values built from pieces, so no file holds anything shaped like a real token.
+  const token = ["xoxb", "0000000000", "fake"].join("-");
+  const valid = { SLACK_BOT_TOKEN: token, SLACK_CHANNEL_ID: "C0000000001" };
+
+  it("parses valid values, with SLACK_ALERT_CHANNEL_ID unset", () => {
+    expect(parseEnv(slackClientEnvShape, valid)).toEqual({ ...valid });
+  });
+
+  it("parses SLACK_ALERT_CHANNEL_ID when set, and treats an empty one as unset", () => {
+    const withAlert = { ...valid, SLACK_ALERT_CHANNEL_ID: "G0000000002" };
+    expect(parseEnv(slackClientEnvShape, withAlert)).toEqual(withAlert);
+    expect(parseEnv(slackClientEnvShape, { ...valid, SLACK_ALERT_CHANNEL_ID: "" })).toEqual(valid);
+  });
+
+  it.each([
+    ["SLACK_BOT_TOKEN", ["xoxp", "0000000000", "fake"].join("-")],
+    ["SLACK_BOT_TOKEN", "xoxb-short"],
+    ["SLACK_CHANNEL_ID", "#general"],
+    ["SLACK_CHANNEL_ID", "c0000000001"],
+    ["SLACK_CHANNEL_ID", "C000"],
+    ["SLACK_CHANNEL_ID", "U0000000001"],
+    ["SLACK_ALERT_CHANNEL_ID", "#general"],
+    ["SLACK_ALERT_CHANNEL_ID", "c0000000001"],
+    ["SLACK_ALERT_CHANNEL_ID", "C000"],
+  ])("rejects %s=%j, naming the variable and not echoing the value", (key, value) => {
+    let message = "";
+    try {
+      parseEnv(slackClientEnvShape, { ...valid, [key]: value });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain(key);
+    expect(message).not.toContain(value);
+  });
+
+  it("requires SLACK_BOT_TOKEN and SLACK_CHANNEL_ID", () => {
+    expect(() => parseEnv(slackClientEnvShape, { ...valid, SLACK_BOT_TOKEN: "" })).toThrow(
+      /SLACK_BOT_TOKEN/,
+    );
+    expect(() => parseEnv(slackClientEnvShape, { ...valid, SLACK_CHANNEL_ID: "" })).toThrow(
+      /SLACK_CHANNEL_ID/,
+    );
+  });
+});
+
+describe("Slack format rules", () => {
+  it.each(["C00000000", "G000000000000"])("slackChannelId accepts %j", (id) => {
+    expect(slackChannelId().safeParse(id).success).toBe(true);
+  });
+
+  it.each(["C0000000", "C00000000000000", "D00000000", "C00000000\n"])(
+    "slackChannelId rejects %j",
+    (id) => {
+      expect(slackChannelId().safeParse(id).success).toBe(false);
+    },
+  );
+
+  it("slackBotToken accepts xoxb- plus 10 or more letters, digits or dashes only", () => {
+    expect(slackBotToken().safeParse(["xoxb", "0000-00000"].join("-")).success).toBe(true);
+    expect(slackBotToken().safeParse(["xoxb", "000000000"].join("-")).success).toBe(false);
+    expect(slackBotToken().safeParse(["xoxb", "0000000000 x"].join("-")).success).toBe(false);
+    expect(slackBotToken().safeParse(["xoxb", "0000000000\r\nX: y"].join("-")).success).toBe(false);
   });
 });

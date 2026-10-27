@@ -29,6 +29,7 @@ export {
   slackInteractivityEnvShape,
   slackUserId,
   sensitiveCheckEnvShape,
+  slackClientEnvShape,
   triggerProjectEnvShape,
   type EnvIssue,
 } from "./env.js";
