@@ -248,6 +248,16 @@ describe("buildReviewCard why line", () => {
     expectValid(card);
   });
 
+  it("shows a repeated code once", () => {
+    expect(why(["p1", "p1"], ["odd", "odd"])).toBe("Why: priority P1 · odd");
+  });
+
+  it("does not treat a flag that repeats an unknown reason as a topic", () => {
+    expect(why(["brand_new", "sensitive"], ["brand_new", "hr"])).toBe(
+      "Why: brand_new · sensitive topic (HR)",
+    );
+  });
+
   it("says when no reason was given", () => {
     expect(why([], [])).toBe("Why: no reason given");
   });
@@ -462,8 +472,10 @@ describe("buildReviewCard input checks", () => {
     ["reviewId", "not-a-uuid"],
     ["reviewId", ""],
     ["reviewId", `${REVIEW_ID}<!channel>`],
+    ["reviewId", `<!channel>${REVIEW_ID}`],
     ["reviewId", 42],
     ["ticketId", "1234"],
+    ["ticketId", `x${TICKET_ID}`],
     ["ticketId", undefined],
     ["environment", "production"],
     ["timeout", "forever"],
@@ -486,6 +498,7 @@ describe("buildReviewCard input checks", () => {
       error = e;
     }
     expect(error).toBeInstanceOf(TypeError);
+    expect((error as Error).message).toMatch(new RegExp(`^review card: ${key} must be [a-z0-9]`));
     expect((error as Error).message).toContain(key);
     if (typeof value === "string" && value !== "") {
       expect((error as Error).message).not.toContain(value);

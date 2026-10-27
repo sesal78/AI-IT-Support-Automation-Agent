@@ -108,17 +108,27 @@ describe("postMessage and updateMessage", () => {
     async (channel) => {
       const { slack, calls } = client([]);
       await expect(slack.postMessage({ ...post, channel })).rejects.toThrow(TypeError);
+      await expect(slack.postMessage({ ...post, channel })).rejects.toThrow(
+        /^Slack client: channel must be a Slack channel ID$/,
+      );
       await expect(slack.updateMessage({ ...post, channel, ts: "1.2" })).rejects.toThrow(TypeError);
       expect(calls).toHaveLength(0);
     },
   );
 
-  it.each(["", "abc", "1.2<!channel>"])("refuses the ts %j before any request", async (ts) => {
-    const { slack, calls } = client([]);
-    await expect(slack.updateMessage({ ...post, ts })).rejects.toThrow(TypeError);
-    await expect(slack.postMessage({ ...post, threadTs: ts })).rejects.toThrow(TypeError);
-    expect(calls).toHaveLength(0);
-  });
+  it.each(["", "abc", "1.2<!channel>", "<!channel>1.2", 5])(
+    "refuses the ts %j before any request",
+    async (ts) => {
+      const { slack, calls } = client([]);
+      await expect(slack.updateMessage({ ...post, ts: ts as string })).rejects.toThrow(
+        /^Slack client: ts must be a Slack message ts$/,
+      );
+      await expect(slack.postMessage({ ...post, threadTs: ts as string })).rejects.toThrow(
+        /^Slack client: threadTs must be a Slack message ts$/,
+      );
+      expect(calls).toHaveLength(0);
+    },
+  );
 
   it.each([["xoxp", "0000000000", "fake"].join("-"), "", "xoxb-short", `${TOKEN}\r\nX: y`])(
     "refuses a token that fails the bot token rule, without echoing it",
@@ -221,6 +231,8 @@ describe("retries (T4.I.05)", () => {
     const error = await caught(slack.postMessage(post));
     expect(error.code).toBe("channel_not_found");
     expect(error.method).toBe("chat.postMessage");
+    expect(error.name).toBe("SlackApiError");
+    expect(error.message).toBe("Slack chat.postMessage failed: channel_not_found");
     expect(calls).toHaveLength(1);
     expect(sleeps).toEqual([]);
   });
@@ -248,7 +260,7 @@ describe("retries (T4.I.05)", () => {
     expect(calls).toHaveLength(1);
   });
 
-  it.each([301, 302, 307, 308])(
+  it.each([300, 301, 302, 307, 308, 399])(
     "refuses a %i redirect without following or retrying",
     async (status) => {
       const { slack, calls } = client([
@@ -304,6 +316,16 @@ describe("retries (T4.I.05)", () => {
     expect(never).toHaveBeenCalledTimes(3);
   });
 
+  it("leaves no timer behind after a call", async () => {
+    vi.useFakeTimers();
+    const { fetch } = fakeFetch(json(200, { ok: true, ts: "1.1" }), json(400, {}));
+    const slack = createSlackClient({ token: TOKEN, fetch, sleep: async () => {} });
+    await slack.postMessage(post);
+    expect(vi.getTimerCount()).toBe(0);
+    await caught(slack.postMessage(post));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("uses a real sleep by default", async () => {
     vi.useFakeTimers();
     const { fetch, calls } = fakeFetch(json(500, {}), json(200, { ok: true, ts: "1.1" }));
@@ -321,9 +343,11 @@ describe("bad responses", () => {
     ["a body that is not JSON", new Response("<html>oops</html>", { status: 200 })],
     ["a post reply without ts", json(200, { ok: true })],
     ["a ts that is not a string", json(200, { ok: true, ts: 5 })],
+    ["a ts that is not a Slack ts", json(200, { ok: true, ts: "<!channel>1.2" })],
     ["a JSON body that is not an object", json(200, [1, 2])],
     ["a body without ok", json(200, { ts: "1.1" })],
     ["an error code that is not a short code", json(200, { ok: false, error: "<!channel> bad" })],
+    ["an error code with a tail", json(200, { ok: false, error: "invalid_auth <!channel>" })],
     ["a missing error code", json(200, { ok: false })],
   ])("throws bad_response for %s, after 1 request", async (_case, reply) => {
     const { slack, calls } = client([reply, json(200, { ok: true, ts: "1.1" })]);
