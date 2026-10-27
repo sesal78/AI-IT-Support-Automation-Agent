@@ -1,6 +1,6 @@
 // Phase 4 live scenarios that need only the guarded Slack helper.
 import { missingSlackEnv } from "./config.ts";
-import type { Scenario } from "./runner.ts";
+import type { Scenario, ScenarioResult } from "./runner.ts";
 import { createE2eSlackChannel, SlackChannelGuardError } from "./slack-channel.ts";
 
 /** A channel ID that is never the e2e channel (the e2e ID is never a code default). */
@@ -14,7 +14,7 @@ export const PROBE_CHANNEL = "C0000000001";
  */
 export const slackChannelGuardScenario: Scenario = {
   id: "T4.S.06",
-  async run(ctx) {
+  async run(ctx): Promise<ScenarioResult> {
     const missing = missingSlackEnv(ctx.config, ["E2E_SLACK_BOT_TOKEN", "E2E_SLACK_CHANNEL_ID"]);
     if (missing.length > 0) return { status: "not_run", evidence: { missing } };
 

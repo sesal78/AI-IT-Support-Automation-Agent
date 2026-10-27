@@ -169,7 +169,10 @@ describe("T4.S.06", () => {
   });
 
   it("exits 2 naming the variable when a Slack value is malformed", async () => {
-    const h = await harness({}, { ...markerSlackEnv(), E2E_SLACK_REVIEWER_ID: "bad" });
+    const h = await harness({}, {
+      ...markerSlackEnv(),
+      E2E_SLACK_REVIEWER_ID: "bad",
+    } as unknown as ReturnType<typeof markerSlackEnv>);
     const { stderr } = h;
     const code = await runLive({
       argv: ["--only", "T4.S.06"],
