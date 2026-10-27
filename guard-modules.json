@@ -17,5 +17,7 @@
   },
   { "path": "apps/web/src/lib/slack/interaction.ts", "statements": 90, "mutation": 80 },
   { "path": "apps/web/src/lib/slack/handler.ts", "statements": 90, "mutation": 80 },
-  { "path": "apps/web/src/lib/slack/decide.ts", "statements": 90, "mutation": 80 }
+  { "path": "apps/web/src/lib/slack/decide.ts", "statements": 90, "mutation": 80 },
+  { "path": "packages/slack/src/card.ts", "statements": 90, "mutation": 80, "related": false },
+  { "path": "packages/slack/src/client.ts", "statements": 90, "mutation": 80, "related": false }
 ]
