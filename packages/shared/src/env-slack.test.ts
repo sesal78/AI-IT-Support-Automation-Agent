@@ -7,7 +7,7 @@ const valid = {
   E2E_SLACK_BOT_TOKEN: token,
   E2E_SLACK_CHANNEL_ID: "C0000000001",
   E2E_SLACK_SIGNING_SECRET: "s".repeat(32),
-  E2E_SLACK_REVIEWER_ID: "UE2EREVIEWER",
+  E2E_SLACK_REVIEWER_ID: "U0REVIEWER1",
 };
 
 function message(source: Record<string, string | undefined>): string {
