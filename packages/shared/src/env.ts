@@ -160,6 +160,37 @@ export const liveEnvShape = {
   STAGING_BASE_URL: z.url().optional(),
 };
 
+/** Slack user ID rule (phase 4): U or W, then 8–12 upper-case letters or digits. */
+export const slackUserId = () =>
+  z
+    .string()
+    .regex(/^[UW][A-Z0-9]{8,12}$/, "must be a Slack user ID (U or W, then 8-12 A-Z or 0-9)");
+
+/** Slack channel ID rule (phase 4): C or G, then 8–12 upper-case letters or digits. */
+export const slackChannelId = () =>
+  z
+    .string()
+    .regex(/^[CG][A-Z0-9]{8,12}$/, "must be a Slack channel ID (C or G, then 8-12 A-Z or 0-9)");
+
+/** Slack bot token rule (phase 4). `parseEnv` never echoes the token. */
+export const slackBotToken = () =>
+  z.string().regex(/^xoxb-[A-Za-z0-9-]{10,}$/, "must be a Slack bot token");
+
+/**
+ * Live-suite Slack variables (tests/live only). All optional: a scenario that
+ * needs a missing one reports `not_run`. The signing secret is the e2e test
+ * secret, never the staging one.
+ */
+export const liveSlackEnvShape = {
+  E2E_SLACK_BOT_TOKEN: slackBotToken().optional(),
+  E2E_SLACK_CHANNEL_ID: slackChannelId().optional(),
+  E2E_SLACK_SIGNING_SECRET: z
+    .string()
+    .regex(/^[A-Za-z0-9]{32,}$/, "must be at least 32 letters or digits")
+    .optional(),
+  E2E_SLACK_REVIEWER_ID: slackUserId().optional(),
+};
+
 type PathSegment = PropertyKey | { key: PropertyKey };
 
 export interface EnvIssue {

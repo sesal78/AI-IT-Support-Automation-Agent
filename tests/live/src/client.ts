@@ -48,6 +48,10 @@ export interface SendOptions {
   readonly method?: string;
   /** JSON body. */
   readonly body?: unknown;
+  /** Body text sent as-is with this content type (instead of `body`). */
+  readonly rawBody?: { readonly text: string; readonly contentType: string };
+  /** Extra headers. They never replace Authorization, the Access headers or Content-Type. */
+  readonly headers?: Readonly<Record<string, string>>;
   /** Bearer token: the configured one by default, a given (wrong) one, or none (`null`). */
   readonly token?: string | null;
   /** Send the Cloudflare Access headers (default true). */
@@ -125,21 +129,30 @@ export function createInternalClient(
   async function send(
     endpoint: string,
     path: string,
-    { method = "GET", body, token, access = true }: SendOptions = {},
+    { method = "GET", body, rawBody, token, access = true, headers: extra }: SendOptions = {},
   ): Promise<RawResponse> {
     const url =
       path.startsWith("/") && !path.startsWith("//") ? new URL(path, config.origin) : null;
     if (url === null || url.origin !== config.origin) {
       throw new LiveTransportError(endpoint, "OriginRefused");
     }
-    const headers = new Headers();
+    const headers = new Headers(extra);
+    for (const name of [
+      "authorization",
+      "cf-access-client-id",
+      "cf-access-client-secret",
+      "content-type",
+    ]) {
+      headers.delete(name);
+    }
     const bearer = token === undefined ? config.internalApiToken : token;
     if (bearer !== null) headers.set("Authorization", `Bearer ${bearer}`);
     if (access) {
       headers.set("CF-Access-Client-Id", config.accessClientId);
       headers.set("CF-Access-Client-Secret", config.accessClientSecret);
     }
-    if (body !== undefined) headers.set("Content-Type", "application/json");
+    if (rawBody !== undefined) headers.set("Content-Type", rawBody.contentType);
+    else if (body !== undefined) headers.set("Content-Type", "application/json");
 
     let response: Response;
     let text: string;
@@ -147,7 +160,12 @@ export function createInternalClient(
       response = await doFetch(url, {
         method,
         headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
+        body:
+          rawBody !== undefined
+            ? rawBody.text
+            : body === undefined
+              ? undefined
+              : JSON.stringify(body),
         redirect: "manual",
       });
       text = await response.text();

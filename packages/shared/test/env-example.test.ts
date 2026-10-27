@@ -11,6 +11,7 @@ import {
   langfuseEnvShape,
   llmEnvShape,
   liveEnvShape,
+  liveSlackEnvShape,
   parseEnv,
   phase1EnvShape,
   policyEnvShape,
@@ -32,6 +33,7 @@ const allEnvShapes = {
   ...groundingEnvShape,
   ...llmEnvShape,
   ...liveEnvShape,
+  ...liveSlackEnvShape,
 };
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
