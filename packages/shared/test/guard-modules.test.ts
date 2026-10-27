@@ -53,6 +53,19 @@ describe("guard-modules.json", () => {
     expect(redact?.related).toBe(false);
   });
 
+  // P4-T3a / T4.S.05: the Slack signature verifier is an authentication guard.
+  it("lists the Slack signature module with 90 % statements and an 80 % mutation floor", () => {
+    const slack = guardModules.find(
+      ({ path }) => path === "packages/shared/src/slack-signature.ts",
+    );
+    expect(slack).toEqual({
+      path: "packages/shared/src/slack-signature.ts",
+      statements: 90,
+      mutation: 80,
+      related: false,
+    });
+  });
+
   it("lists only files that exist in the repo", () => {
     expect(missingGuardModules(guardModules, repoRoot)).toEqual([]);
   });

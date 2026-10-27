@@ -127,3 +127,10 @@ export {
   type JudgeTextOutput,
   type JudgeTextPayload,
 } from "./judge.js";
+export {
+  signSlackRequest,
+  verifySlackRequest,
+  type SlackRequestHeaders,
+  type SlackVerifyFailure,
+  type SlackVerifyResult,
+} from "./slack-signature.js";
