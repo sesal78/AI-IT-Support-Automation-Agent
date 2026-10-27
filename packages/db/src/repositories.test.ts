@@ -501,6 +501,26 @@ describe("probeSchema", () => {
     });
   });
 
+  it("starts every probe after the tickets check at the same time", async () => {
+    const started: string[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.stubGlobal("fetch", async (input: string | URL) => {
+      const url = new URL(String(input));
+      started.push(`${url.pathname.split("/").pop()}:${url.searchParams.get("select")}`);
+      // The first (tickets.id) probe answers at once; the rest wait until all five have started.
+      if (started.length > 1) await gate;
+      return ok([]);
+    });
+    const pending = repos.probeSchema();
+    await vi.waitFor(() => expect(started).toHaveLength(6));
+    release?.();
+    expect(await pending).toEqual({ database: true, migration0003: true, migration0005: true });
+    expect(started).toContain("reviews:id");
+  });
+
   it("times out a hanging probe and counts it as false", async () => {
     vi.stubGlobal("fetch", () => new Promise(() => {}));
     const started = Date.now();
@@ -1296,6 +1316,9 @@ describe("reviews", () => {
       ["approve with a lower-case user", reviewId, "approve", "u0000000001"],
       ["approve with a short user", reviewId, "approve", "U1234567"],
       ["approve with a channel ID", reviewId, "approve", "C0000000001"],
+      ["approve with a 14-character user", reviewId, "approve", "U0123456789012"],
+      ["approve with a too-long user", reviewId, "approve", "U0123456789ABCDEFGHIJ"],
+      ["approve with a W user that is too short", reviewId, "approve", "W1234567"],
       ["approve with a user plus a suffix", reviewId, "approve", "U0000000001 x"],
       ["approve with a newline in the user", reviewId, "approve", "U0000000001\n"],
       ["an unknown decision", reviewId, "maybe", USER],
@@ -1307,6 +1330,13 @@ describe("reviews", () => {
         repos.decideReview(id, decision as "approve", user as string | null),
       ).rejects.toThrow(TypeError);
       expect(calls).toHaveLength(0);
+    });
+
+    it("accepts a W-prefixed user and a user at the 13-character limit", async () => {
+      const calls = respond(ok([decidedRow]), ok([decidedRow]));
+      await repos.decideReview(reviewId, "approve", "W012345678");
+      await repos.decideReview(reviewId, "reject", "U012345678901");
+      expect(calls).toHaveLength(2);
     });
 
     it("accepts the e2e and staging style reviewer IDs", async () => {

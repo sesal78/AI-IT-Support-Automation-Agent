@@ -1,5 +1,6 @@
 import {
   assertTransition,
+  slackUserId as slackUserIdRule,
   triageResultSchema,
   type AiUsage,
   type InternalTicketView,
@@ -261,8 +262,8 @@ interface SupabaseResult {
 
 const UNIQUE_VIOLATION = "23505";
 const REVIEW_DECISIONS: readonly string[] = ["approve", "reject", "timeout"];
-// A Slack user ID: the same rule as the reviewer allow-list.
-const SLACK_USER_ID = /^U[A-Z0-9]{8,}$/;
+// A Slack user ID: the one shared rule (packages/shared env.ts), also used by the reviewer allow-list.
+const SLACK_USER_ID = slackUserIdRule();
 const uuidSchema = z.uuid();
 const PROBE_TIMEOUT_MS = 3000;
 
@@ -714,7 +715,7 @@ export function createRepositories(client: DbClient) {
      * is null`), so exactly one of any number of parallel callers wins. The
      * winner gets `changed: true`; everyone else gets `changed: false` and the
      * stored row. `timeout` needs `slackUserId` null; `approve` and `reject`
-     * need a Slack user ID (`U` plus 8 or more capitals or digits). Anything
+     * need a Slack user ID (`U` or `W` plus 8 to 12 capitals or digits). Anything
      * else throws a TypeError before any database call. An unknown id throws DbError.
      */
     async decideReview(
@@ -727,7 +728,7 @@ export function createRepositories(client: DbClient) {
       if (!REVIEW_DECISIONS.includes(decision)) throw new TypeError(`${op}: unknown decision`);
       if (decision === "timeout") {
         if (slackUserId !== null) throw new TypeError(`${op}: a timeout has no Slack user`);
-      } else if (typeof slackUserId !== "string" || !SLACK_USER_ID.test(slackUserId)) {
+      } else if (typeof slackUserId !== "string" || !SLACK_USER_ID.safeParse(slackUserId).success) {
         throw new TypeError(`${op}: ${decision} needs a Slack user ID`);
       }
       const result = await client
@@ -850,11 +851,13 @@ export function createRepositories(client: DbClient) {
         works("kb_articles", "id"),
         works("ai_calls", "id"),
         works("security_events", "id"),
+        works("reviews", "id"),
       ]);
+      const [isTest, kbArticles, aiCalls, securityEvents, reviews] = results;
       return {
         database: true,
-        migration0003: results.every(Boolean),
-        migration0005: await works("reviews", "id"),
+        migration0003: Boolean(isTest && kbArticles && aiCalls && securityEvents),
+        migration0005: Boolean(reviews),
       };
     },
 

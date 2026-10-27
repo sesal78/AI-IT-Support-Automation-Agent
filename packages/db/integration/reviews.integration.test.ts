@@ -238,6 +238,26 @@ describe("getTicketView and probeSchema with reviews", () => {
     expect(JSON.stringify(view)).not.toContain("view-wait-token-marker");
   });
 
+  it("orders a ticket's reviews by created_at, oldest first, whatever the insert order", async () => {
+    const ticketId = await newTicket();
+    const insert = async (kind: "triage" | "autofix", createdAt: string) => {
+      const { rows } = await sql().query<{ id: string }>(
+        `insert into itsupport.reviews (ticket_id, kind, proposal_id, wait_token_id, created_at)
+         values ($1, $2, $3, $4, $5) returning id`,
+        [ticketId, kind, kind === "autofix" ? randomUUID() : null, `order-${randomUUID()}`, createdAt],
+      );
+      const [row] = rows;
+      if (!row) throw new Error("seed failed");
+      return row.id;
+    };
+    // Inserted newest, oldest, middle, so insert order differs from time order.
+    const newest = await insert("autofix", "2026-03-03T00:00:00Z");
+    const oldest = await insert("triage", "2026-01-01T00:00:00Z");
+    const middle = await insert("autofix", "2026-02-02T00:00:00Z");
+    const view = await repos.getTicketView(ticketId);
+    expect(view?.reviews.map((r) => r.id)).toEqual([oldest, middle, newest]);
+  });
+
   it("gives reviews: [] for a ticket without a review", async () => {
     const view = await repos.getTicketView(await newTicket());
     expect(view?.reviews).toEqual([]);
