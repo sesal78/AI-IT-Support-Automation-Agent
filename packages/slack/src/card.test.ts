@@ -47,10 +47,18 @@ function textObjects(node: unknown, path = "$", out: TextObj[] = []): TextObj[] 
   return out;
 }
 
-const blockOf = (message: SlackMessage, id: string) => {
+/** The block fields these tests read. */
+interface LooseBlock {
+  text: { type: string; text: string };
+  fields: { type: string; text: string }[];
+  elements: { type: string; text: string; [key: string]: unknown }[];
+  [key: string]: unknown;
+}
+
+const blockOf = (message: SlackMessage, id: string): LooseBlock => {
   const block = message.blocks?.find((b) => b.block_id === id);
   if (!block) throw new Error(`no block ${id}`);
-  return block as Record<string, any>;
+  return block as unknown as LooseBlock;
 };
 
 const sectionText = (message: SlackMessage, id: string): string => blockOf(message, id).text.text;
@@ -138,7 +146,10 @@ describe("buildReviewCard layout", () => {
   });
 
   it("ends with the ticket, environment and timeout context line", () => {
-    const context = blockOf(buildReviewCard({ ...base(), environment: "staging" }), "review_context");
+    const context = blockOf(
+      buildReviewCard({ ...base(), environment: "staging" }),
+      "review_context",
+    );
     expect(context.elements).toEqual([
       {
         type: "plain_text",
@@ -166,7 +177,7 @@ describe("buildReviewCard layout", () => {
       urgency: null,
       assignmentGroup: null,
     });
-    expect(blockOf(card, "review_fields").fields.map((f: { text: string }) => f.text)).toEqual([
+    expect(blockOf(card, "review_fields").fields.map((f) => f.text)).toEqual([
       "Category: not judged",
       "Priority: not judged",
       "Urgency: not judged",
@@ -311,7 +322,10 @@ describe("buildReviewCard description, steps and KB", () => {
 
   it("keeps the more-steps line when the shown steps are long", () => {
     const steps = Array.from({ length: 5 }, () => "s".repeat(2000));
-    const text = sectionText(buildReviewCard({ ...base(), fixSteps: { steps, caveats: [] } }), "review_steps");
+    const text = sectionText(
+      buildReviewCard({ ...base(), fixSteps: { steps, caveats: [] } }),
+      "review_steps",
+    );
     expect(text.endsWith("…\n+2 more steps in the thread")).toBe(true);
     expect(Array.from(text).length).toBeLessThanOrEqual(3000);
   });
@@ -413,7 +427,13 @@ describe("buildReviewCard output safety (T4.S.02)", () => {
   });
 
   it("holds no marker from keys outside the input type", () => {
-    const markers = ["MARKER_NAME_1", "MARKER_EMAIL_2", "MARKER_RAW_3", "MARKER_TOKEN_4", "MARKER_URL_5"];
+    const markers = [
+      "MARKER_NAME_1",
+      "MARKER_EMAIL_2",
+      "MARKER_RAW_3",
+      "MARKER_TOKEN_4",
+      "MARKER_URL_5",
+    ];
     const input = {
       ...base(),
       requesterName: markers[0],
@@ -426,7 +446,11 @@ describe("buildReviewCard output safety (T4.S.02)", () => {
     } as unknown as ReviewCardInput;
     const json = JSON.stringify([
       buildReviewCard(input),
-      buildDecidedCard(input, { decision: "approve", slackUserId: REVIEWER, decidedAt: DECIDED_AT }),
+      buildDecidedCard(input, {
+        decision: "approve",
+        slackUserId: REVIEWER,
+        decidedAt: DECIDED_AT,
+      }),
       buildTimedOutCard(input),
     ]);
     for (const marker of markers) expect(json).not.toContain(marker);
@@ -487,7 +511,9 @@ describe("buildDecidedCard", () => {
     ]);
     expect(card.blocks.some((b) => b.type === "actions")).toBe(false);
     expect(blockOf(card, "review_header").text.text).toBe("Reviewed: Complaint about a colleague");
-    expect(blockOf(card, "review_fields")).toEqual(blockOf(buildReviewCard(base()), "review_fields"));
+    expect(blockOf(card, "review_fields")).toEqual(
+      blockOf(buildReviewCard(base()), "review_fields"),
+    );
     expect(card.text).toBe("Reviewed: Complaint about a colleague");
   });
 
@@ -506,7 +532,9 @@ describe("buildDecidedCard", () => {
       slackUserId: REVIEWER,
       decidedAt: "2026-10-25T03:04:05.678Z",
     });
-    expect(blockOf(card, "review_decision").elements[0].text).toContain("2026-10-25T03:04:05.678Z");
+    expect(blockOf(card, "review_decision").elements[0]!.text).toContain(
+      "2026-10-25T03:04:05.678Z",
+    );
   });
 
   it("adds the summary line", () => {
@@ -521,7 +549,7 @@ describe("buildDecidedCard", () => {
       { ...base(), category: null, priority: null, assignmentGroup: null },
       { decision: "approve", slackUserId: REVIEWER, decidedAt: DECIDED_AT },
     );
-    expect(blockOf(nulls, "review_summary").elements[0].text).toBe(
+    expect(blockOf(nulls, "review_summary").elements[0]!.text).toBe(
       "Category not judged · priority not judged · group not judged · ticket 5e8a1f20",
     );
   });
@@ -537,7 +565,10 @@ describe("buildDecidedCard", () => {
     expect(mrkdwn).toHaveLength(1);
     expect(mrkdwn[0]!.text).toMatch(/^(Approved|Rejected) by <@[UW][A-Z0-9]{8,12}> at \S+Z$/);
     expect(() =>
-      assertNoLiveMarkup({ ...card, blocks: card.blocks.filter((b) => b.block_id !== "review_decision") }),
+      assertNoLiveMarkup({
+        ...card,
+        blocks: card.blocks.filter((b) => b.block_id !== "review_decision"),
+      }),
     ).not.toThrow();
     expect(card.text).not.toContain("<");
   });
@@ -549,7 +580,9 @@ describe("buildDecidedCard", () => {
       { decision: "approve", slackUserId: REVIEWER, decidedAt: DECIDED_AT },
     );
     const mrkdwn = textObjects(card).filter((o) => o.type === "mrkdwn");
-    expect(mrkdwn.map((o) => o.text)).toEqual([`Approved by <@${REVIEWER}> at 2026-10-25T03:04:05.678Z`]);
+    expect(mrkdwn.map((o) => o.text)).toEqual([
+      `Approved by <@${REVIEWER}> at 2026-10-25T03:04:05.678Z`,
+    ]);
     expect(card.text).toContain("&lt;!channel&gt;");
   });
 
@@ -584,11 +617,14 @@ describe("buildDecidedCard", () => {
 
   it("checks the card input too", () => {
     expect(() =>
-      buildDecidedCard({ ...base(), reviewId: "x" }, {
-        decision: "approve",
-        slackUserId: REVIEWER,
-        decidedAt: DECIDED_AT,
-      }),
+      buildDecidedCard(
+        { ...base(), reviewId: "x" },
+        {
+          decision: "approve",
+          slackUserId: REVIEWER,
+          decidedAt: DECIDED_AT,
+        },
+      ),
     ).toThrow(/reviewId/);
   });
 });
@@ -606,7 +642,11 @@ describe("buildTimedOutCard and buildTimeoutNote", () => {
       "Review timed out: Complaint about a colleague",
     );
     expect(blockOf(card, "review_timeout").elements).toEqual([
-      { type: "plain_text", text: "No decision within 24h: sent to the manual queue", emoji: false },
+      {
+        type: "plain_text",
+        text: "No decision within 24h: sent to the manual queue",
+        emoji: false,
+      },
     ]);
     expect(card.text).toBe("Review timed out: Complaint about a colleague");
   });
@@ -614,7 +654,8 @@ describe("buildTimedOutCard and buildTimeoutNote", () => {
   it("passes both validators at maximum input", () => {
     expectValid(buildTimedOutCard(maxInput("漢")));
     expectValid(buildTimedOutCard({ ...base(), redactedTitle: "<".repeat(3000) }));
-    for (const obj of textObjects(buildTimedOutCard(maxInput()))) expect(obj.type).toBe("plain_text");
+    for (const obj of textObjects(buildTimedOutCard(maxInput())))
+      expect(obj.type).toBe("plain_text");
   });
 
   it("builds the thread note with the same sentence", () => {

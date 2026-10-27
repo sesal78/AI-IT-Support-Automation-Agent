@@ -1,5 +1,5 @@
 import { slackUserId } from "@ai-it-support/shared";
-import { LIMITS, type SlackBlock, type SlackMessage } from "./limits.js";
+import { LIMITS, type SlackBlock } from "./limits.js";
 import { escapeMrkdwn, truncate } from "./text.js";
 
 // Output-safety boundary: the card is the only place ticket text reaches Slack.
@@ -213,7 +213,10 @@ function stepsBlock(steps: string[]): SlackBlock {
   const more =
     steps.length > STEPS_SHOWN ? `\n+${steps.length - STEPS_SHOWN} more steps in the thread` : "";
   // The shown steps are cut first, so the more-steps line always fits.
-  const shown = truncate(head + numbered(steps.slice(0, STEPS_SHOWN)), LIMITS.sectionText - len(more));
+  const shown = truncate(
+    head + numbered(steps.slice(0, STEPS_SHOWN)),
+    LIMITS.sectionText - len(more),
+  );
   return section("review_steps", shown + more);
 }
 
@@ -254,7 +257,10 @@ export function buildReviewCard(input: ReviewCardInput): ReviewCard {
       header,
       section("review_why", whyLine(card.reasons, card.flags)),
       fieldsBlock(card),
-      section("review_description", `Ticket (redacted)\n${truncate(card.description, DESCRIPTION_MAX)}`),
+      section(
+        "review_description",
+        `Ticket (redacted)\n${truncate(card.description, DESCRIPTION_MAX)}`,
+      ),
       stepsBlock(card.fixSteps?.steps ?? []),
       section("review_kb", `KB articles\n${kb}`),
       {

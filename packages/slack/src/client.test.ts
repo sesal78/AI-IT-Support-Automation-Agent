@@ -159,7 +159,8 @@ describe("retries (T4.I.05)", () => {
     ["31", 30000],
     ["999", 30000],
   ])("Retry-After %j waits %i ms", async (retryAfter, ms) => {
-    const headers: Record<string, string> = retryAfter === undefined ? {} : { "retry-after": retryAfter };
+    const headers: Record<string, string> =
+      retryAfter === undefined ? {} : { "retry-after": retryAfter };
     const { slack, sleeps } = client([json(429, {}, headers), json(200, { ok: true, ts: "1.1" })]);
     await slack.postMessage(post);
     expect(sleeps).toEqual([ms]);
@@ -177,7 +178,12 @@ describe("retries (T4.I.05)", () => {
   });
 
   it("gives up after 3 requests with http_<status>", async () => {
-    const { slack, calls, sleeps } = client([json(500, {}), json(500, {}), json(503, {}), json(200, { ok: true, ts: "1.1" })]);
+    const { slack, calls, sleeps } = client([
+      json(500, {}),
+      json(500, {}),
+      json(503, {}),
+      json(200, { ok: true, ts: "1.1" }),
+    ]);
     const error = await caught(slack.postMessage(post));
     expect(error.code).toBe("http_503");
     expect(calls).toHaveLength(3);
@@ -202,7 +208,10 @@ describe("retries (T4.I.05)", () => {
   });
 
   it("recovers from a network error", async () => {
-    const { slack, calls } = client([new TypeError("fetch failed"), json(200, { ok: true, ts: "1.1" })]);
+    const { slack, calls } = client([
+      new TypeError("fetch failed"),
+      json(200, { ok: true, ts: "1.1" }),
+    ]);
     await expect(slack.postMessage(post)).resolves.toEqual({ ts: "1.1" });
     expect(calls).toHaveLength(2);
   });
@@ -239,14 +248,17 @@ describe("retries (T4.I.05)", () => {
     expect(calls).toHaveLength(1);
   });
 
-  it.each([301, 302, 307, 308])("refuses a %i redirect without following or retrying", async (status) => {
-    const { slack, calls } = client([
-      new Response(null, { status, headers: { location: "https://evil.example/" } }),
-      json(200, { ok: true, ts: "1.1" }),
-    ]);
-    expect((await caught(slack.postMessage(post))).code).toBe("redirect");
-    expect(calls).toHaveLength(1);
-  });
+  it.each([301, 302, 307, 308])(
+    "refuses a %i redirect without following or retrying",
+    async (status) => {
+      const { slack, calls } = client([
+        new Response(null, { status, headers: { location: "https://evil.example/" } }),
+        json(200, { ok: true, ts: "1.1" }),
+      ]);
+      expect((await caught(slack.postMessage(post))).code).toBe("redirect");
+      expect(calls).toHaveLength(1);
+    },
+  );
 
   it("refuses an opaque redirect answer", async () => {
     const opaque = new Response(null, { status: 200 });
@@ -340,9 +352,15 @@ describe("secrets stay out of errors and logs", () => {
   it.each<[string, Reply[]]>([
     ["ok: false", [json(200, { ok: false, error: "invalid_auth" })]],
     ["three 500s", [json(500, { echo: MARK_TEXT }), json(500, {}), json(500, {})]],
-    ["three network errors", [0, 1, 2].map(() => new TypeError(`fetch failed ${MARK_TOKEN} ${MARK_TEXT}`))],
+    [
+      "three network errors",
+      [0, 1, 2].map(() => new TypeError(`fetch failed ${MARK_TOKEN} ${MARK_TEXT}`)),
+    ],
     ["bad JSON echoing the request", [new Response(`${MARK_TOKEN} ${MARK_TEXT}`, { status: 200 })]],
-    ["a redirect", [new Response(null, { status: 302, headers: { location: `https://x/${MARK_TOKEN}` } })]],
+    [
+      "a redirect",
+      [new Response(null, { status: 302, headers: { location: `https://x/${MARK_TOKEN}` } })],
+    ],
   ])("holds no marker after %s", async (_case, replies) => {
     const spies = (["log", "info", "warn", "error", "debug", "trace"] as const).map((m) =>
       vi.spyOn(console, m).mockImplementation(() => {}),

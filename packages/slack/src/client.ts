@@ -130,7 +130,11 @@ export function createSlackClient(options: SlackClientOptions): SlackClient {
       return { kind: "fail", code: "redirect" };
     }
     if (res.status === 429) {
-      return { kind: "retry", code: "http_429", waitMs: retryAfterMs(res.headers.get("retry-after")) };
+      return {
+        kind: "retry",
+        code: "http_429",
+        waitMs: retryAfterMs(res.headers.get("retry-after")),
+      };
     }
     if (res.status >= 500) return { kind: "retry", code: `http_${res.status}` };
     if (res.status !== 200) return { kind: "fail", code: `http_${res.status}` };
@@ -140,9 +144,11 @@ export function createSlackClient(options: SlackClientOptions): SlackClient {
     } catch {
       return { kind: "fail", code: "bad_response" };
     }
-    if (!isObj(parsed) || typeof parsed.ok !== "boolean") return { kind: "fail", code: "bad_response" };
+    if (!isObj(parsed) || typeof parsed.ok !== "boolean")
+      return { kind: "fail", code: "bad_response" };
     if (parsed.ok) return { kind: "done", body: parsed };
-    const code = typeof parsed.error === "string" && ERROR_CODE.test(parsed.error) ? parsed.error : null;
+    const code =
+      typeof parsed.error === "string" && ERROR_CODE.test(parsed.error) ? parsed.error : null;
     if (code === null) return { kind: "fail", code: "bad_response" };
     if (code === "ratelimited") {
       return { kind: "retry", code, waitMs: retryAfterMs(res.headers.get("retry-after")) };
