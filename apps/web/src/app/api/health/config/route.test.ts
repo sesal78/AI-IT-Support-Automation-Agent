@@ -22,6 +22,9 @@ function stubEnv(overrides: Record<string, string | undefined> = {}) {
   vi.stubEnv("TURNSTILE_SITE_KEY", "fake-turnstile-site");
   vi.stubEnv("INTERNAL_API_TOKEN", INTERNAL_TOKEN);
   vi.stubEnv("E2E_MODE", undefined);
+  vi.stubEnv("SLACK_SIGNING_SECRET", "k".repeat(32));
+  vi.stubEnv("SLACK_REVIEWER_IDS", "U0000000001");
+  vi.stubEnv("SLACK_CHANNEL_ID", "C0000000001");
   for (const [key, value] of Object.entries(overrides)) vi.stubEnv(key, value);
 }
 
@@ -58,8 +61,18 @@ describe("GET /api/health/config", () => {
         turnstile: true,
         internalApi: true,
         e2eMode: false,
+        slackInteractivity: true,
       },
     });
+  });
+
+  it("reports slackInteractivity true with the Slack env set, and the schema stays strict", async () => {
+    const { GET } = await load();
+    const body = await (await GET()).json();
+    expect(body.features.slackInteractivity).toBe(true);
+    expect(healthConfigSchema.safeParse(body).success).toBe(true);
+    const extra = { ...body, features: { ...body.features, slackInteractivity: "yes" } };
+    expect(healthConfigSchema.safeParse(extra).success).toBe(false);
   });
 
   it("follows E2E_MODE=true", async () => {
@@ -93,6 +106,7 @@ describe("GET /api/health/config", () => {
       turnstile: true,
       internalApi: true,
       e2eMode: false,
+      slackInteractivity: true,
     });
   });
 
@@ -132,6 +146,7 @@ describe("GET /api/health/config", () => {
       TURNSTILE_SITE_KEY: "g".repeat(24),
       INTERNAL_API_TOKEN: "q".repeat(32),
       TYPESAFE_API_KEY: "h".repeat(24),
+      SLACK_SIGNING_SECRET: "j".repeat(32),
     };
     const version = "v".repeat(10);
     const { GET } = await load({ ...markers, APP_VERSION: version });

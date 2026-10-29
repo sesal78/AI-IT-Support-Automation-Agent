@@ -73,6 +73,9 @@ async function load(target: RestStack, e2eMode: boolean): Promise<Handlers> {
   vi.stubEnv("TURNSTILE_SECRET_KEY", "fake-turnstile-secret-key");
   vi.stubEnv("TURNSTILE_SITE_KEY", "fake-turnstile-site-key");
   vi.stubEnv("INTERNAL_API_TOKEN", TOKEN);
+  vi.stubEnv("SLACK_SIGNING_SECRET", "f".repeat(32));
+  vi.stubEnv("SLACK_REVIEWER_IDS", "U0000000000");
+  vi.stubEnv("SLACK_CHANNEL_ID", "C0000000000");
   vi.stubEnv("E2E_MODE", e2eMode ? "true" : "false");
   return {
     ticket: await import("../src/app/api/internal/tickets/[id]/route"),
