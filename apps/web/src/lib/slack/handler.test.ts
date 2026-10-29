@@ -158,6 +158,12 @@ describe("createInteractivityHandler", () => {
     expect(verify.calls).toBe(0);
   });
 
+  it("refuses a declared content-length over 128 KB at once, whatever the body", async () => {
+    const request = signed("a", { headers: { "content-length": String(MAX_BODY_BYTES + 1) } });
+    await expectRefusal(await run(request), 413, "too_large", "body_too_large");
+    expect(verify.calls).toBe(0);
+  });
+
   it("passes a body of exactly 128 KB on to the verifier", async () => {
     const body = "a".repeat(MAX_BODY_BYTES);
     const res = await run(signed(body, { headers: { "content-length": String(body.length) } }));

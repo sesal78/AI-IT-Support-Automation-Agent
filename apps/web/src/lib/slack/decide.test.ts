@@ -1,7 +1,7 @@
 import type { Review } from "@ai-it-support/db";
 import { signSlackRequest } from "@ai-it-support/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDecide, type DecideDeps } from "./decide";
+import { createDecide, NOTICE_TIMEOUT_MS, type DecideDeps } from "./decide";
 import { createInteractivityHandler } from "./handler";
 import type { Interaction } from "./interaction";
 
@@ -221,6 +221,22 @@ describe("createDecide", () => {
       ticketId: TICKET_ID,
       error: "TypeError",
     });
+  });
+
+  it("gives up on a hanging hook after NOTICE_TIMEOUT_MS and still answers 200", async () => {
+    stored = { ...stored!, decision: "reject" };
+    deps.fetch.mockImplementation(
+      (_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal!.addEventListener("abort", () => reject(init.signal!.reason));
+        }),
+    );
+    const started = Date.now();
+    await expectAnswer(await decide(click("approve")), 200, { outcome: "already_decided" });
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(NOTICE_TIMEOUT_MS - 100);
+    expect(elapsed).toBeLessThan(2900);
+    expect(JSON.parse(logs[0])).toMatchObject({ msg: "notice failed", error: "TimeoutError" });
   });
 
   it("does not follow a 302 from the hook and still answers 200", async () => {

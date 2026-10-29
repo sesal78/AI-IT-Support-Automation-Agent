@@ -28,6 +28,9 @@ export interface DecideDeps {
   fetch: typeof fetch;
 }
 
+// Well inside Slack's 3 s window for the interaction answer.
+export const NOTICE_TIMEOUT_MS = 1500;
+
 const NOTICES = {
   already_decided: "This ticket was already decided.",
   late: "This review timed out; the ticket is in the manual queue.",
@@ -47,6 +50,8 @@ export function createDecide(deps: DecideDeps) {
         }),
         // A 3xx from the hook is an error, never followed.
         redirect: "error",
+        // A hanging hook must not hold the answer: the abort is logged as TimeoutError.
+        signal: AbortSignal.timeout(NOTICE_TIMEOUT_MS),
       });
       if (!res.ok) log("error", "notice failed", { ...ids, status: res.status });
     } catch (error) {
