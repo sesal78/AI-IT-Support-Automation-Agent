@@ -709,3 +709,22 @@ describe("purity", () => {
     for (const spy of [...spies, fetchSpy]) expect(spy).not.toHaveBeenCalled();
   });
 });
+
+describe("block types", () => {
+  it("never emits rich_text blocks or attachments", () => {
+    const opts = { decision: "approve", slackUserId: REVIEWER, decidedAt: DECIDED_AT } as const;
+    const results: unknown[] = [
+      buildReviewCard(maxInput()),
+      buildReviewCard(base()),
+      buildDecidedCard(maxInput(), opts),
+      buildTimedOutCard(maxInput()),
+      buildTimeoutNote({ timeout: "24h" }),
+    ];
+    for (const result of results) {
+      const json = JSON.stringify(result);
+      expect(json).not.toContain('"rich_text');
+      expect(json).not.toContain('"attachments"');
+      expect(result).not.toHaveProperty("attachments");
+    }
+  });
+});
