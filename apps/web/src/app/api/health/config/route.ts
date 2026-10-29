@@ -27,6 +27,9 @@ function health() {
       turnstile: Boolean(env.TURNSTILE_SECRET_KEY && env.TURNSTILE_SITE_KEY),
       internalApi: Boolean(env.INTERNAL_API_TOKEN),
       e2eMode: env.E2E_MODE,
+      slackInteractivity: Boolean(
+        env.SLACK_SIGNING_SECRET && env.SLACK_REVIEWER_IDS.length > 0 && env.SLACK_CHANNEL_ID,
+      ),
     },
   });
   return provider;

@@ -379,6 +379,7 @@ function createDefaultRoute(
             turnstile: true,
             internalApi: true,
             e2eMode: true,
+            slackInteractivity: true,
           },
         },
       };

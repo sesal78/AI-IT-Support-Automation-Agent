@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { liveSlackEnvShape, parseEnv } from "./env.js";
+import { liveSlackEnvShape, parseEnv, slackInteractivityEnvShape } from "./env.js";
 
 // Built from pieces so no token-shaped literal sits in the source.
 const token = ["xoxb", "test", "0000000000", "fake"].join("-");
@@ -47,5 +47,56 @@ describe("liveSlackEnvShape", () => {
     const text = message({ ...valid, [name]: value });
     expect(text).toContain(name);
     expect(text).not.toContain(value.trim());
+  });
+});
+
+describe("slackInteractivityEnvShape", () => {
+  const base = {
+    SLACK_SIGNING_SECRET: "k".repeat(32),
+    SLACK_REVIEWER_IDS: "U0A5ATR4WJD",
+    SLACK_CHANNEL_ID: "C0000000001",
+  };
+  const refusal = (source: Record<string, string | undefined>): string => {
+    try {
+      parseEnv(slackInteractivityEnvShape, source);
+    } catch (error) {
+      return (error as Error).message;
+    }
+    throw new Error("expected parseEnv to throw");
+  };
+  const ids = (n: number) => Array.from({ length: n }, (_, i) => `U${String(i).padStart(10, "0")}`);
+
+  it("parses SLACK_REVIEWER_IDS into a list of one or more IDs", () => {
+    expect(parseEnv(slackInteractivityEnvShape, base)).toEqual({
+      ...base,
+      SLACK_REVIEWER_IDS: ["U0A5ATR4WJD"],
+    });
+    const two = { ...base, SLACK_REVIEWER_IDS: "UE2EREVIEWER,U0000000001" };
+    expect(parseEnv(slackInteractivityEnvShape, two).SLACK_REVIEWER_IDS).toEqual([
+      "UE2EREVIEWER",
+      "U0000000001",
+    ]);
+    const twenty = { ...base, SLACK_REVIEWER_IDS: ids(20).join(",") };
+    expect(parseEnv(slackInteractivityEnvShape, twenty).SLACK_REVIEWER_IDS).toHaveLength(20);
+  });
+
+  it.each([
+    ["SLACK_SIGNING_SECRET", undefined],
+    ["SLACK_SIGNING_SECRET", "k".repeat(31)],
+    ["SLACK_SIGNING_SECRET", `${"k".repeat(32)}-`],
+    ["SLACK_REVIEWER_IDS", undefined],
+    ["SLACK_REVIEWER_IDS", ""],
+    ["SLACK_REVIEWER_IDS", "u0a5atr4wjd"],
+    ["SLACK_REVIEWER_IDS", "U1 ,U2"],
+    ["SLACK_REVIEWER_IDS", "U0000000001 ,U0000000002"],
+    ["SLACK_REVIEWER_IDS", "U0000000001,"],
+    ["SLACK_REVIEWER_IDS", "U0000000001,U0000000001"],
+    ["SLACK_REVIEWER_IDS", ids(21).join(",")],
+    ["SLACK_CHANNEL_ID", undefined],
+    ["SLACK_CHANNEL_ID", "c0000000001"],
+  ])("refuses %s = %j, naming it and never quoting the value", (name, value) => {
+    const text = refusal({ ...base, [name]: value });
+    expect(text).toContain(name);
+    if (value) expect(text).not.toContain(value.trim());
   });
 });

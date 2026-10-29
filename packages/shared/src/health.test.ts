@@ -11,6 +11,7 @@ const valid = {
     turnstile: true,
     internalApi: true,
     e2eMode: false,
+    slackInteractivity: true,
   },
 };
 

@@ -80,6 +80,22 @@ describe("web env module", () => {
     expect(env.TURNSTILE_SITE_KEY).toBe("fake-site");
   });
 
+  it.each([
+    ["SLACK_SIGNING_SECRET", undefined],
+    ["SLACK_SIGNING_SECRET", "a".repeat(31)],
+    ["SLACK_REVIEWER_IDS", ""],
+    ["SLACK_CHANNEL_ID", "c0000000001"],
+  ])("throws at boot naming %s when it is %j", async (key, value) => {
+    stubAll({ [key]: value });
+    await expect(import("./env")).rejects.toThrow(key);
+  });
+
+  it("parses SLACK_REVIEWER_IDS into a list", async () => {
+    stubAll({ SLACK_REVIEWER_IDS: "UE2EREVIEWER,U0000000001" });
+    const { env } = await import("./env");
+    expect(env.SLACK_REVIEWER_IDS).toEqual(["UE2EREVIEWER", "U0000000001"]);
+  });
+
   it("skips validation during next build", async () => {
     vi.stubEnv("NEXT_PHASE", "phase-production-build");
     stubAll({ SUPABASE_URL: undefined });

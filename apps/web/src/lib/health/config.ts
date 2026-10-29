@@ -15,6 +15,7 @@ export interface EnvFlags {
   turnstile: boolean;
   internalApi: boolean;
   e2eMode: boolean;
+  slackInteractivity: boolean;
 }
 
 interface Options {

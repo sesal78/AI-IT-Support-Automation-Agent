@@ -26,6 +26,7 @@ export {
   policyEnvShape,
   slackBotToken,
   slackChannelId,
+  slackInteractivityEnvShape,
   slackUserId,
   sensitiveCheckEnvShape,
   triggerProjectEnvShape,

@@ -103,6 +103,9 @@ export async function startPipelineStack(baseURL: string): Promise<PipelineStack
         // Cloudflare's published always-pass test site key; the browser widget is stubbed.
         TURNSTILE_SITE_KEY: `1x${"0".repeat(20)}AA`,
         E2E_MODE: "true",
+        SLACK_SIGNING_SECRET: "f".repeat(32),
+        SLACK_REVIEWER_IDS: "U0000000000",
+        SLACK_CHANNEL_ID: "C0000000000",
       },
     });
     // Kept for the error message only; the app never logs request data.

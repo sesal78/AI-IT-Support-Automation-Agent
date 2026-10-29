@@ -16,6 +16,7 @@ import {
   phase1EnvShape,
   policyEnvShape,
   sensitiveCheckEnvShape,
+  slackInteractivityEnvShape,
   triggerProjectEnvShape,
 } from "../src/env.js";
 
@@ -34,6 +35,7 @@ const allEnvShapes = {
   ...llmEnvShape,
   ...liveEnvShape,
   ...liveSlackEnvShape,
+  ...slackInteractivityEnvShape,
 };
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");

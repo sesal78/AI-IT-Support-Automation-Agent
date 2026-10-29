@@ -8,6 +8,7 @@ const flags: EnvFlags = {
   turnstile: true,
   internalApi: true,
   e2eMode: false,
+  slackInteractivity: true,
 };
 
 type Probe = () => Promise<SchemaProbeResult>;
@@ -33,6 +34,7 @@ describe("createHealthConfigProvider", () => {
         turnstile: true,
         internalApi: true,
         e2eMode: false,
+        slackInteractivity: true,
       },
     });
   });

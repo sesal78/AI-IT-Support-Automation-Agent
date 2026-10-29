@@ -15,6 +15,7 @@ export const healthConfigSchema = z.strictObject({
     turnstile: z.boolean(),
     internalApi: z.boolean(),
     e2eMode: z.boolean(),
+    slackInteractivity: z.boolean(),
   }),
 });
 

@@ -218,7 +218,7 @@ describe("T3.S.03", () => {
     const h = await setup();
     const { code, entry } = await h.one("T3.S.03");
     expect(code).toBe(0);
-    expect(entry).toMatchObject({ status: "pass", evidence: { status: 200, features: 7 } });
+    expect(entry).toMatchObject({ status: "pass", evidence: { status: 200, features: 8 } });
   });
 
   it("fails when the mock adds a string field under features", async () => {
@@ -238,6 +238,7 @@ describe("T3.S.03", () => {
                     turnstile: true,
                     internalApi: true,
                     e2eMode: true,
+                    slackInteractivity: true,
                     region: "eu",
                   },
                 },

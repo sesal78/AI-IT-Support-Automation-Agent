@@ -176,6 +176,30 @@ export const slackChannelId = () =>
 export const slackBotToken = () =>
   z.string().regex(/^xoxb-[A-Za-z0-9-]{10,}$/, "must be a Slack bot token");
 
+/** Slack signing secret rule (phase 4): at least 32 letters or digits. Never echoed. */
+const slackSigningSecret = () =>
+  z.string().regex(/^[A-Za-z0-9]{32,}$/, "must be at least 32 letters or digits");
+
+/**
+ * Slack interactivity variables (apps/web, required). SLACK_REVIEWER_IDS is a
+ * comma-separated list without spaces of 1-20 distinct Slack user IDs, parsed
+ * into an array.
+ */
+export const slackInteractivityEnvShape = {
+  SLACK_SIGNING_SECRET: slackSigningSecret(),
+  SLACK_REVIEWER_IDS: z
+    .string()
+    .transform((value) => value.split(","))
+    .pipe(
+      z
+        .array(slackUserId())
+        .min(1)
+        .max(20, "must list at most 20 IDs")
+        .refine((ids) => new Set(ids).size === ids.length, "must not repeat an ID"),
+    ),
+  SLACK_CHANNEL_ID: slackChannelId(),
+};
+
 /**
  * Live-suite Slack variables (tests/live only). All optional: a scenario that
  * needs a missing one reports `not_run`. The signing secret is the e2e test
@@ -184,10 +208,7 @@ export const slackBotToken = () =>
 export const liveSlackEnvShape = {
   E2E_SLACK_BOT_TOKEN: slackBotToken().optional(),
   E2E_SLACK_CHANNEL_ID: slackChannelId().optional(),
-  E2E_SLACK_SIGNING_SECRET: z
-    .string()
-    .regex(/^[A-Za-z0-9]{32,}$/, "must be at least 32 letters or digits")
-    .optional(),
+  E2E_SLACK_SIGNING_SECRET: slackSigningSecret().optional(),
   E2E_SLACK_REVIEWER_ID: slackUserId().optional(),
 };
 

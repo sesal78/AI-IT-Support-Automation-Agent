@@ -144,9 +144,9 @@ export function checkReviewer(interaction: Interaction, reviewerIds: readonly st
 
 /**
  * Whether the click belongs to this review and this environment, in order: no
- * review → 404 unknown_review; another channel or message ts (a review whose
- * card ts was never stored never matches, since messageTs is a non-empty
- * string) → 403 binding_mismatch; a ticket whose isTest differs from e2eMode,
+ * review → 404 unknown_review; a review whose card ts was never stored (slackTs
+ * null, refused before the click is read), another channel or another message
+ * ts → 403 binding_mismatch; a ticket whose isTest differs from e2eMode,
  * or no ticket at all → 403 env_mismatch (plan P4-T3).
  */
 export function checkReviewBinding(input: {

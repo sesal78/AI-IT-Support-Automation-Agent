@@ -78,6 +78,18 @@ describe("guard-modules.json", () => {
     });
   });
 
+  // P4-B3 (plan T4.S.05): the interactivity handler and the decision module carry both floors.
+  it.each(["apps/web/src/lib/slack/handler.ts", "apps/web/src/lib/slack/decide.ts"])(
+    "lists %s with both floors",
+    (path) => {
+      expect(guardModules.find((module) => module.path === path)).toEqual({
+        path,
+        statements: 90,
+        mutation: 80,
+      });
+    },
+  );
+
   it("lists only files that exist in the repo", () => {
     expect(missingGuardModules(guardModules, repoRoot)).toEqual([]);
   });
