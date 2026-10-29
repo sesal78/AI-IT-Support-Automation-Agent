@@ -374,6 +374,7 @@ function createDefaultRoute(
           features: {
             database: true,
             migration0003: true,
+            migration0005: true,
             pipelineTrigger: true,
             turnstile: true,
             internalApi: true,

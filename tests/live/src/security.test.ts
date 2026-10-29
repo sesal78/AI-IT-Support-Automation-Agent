@@ -218,7 +218,7 @@ describe("T3.S.03", () => {
     const h = await setup();
     const { code, entry } = await h.one("T3.S.03");
     expect(code).toBe(0);
-    expect(entry).toMatchObject({ status: "pass", evidence: { status: 200, features: 6 } });
+    expect(entry).toMatchObject({ status: "pass", evidence: { status: 200, features: 7 } });
   });
 
   it("fails when the mock adds a string field under features", async () => {
@@ -233,6 +233,7 @@ describe("T3.S.03", () => {
                   features: {
                     database: true,
                     migration0003: true,
+                    migration0005: true,
                     pipelineTrigger: true,
                     turnstile: true,
                     internalApi: true,

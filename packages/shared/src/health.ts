@@ -10,6 +10,7 @@ export const healthConfigSchema = z.strictObject({
   features: z.strictObject({
     database: z.boolean(),
     migration0003: z.boolean(),
+    migration0005: z.boolean(),
     pipelineTrigger: z.boolean(),
     turnstile: z.boolean(),
     internalApi: z.boolean(),

@@ -34,7 +34,7 @@ async function load(overrides?: Record<string, string | undefined>): Promise<Rou
 beforeEach(() => {
   vi.resetModules();
   probeSchema.mockReset();
-  probeSchema.mockResolvedValue({ database: true, migration0003: true });
+  probeSchema.mockResolvedValue({ database: true, migration0003: true, migration0005: true });
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -53,6 +53,7 @@ describe("GET /api/health/config", () => {
       features: {
         database: true,
         migration0003: true,
+        migration0005: true,
         pipelineTrigger: true,
         turnstile: true,
         internalApi: true,
@@ -68,13 +69,31 @@ describe("GET /api/health/config", () => {
   });
 
   it("reports migration0003 false but database true when one probe fails, still 200", async () => {
-    probeSchema.mockResolvedValue({ database: true, migration0003: false });
+    probeSchema.mockResolvedValue({ database: true, migration0003: false, migration0005: true });
     const { GET } = await load();
     const res = await GET();
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.features.database).toBe(true);
     expect(body.features.migration0003).toBe(false);
+  });
+
+  it("reports migration0005 false with status 200 and the other flags unchanged when only the reviews probe fails", async () => {
+    probeSchema.mockResolvedValue({ database: true, migration0003: true, migration0005: false });
+    const { GET } = await load();
+    const res = await GET();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(healthConfigSchema.safeParse(body).success).toBe(true);
+    expect(body.features).toEqual({
+      database: true,
+      migration0003: true,
+      migration0005: false,
+      pipelineTrigger: true,
+      turnstile: true,
+      internalApi: true,
+      e2eMode: false,
+    });
   });
 
   it("reports database and migration0003 false, 200, no error text, when the probe throws", async () => {

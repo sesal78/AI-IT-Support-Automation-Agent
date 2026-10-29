@@ -11,6 +11,7 @@ import {
   parseEnv,
   phase1EnvShape,
   sensitiveCheckEnvShape,
+  slackUserId,
   triggerProjectEnvShape,
 } from "./env.js";
 
@@ -308,4 +309,28 @@ describe("triggerProjectEnvShape project-ref rule", () => {
       );
     },
   );
+});
+
+describe("slackUserId", () => {
+  it.each(["U0123456789", "W012345678", "UE2EREVIEWER", "U012345678901", "W012345678901"])(
+    "accepts %s",
+    (id) => {
+      expect(slackUserId().safeParse(id).success).toBe(true);
+    },
+  );
+
+  it.each([
+    "U1234567",
+    "W1234567",
+    "U0123456789012",
+    "W0123456789012",
+    "U0123456789ABCDEFGHIJ",
+    "u0123456789",
+    "C0123456789",
+    "U0123456789 ",
+    "U0123456789\n",
+    "",
+  ])("rejects %j", (id) => {
+    expect(slackUserId().safeParse(id).success).toBe(false);
+  });
 });
