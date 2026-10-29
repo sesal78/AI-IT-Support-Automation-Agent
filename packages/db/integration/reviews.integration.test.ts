@@ -244,7 +244,13 @@ describe("getTicketView and probeSchema with reviews", () => {
       const { rows } = await sql().query<{ id: string }>(
         `insert into itsupport.reviews (ticket_id, kind, proposal_id, wait_token_id, created_at)
          values ($1, $2, $3, $4, $5) returning id`,
-        [ticketId, kind, kind === "autofix" ? randomUUID() : null, `order-${randomUUID()}`, createdAt],
+        [
+          ticketId,
+          kind,
+          kind === "autofix" ? randomUUID() : null,
+          `order-${randomUUID()}`,
+          createdAt,
+        ],
       );
       const [row] = rows;
       if (!row) throw new Error("seed failed");
