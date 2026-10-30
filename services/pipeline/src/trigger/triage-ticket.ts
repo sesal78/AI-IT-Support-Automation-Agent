@@ -2,6 +2,7 @@ import {
   BudgetExceededError,
   LlmUnavailableError,
   createAiRuntime,
+  createAlertSink,
   createFixDrafter,
   createGroundingScorer,
   createKbReranker,
@@ -647,12 +648,29 @@ export interface TriageFailureDeps {
   logger: { info: LogFn; warn: LogFn; error: LogFn };
 }
 
-/** The database and the alert sink only: the run may have failed on any other variable. */
+/**
+ * The database and the alert sink only: the run may have failed on any other
+ * variable. An invalid Slack or E2E_MODE value must not stop the failure
+ * from being recorded, so it falls back to a sink without a Slack post and
+ * logs the error class name. `repos` is replaced in tests.
+ */
 export function createTriageFailureDeps(
   source: Record<string, string | undefined>,
+  repos: TriageFailureDeps["repos"] &
+    Pick<Repositories, "recordSecurityEvent"> = createRepositories(createDbClient(source)),
 ): TriageFailureDeps {
-  const repos = createRepositories(createDbClient(source));
-  const alert = createPipelineAlert(source, repos);
+  let alert: AlertFn;
+  try {
+    alert = createPipelineAlert(source, repos);
+  } catch (error) {
+    logger.error("triage-ticket: invalid alert env, Slack alert post off", {
+      error: errorClassName(error),
+    });
+    alert = createAlertSink({
+      recordSecurityEvent: repos.recordSecurityEvent,
+      logger: { error: (message) => logger.error(message) },
+    });
+  }
   return { repos, alert, logger };
 }
 
