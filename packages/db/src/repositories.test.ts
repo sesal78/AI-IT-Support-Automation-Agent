@@ -282,7 +282,9 @@ describe("saveRedaction and saveTriage", () => {
 describe("recordSecurityEvent", () => {
   it("calls the security_event_record RPC with the source, kind and sample", async () => {
     const calls = respond(ok(1));
-    await repos.recordSecurityEvent("internal_api", "bad_token", { path: "/x", method: "POST" });
+    await expect(
+      repos.recordSecurityEvent("internal_api", "bad_token", { path: "/x", method: "POST" }),
+    ).resolves.toBe(1);
     expect(calls[0]?.method).toBe("POST");
     expect(calls[0]?.url.pathname).toBe("/rest/v1/rpc/security_event_record");
     expect(calls[0]?.body).toEqual({
@@ -290,6 +292,16 @@ describe("recordSecurityEvent", () => {
       p_kind: "bad_token",
       p_sample: { path: "/x", method: "POST" },
     });
+  });
+
+  it("returns the count of the minute's row, and throws DbError for a non-count reply", async () => {
+    respond(ok(3));
+    await expect(repos.recordSecurityEvent("pipeline", "alert:x", {})).resolves.toBe(3);
+    respond(ok(null));
+    await expectDbError(
+      repos.recordSecurityEvent("pipeline", "alert:x", {}),
+      "recordSecurityEvent",
+    );
   });
 
   it("throws DbError naming the operation and the code, without Supabase text", async () => {

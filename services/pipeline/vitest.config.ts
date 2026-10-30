@@ -11,6 +11,7 @@ export default defineProject({
       "@ai-it-support/ai": src("ai"),
       "@ai-it-support/db": src("db"),
       "@ai-it-support/shared": src("shared"),
+      "@ai-it-support/slack": src("slack"),
     },
   },
   test: {

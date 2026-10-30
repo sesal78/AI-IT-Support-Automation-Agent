@@ -1403,6 +1403,13 @@ describe("createTriageDeps", () => {
     LANGFUSE_BASE_URL: "https://langfuse.example.test",
   };
 
+  it("builds the alert with createPipelineAlert (a bad Slack channel fails, naming it)", () => {
+    const token = ["xoxb", "test", "0000000000", "fake"].join("-");
+    const slack = { SLACK_BOT_TOKEN: token, SLACK_CHANNEL_ID: "#general" };
+    expect(() => createTriageDeps({ ...env, ...slack })).toThrow(/SLACK_CHANNEL_ID/);
+    expect(() => createTriageFailureDeps({ ...env, ...slack })).toThrow(/SLACK_CHANNEL_ID/);
+  });
+
   it("builds deps with the default policy thresholds", () => {
     const deps = createTriageDeps(env);
     expect(deps.thresholds).toEqual({

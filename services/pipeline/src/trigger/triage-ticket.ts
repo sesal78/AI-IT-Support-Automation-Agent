@@ -2,7 +2,6 @@ import {
   BudgetExceededError,
   LlmUnavailableError,
   createAiRuntime,
-  createAlertSink,
   createFixDrafter,
   createGroundingScorer,
   createKbReranker,
@@ -48,6 +47,7 @@ import {
 } from "@ai-it-support/shared";
 import { AbortTaskRunError, logger, schemaTask } from "@trigger.dev/sdk";
 import { z } from "zod";
+import { createPipelineAlert } from "../pipeline-alert.js";
 
 // Payload type is shared with the intake task that triggers it (packages/shared).
 export const triageTicketPayload = z.object({
@@ -124,10 +124,7 @@ export function createTriageDeps(source: Record<string, string | undefined>): Tr
   const env = parseEnv(triageEnvShape, source);
   const repos = createRepositories(createDbClient(source));
   const environment = env.E2E_MODE ? "e2e" : "staging";
-  const alert = createAlertSink({
-    recordSecurityEvent: repos.recordSecurityEvent,
-    logger: { error: (message) => logger.error(message) },
-  });
+  const alert = createPipelineAlert(source, repos);
   const meter = createMeter({
     repos,
     caps: { llm: env.LLM_MONTHLY_CALL_CAP, typesafe: env.TYPESAFE_MONTHLY_CALL_CAP },
@@ -655,10 +652,7 @@ export function createTriageFailureDeps(
   source: Record<string, string | undefined>,
 ): TriageFailureDeps {
   const repos = createRepositories(createDbClient(source));
-  const alert = createAlertSink({
-    recordSecurityEvent: repos.recordSecurityEvent,
-    logger: { error: (message) => logger.error(message) },
-  });
+  const alert = createPipelineAlert(source, repos);
   return { repos, alert, logger };
 }
 
