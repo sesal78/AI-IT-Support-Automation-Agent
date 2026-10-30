@@ -212,6 +212,16 @@ export const liveSlackEnvShape = {
   E2E_SLACK_REVIEWER_ID: slackUserId().optional(),
 };
 
+/**
+ * Slack Web API client (services/pipeline, packages/slack `createSlackClient`):
+ * the bot token, the review channel and an optional alert channel.
+ */
+export const slackClientEnvShape = {
+  SLACK_BOT_TOKEN: slackBotToken(),
+  SLACK_CHANNEL_ID: slackChannelId(),
+  SLACK_ALERT_CHANNEL_ID: slackChannelId().optional(),
+};
+
 type PathSegment = PropertyKey | { key: PropertyKey };
 
 export interface EnvIssue {

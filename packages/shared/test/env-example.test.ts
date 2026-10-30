@@ -16,6 +16,7 @@ import {
   phase1EnvShape,
   policyEnvShape,
   sensitiveCheckEnvShape,
+  slackClientEnvShape,
   slackInteractivityEnvShape,
   triggerProjectEnvShape,
 } from "../src/env.js";
@@ -36,6 +37,11 @@ const allEnvShapes = {
   ...liveEnvShape,
   ...liveSlackEnvShape,
   ...slackInteractivityEnvShape,
+  ...slackClientEnvShape,
+  // Every value the bot token rule accepts starts with xoxb-, which the secret
+  // check below bans, so its placeholder is empty (the key store fills it). The
+  // parse treats it as optional here only; the "empty" test pins that.
+  SLACK_BOT_TOKEN: slackClientEnvShape.SLACK_BOT_TOKEN.optional(),
 };
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -69,5 +75,9 @@ describe(".env.example", () => {
 
   it("parses against the schema", () => {
     expect(() => parseEnv(allEnvShapes, Object.fromEntries(entries))).not.toThrow();
+  });
+
+  it("leaves the Slack bot token placeholder empty", () => {
+    expect(entries.filter(([key]) => key === "SLACK_BOT_TOKEN")).toEqual([["SLACK_BOT_TOKEN", ""]]);
   });
 });
