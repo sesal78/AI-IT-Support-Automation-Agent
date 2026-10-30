@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { liveSlackEnvShape, parseEnv, slackInteractivityEnvShape } from "./env.js";
+import { liveSlackEnvShape, parseEnv, reviewEnvShape, slackInteractivityEnvShape } from "./env.js";
 
 // Built from pieces so no token-shaped literal sits in the source.
 const token = ["xoxb", "test", "0000000000", "fake"].join("-");
@@ -99,4 +99,22 @@ describe("slackInteractivityEnvShape", () => {
     expect(text).toContain(name);
     if (value) expect(text).not.toContain(value.trim());
   });
+});
+
+describe("reviewEnvShape", () => {
+  const timeout = (value?: string) =>
+    parseEnv(reviewEnvShape, { SLACK_REVIEW_TIMEOUT: value }).SLACK_REVIEW_TIMEOUT;
+
+  it("defaults to 24h and accepts 1m to 7d", () => {
+    expect(timeout()).toBe("24h");
+    expect(timeout("")).toBe("24h");
+    for (const value of ["1m", "2m", "9999m", "168h", "7d"]) expect(timeout(value)).toBe(value);
+  });
+
+  it.each(["24", "0h", "8d", "169h", "10081m", "1s", "24H", " 24h", "12345m"])(
+    "rejects %j, naming SLACK_REVIEW_TIMEOUT",
+    (value) => {
+      expect(() => timeout(value)).toThrow(/SLACK_REVIEW_TIMEOUT/);
+    },
+  );
 });

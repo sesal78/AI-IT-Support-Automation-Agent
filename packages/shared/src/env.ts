@@ -222,6 +222,23 @@ export const slackClientEnvShape = {
   SLACK_ALERT_CHANNEL_ID: slackChannelId().optional(),
 };
 
+const MINUTES_PER_UNIT = { m: 1, h: 60, d: 1440 } as const;
+
+/**
+ * Review task (services/pipeline, P4-T4a): how long a review card waits for
+ * a decision. 1-4 digits then m, h or d, from 1 minute to 7 days; `24h` by default.
+ */
+export const reviewEnvShape = {
+  SLACK_REVIEW_TIMEOUT: z
+    .string()
+    .regex(/^[1-9][0-9]{0,3}[mhd]$/, "must be 1-4 digits then m, h or d")
+    .refine((value) => {
+      const unit = value.slice(-1) as keyof typeof MINUTES_PER_UNIT;
+      return Number.parseInt(value, 10) * MINUTES_PER_UNIT[unit] <= 7 * 1440;
+    }, "must be at most 7 days")
+    .default("24h"),
+};
+
 type PathSegment = PropertyKey | { key: PropertyKey };
 
 export interface EnvIssue {
