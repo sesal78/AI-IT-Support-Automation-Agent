@@ -14,6 +14,7 @@ const FEATURE_ENV_NAMES = {
   llm: ["LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL"],
   langfuse: ["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL"],
   caps: ["LLM_MONTHLY_CALL_CAP", "TYPESAFE_MONTHLY_CALL_CAP"],
+  slack: ["SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID"],
 } as const;
 
 type Feature = keyof typeof FEATURE_ENV_NAMES;
@@ -46,6 +47,7 @@ function readConfigured(env: EnvSource): HealthcheckConfigured {
     llm: feature("llm"),
     langfuse: feature("langfuse"),
     caps: feature("caps"),
+    slack: feature("slack"),
     e2eMode: env.E2E_MODE === "true",
   };
 }

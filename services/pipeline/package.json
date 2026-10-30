@@ -22,6 +22,7 @@
     "@ai-it-support/ai": "workspace:*",
     "@ai-it-support/db": "workspace:*",
     "@ai-it-support/shared": "workspace:*",
+    "@ai-it-support/slack": "workspace:*",
     "@trigger.dev/sdk": "4.6.4",
     "zod": "^4.6.5"
   },

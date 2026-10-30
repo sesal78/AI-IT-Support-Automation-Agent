@@ -2,11 +2,17 @@ import { z } from "zod";
 
 /**
  * Test switches an E2E run can attach to a ticket (plan C5). Strict: an
- * unknown switch name is an error, never ignored. Phase 3 keys only.
+ * unknown switch name is an error, never ignored. `reviewTimeout` (phase 4)
+ * is a whole number of minutes from 1 to 60, written like `30m`.
  */
 export const testOverridesSchema = z.strictObject({
   llmCallCap: z.number().int().min(0).max(100_000).optional(),
   langfuseDown: z.boolean().optional(),
+  reviewTimeout: z
+    .string()
+    .regex(/^[1-9][0-9]?m$/)
+    .refine((value) => Number.parseInt(value, 10) <= 60)
+    .optional(),
 });
 
 export type TestOverrides = z.infer<typeof testOverridesSchema>;

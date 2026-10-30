@@ -23,11 +23,26 @@ const FEATURES = {
   llm: ["LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL"],
   langfuse: ["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL"],
   caps: ["LLM_MONTHLY_CALL_CAP", "TYPESAFE_MONTHLY_CALL_CAP"],
+  slack: ["SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID"],
 } as const;
 
 const ALL_NAMES = Object.values(FEATURES).flat();
-const allTrue = { supabase: true, typesafe: true, llm: true, langfuse: true, caps: true };
-const allFalse = { supabase: false, typesafe: false, llm: false, langfuse: false, caps: false };
+const allTrue = {
+  supabase: true,
+  typesafe: true,
+  llm: true,
+  langfuse: true,
+  caps: true,
+  slack: true,
+};
+const allFalse = {
+  supabase: false,
+  typesafe: false,
+  llm: false,
+  langfuse: false,
+  caps: false,
+  slack: false,
+};
 
 /** Every listed name set to a harmless value. */
 function fullEnv(): Record<string, string | undefined> {
@@ -49,11 +64,11 @@ afterEach(() => {
 // missing or blank name is reported as `false`, which is the point of the
 // task. The payload's failure path is covered in healthcheck.test.ts.
 describe("healthcheck configured map", () => {
-  it("lists 12 env names", () => {
-    expect(new Set(ALL_NAMES).size).toBe(12);
+  it("lists 14 env names", () => {
+    expect(new Set(ALL_NAMES).size).toBe(14);
   });
 
-  it("reports every feature true when all 12 names are set", async () => {
+  it("reports every feature true when all 14 names are set", async () => {
     expect(await configuredFor(fullEnv())).toEqual({ ...allTrue, e2eMode: false });
   });
 
@@ -72,11 +87,11 @@ describe("healthcheck configured map", () => {
     expect(new Date(result.at).toISOString()).toBe(result.at);
   });
 
-  it("has exactly the six keys, each a boolean, whatever the env holds", async () => {
+  it("has exactly the seven keys, each a boolean, whatever the env holds", async () => {
     for (const env of [{}, fullEnv(), { ...fullEnv(), E2E_MODE: "true" }]) {
       const configured = await configuredFor(env);
       expect(Object.keys(configured).sort()).toEqual(
-        ["caps", "e2eMode", "langfuse", "llm", "supabase", "typesafe"].sort(),
+        ["caps", "e2eMode", "langfuse", "llm", "slack", "supabase", "typesafe"].sort(),
       );
       for (const value of Object.values(configured)) expect(typeof value).toBe("boolean");
     }

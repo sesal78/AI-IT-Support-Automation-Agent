@@ -777,4 +777,11 @@ describe("createIntakeDeps", () => {
   it("fails naming SUPABASE_URL when it is missing", () => {
     expect(() => createIntakeDeps({ ...env, SUPABASE_URL: undefined })).toThrow(/SUPABASE_URL/);
   });
+
+  it("builds the alert with createPipelineAlert (a bad Slack channel fails, naming it)", () => {
+    const token = ["xoxb", "test", "0000000000", "fake"].join("-");
+    expect(() =>
+      createIntakeDeps({ ...env, SLACK_BOT_TOKEN: token, SLACK_CHANNEL_ID: "#general" }),
+    ).toThrow(/SLACK_CHANNEL_ID/);
+  });
 });

@@ -19,8 +19,14 @@ function repos(): Repositories {
   return repositories;
 }
 
-const recordSecurityEvent = (source: string, kind: string, sample: Record<string, unknown>) =>
-  repos().recordSecurityEvent(source, kind, sample);
+// The handler needs no count, so the repository's return value is dropped.
+const recordSecurityEvent = async (
+  source: string,
+  kind: string,
+  sample: Record<string, unknown>,
+): Promise<void> => {
+  await repos().recordSecurityEvent(source, kind, sample);
+};
 
 const handle = createInteractivityHandler({
   signingSecret: env.SLACK_SIGNING_SECRET,

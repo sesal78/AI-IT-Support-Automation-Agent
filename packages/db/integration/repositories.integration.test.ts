@@ -320,6 +320,20 @@ describe("reserveAiCall and completeAiCall over supabase-js + PostgREST", () => 
   });
 });
 
+describe("recordSecurityEvent over supabase-js + PostgREST", () => {
+  it("returns 1, 2 and 3 for three events of one (source, kind) in one minute", async () => {
+    // Stay clear of a minute boundary, so the three calls share one window.
+    const second = new Date().getUTCSeconds();
+    if (second >= 50) await new Promise((r) => setTimeout(r, (61 - second) * 1000));
+    const kind = `alert:it_${randomUUID()}`;
+    const counts = [];
+    for (let i = 0; i < 3; i += 1) {
+      counts.push(await repos.recordSecurityEvent("pipeline", kind, {}));
+    }
+    expect(counts).toEqual([1, 2, 3]);
+  });
+});
+
 describe("pipeline repositories over supabase-js + PostgREST", () => {
   const status = async (id: string): Promise<string> => {
     const { rows } = await sql().query("select status from itsupport.tickets where id = $1", [id]);

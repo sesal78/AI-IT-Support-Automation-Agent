@@ -25,7 +25,7 @@ import {
   type TraceSpan,
   type TriageJudgeDeps,
 } from "@ai-it-support/ai";
-import { AbortTaskRunError } from "@trigger.dev/sdk";
+import { AbortTaskRunError, logger as triggerLogger } from "@trigger.dev/sdk";
 import { describe, expect, it, vi } from "vitest";
 import {
   createSwitchableSink,
@@ -1402,6 +1402,43 @@ describe("createTriageDeps", () => {
     LANGFUSE_SECRET_KEY: "s".repeat(8),
     LANGFUSE_BASE_URL: "https://langfuse.example.test",
   };
+
+  it("builds the alert with createPipelineAlert (a bad Slack channel fails the run, naming it)", () => {
+    const token = ["xoxb", "test", "0000000000", "fake"].join("-");
+    const slack = { SLACK_BOT_TOKEN: token, SLACK_CHANNEL_ID: "#general" };
+    expect(() => createTriageDeps({ ...env, ...slack })).toThrow(/SLACK_CHANNEL_ID/);
+  });
+
+  it.each([
+    ["a bad Slack channel", { SLACK_CHANNEL_ID: "#general" }],
+    ["a bad E2E_MODE", { E2E_MODE: "TRUE" }],
+  ])(
+    "still records an exhausted triage with %s: event, status, alert, class name logged",
+    async (_name, bad) => {
+      const token = ["xoxb", "test", "0000000000", "fake"].join("-");
+      const errorLog = vi.spyOn(triggerLogger, "error").mockImplementation(() => {});
+      const h = harness();
+      const recordSecurityEvent = vi.fn(async () => 1);
+      const deps = createTriageFailureDeps(
+        { ...env, SLACK_BOT_TOKEN: token, SLACK_CHANNEL_ID: "C0000000001", ...bad },
+        { ...h.deps.repos, recordSecurityEvent },
+      );
+      await expect(
+        onTriageFailure({ payload: { ticketId }, error: new TypeError("x") }, deps),
+      ).resolves.toBeUndefined();
+      expect(h.events).toEqual([{ type: "triage_failed", payload: { error: "TypeError" } }]);
+      expect(h.statuses).toEqual(["failed"]);
+      expect(recordSecurityEvent).toHaveBeenCalledWith("pipeline", "alert:triage_failed", {
+        ticketId,
+      });
+      expect(errorLog).toHaveBeenCalledWith(
+        "triage-ticket: invalid alert env, Slack alert post off",
+        { error: "Error" },
+      );
+      expect(JSON.stringify(errorLog.mock.calls)).not.toContain("#general");
+      errorLog.mockRestore();
+    },
+  );
 
   it("builds deps with the default policy thresholds", () => {
     const deps = createTriageDeps(env);
