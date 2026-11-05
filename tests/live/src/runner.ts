@@ -30,6 +30,10 @@ export interface ScenarioContext {
   readonly sleep: (ms: number) => Promise<void>;
   /** This run's ID; scenarios build their test IDs from it. */
   readonly runId: string;
+  /** The `.loop-evidence` folder (a scenario may write a hand-off file under `live/`). */
+  readonly evidenceDir: string;
+  /** The `--from <file>` argument, for a scenario with `needsFrom`. */
+  readonly from: string | undefined;
 }
 
 export interface Scenario {
@@ -37,6 +41,8 @@ export interface Scenario {
   readonly id: string;
   /** Heavy scenarios (many tickets or long waits) run only when named with `--only`. */
   readonly heavy?: boolean;
+  /** The scenario reads the file named by `--from`; the run refuses to start without it. */
+  readonly needsFrom?: boolean;
   run(context: ScenarioContext): Promise<ScenarioResult>;
 }
 
@@ -73,7 +79,8 @@ export function createRegistry(scenarios: readonly Scenario[]): ReadonlyMap<stri
   return registry;
 }
 
-class UsageError extends Error {
+/** A usage problem. Its message is fixed text that names arguments, never a value. */
+export class UsageError extends Error {
   override readonly name = "UsageError";
 }
 
@@ -82,12 +89,22 @@ const PHASE = /^[1-9][0-9]?$/;
 function parseArgs(argv: readonly string[]): {
   only: string[] | undefined;
   phase: string | undefined;
+  from: string | undefined;
 } {
   let only: string[] | undefined;
   let phase: string | undefined;
+  let from: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--") continue;
+    if (arg === "--from" || arg.startsWith("--from=")) {
+      const value = arg === "--from" ? argv[++i] : arg.slice("--from=".length);
+      if (value === undefined || value === "" || from !== undefined) {
+        throw new UsageError("--from needs one file path");
+      }
+      from = value;
+      continue;
+    }
     if (arg === "--phase" || arg.startsWith("--phase=")) {
       const value = arg === "--phase" ? argv[++i] : arg.slice("--phase=".length);
       if (value === undefined || !PHASE.test(value) || phase !== undefined) {
@@ -99,14 +116,18 @@ function parseArgs(argv: readonly string[]): {
     let value: string | undefined;
     if (arg === "--only") value = argv[++i];
     else if (arg.startsWith("--only=")) value = arg.slice("--only=".length);
-    else throw new UsageError("unknown argument (known: --only <id,id,...>, --phase <n>)");
+    else {
+      throw new UsageError(
+        "unknown argument (known: --only <id,id,...>, --phase <n>, --from <file>)",
+      );
+    }
     if (value === undefined || value === "") throw new UsageError("--only needs test IDs");
     only = [...(only ?? []), ...value.split(",").filter((id) => id !== "")];
   }
   if (only !== undefined && phase !== undefined) {
     throw new UsageError("--only and --phase cannot be combined");
   }
-  return { only, phase };
+  return { only, phase, from };
 }
 
 /**
@@ -179,9 +200,18 @@ export async function runLive(options: RunLiveOptions): Promise<number> {
   let registry: ReadonlyMap<string, Scenario>;
   let selected: Scenario[];
   let config: LiveConfig;
+  let from: string | undefined;
   try {
     registry = createRegistry(options.scenarios);
     selected = selectScenarios(registry, options.argv);
+    from = parseArgs(options.argv).from;
+    const reader = selected.find((scenario) => scenario.needsFrom === true);
+    if (reader !== undefined && from === undefined) {
+      throw new UsageError(`${reader.id} needs --from <file>`);
+    }
+    if (reader === undefined && from !== undefined) {
+      throw new UsageError("--from is only for a scenario that reads a file");
+    }
     config = loadLiveConfig(options.env);
   } catch (error) {
     // Only our own errors carry safe messages; anything else shows its class.
@@ -211,6 +241,8 @@ export async function runLive(options: RunLiveOptions): Promise<number> {
     now,
     sleep,
     runId,
+    evidenceDir: options.evidenceDir,
+    from,
   };
 
   const entries: ReportEntry[] = [];
@@ -225,6 +257,8 @@ export async function runLive(options: RunLiveOptions): Promise<number> {
           ? { id: scenario.id, status: "fail", ms: 0, evidence: {}, error: "EvidenceRefused" }
           : { id: scenario.id, status: result.status, ms: 0, evidence };
     } catch (error) {
+      // A usage problem found while running (an unreadable --from file) is told, as fixed text.
+      if (error instanceof UsageError) options.stderr(`live: ${scenario.id}: ${error.message}`);
       entry = {
         id: scenario.id,
         status: "fail",
