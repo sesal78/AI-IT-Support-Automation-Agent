@@ -2,11 +2,12 @@ import { browserFormScenario } from "./browser-form.ts";
 import { observabilityScenarios } from "./observability.ts";
 import { pipelineScenarios } from "./pipeline.ts";
 import { reviewFlowScenarios } from "./review-flow.ts";
+import { reviewSecurityScenarios } from "./review-security.ts";
 import type { Scenario } from "./runner.ts";
 import { securityScenarios } from "./security.ts";
 import { slackScenarios } from "./slack-scenarios.ts";
 
-/** The live scenarios by test ID (P3-T16b to P3-T16d, P4-T8a, P4-T8b). */
+/** The live scenarios by test ID (P3-T16b to P3-T16d, P4-T8a to P4-T8c). */
 export const scenarios: readonly Scenario[] = [
   ...securityScenarios,
   ...pipelineScenarios,
@@ -14,4 +15,5 @@ export const scenarios: readonly Scenario[] = [
   ...observabilityScenarios,
   ...slackScenarios,
   ...reviewFlowScenarios,
+  ...reviewSecurityScenarios,
 ];
