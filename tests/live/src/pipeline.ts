@@ -57,7 +57,7 @@ export const CATEGORY_SAMPLES: readonly TicketText[] = [
   },
 ];
 
-const HR_COMPLAINT: TicketText = {
+export const HR_COMPLAINT: TicketText = {
   title: "Complaint about my manager",
   description:
     "I want to raise an HR complaint about repeated harassment by my line manager. " +
@@ -66,7 +66,7 @@ const HR_COMPLAINT: TicketText = {
 
 const REQUESTER = { name: "Live Test", email: "live.test@example.com", department: "IT" };
 /** The synthetic persona for the sensitive HR ticket (plan §4.2). */
-const ERIN = { name: "demo.erin", email: "demo.erin@example.com", department: "Operations" };
+export const ERIN = { name: "demo.erin", email: "demo.erin@example.com", department: "Operations" };
 
 /** A ticket body; the run ID makes the text unique, so a rerun is never a duplicate. */
 export function ticketBody(
