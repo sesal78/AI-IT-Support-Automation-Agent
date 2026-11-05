@@ -6,7 +6,9 @@ export type AlertKind =
   | "typesafe_cap_reached"
   | "llm_unavailable"
   | "triage_failed"
-  | "triage_enqueue_failed";
+  | "triage_enqueue_failed"
+  | "review_enqueue_failed"
+  | "review_failed";
 
 export interface AlertOptions {
   ticketId?: string | undefined;

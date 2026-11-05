@@ -2,7 +2,6 @@ import {
   BudgetExceededError,
   LlmUnavailableError,
   createAiRuntime,
-  createAlertSink,
   createFixDrafter,
   createGroundingScorer,
   createKbReranker,
@@ -24,6 +23,7 @@ import {
 } from "@ai-it-support/db";
 import {
   MAX_KB_ARTICLES,
+  REVIEW_TICKET_TASK_ID,
   TICKET_STATUSES,
   TRIAGE_TICKET_TASK_ID,
   aiBudgetEnvShape,
@@ -41,14 +41,16 @@ import {
   type PolicyReason,
   type PolicyThresholds,
   type Priority,
+  type ReviewTicketPayload,
   type Route,
   type TestOverrides,
   type TriageResult,
   type TriageTicketPayload,
 } from "@ai-it-support/shared";
-import { AbortTaskRunError, logger, schemaTask } from "@trigger.dev/sdk";
+import { AbortTaskRunError, idempotencyKeys, logger, schemaTask, tasks } from "@trigger.dev/sdk";
 import { z } from "zod";
-import { createPipelineAlert } from "../pipeline-alert.js";
+import { createFailureAlert, createPipelineAlert } from "../pipeline-alert.js";
+import type { reviewTicket } from "./review-ticket.js";
 
 // Payload type is shared with the intake task that triggers it (packages/shared).
 export const triageTicketPayload = z.object({
@@ -63,6 +65,21 @@ export type TriageTicketResult =
   | { ticketId: string; skipped: false; route: Route; reasons: PolicyReason[] };
 
 type LogFn = (message: string, data?: Record<string, unknown>) => void;
+
+/** Triggers `review-ticket`. Replaced in tests. */
+export type TriggerReviewFn = (
+  payload: ReviewTicketPayload,
+  options: { idempotencyKey: string },
+) => Promise<unknown>;
+
+/** Key material for the review trigger: the ticket ID only, so every attempt matches. */
+export const reviewIdempotencyKey = (ticketId: string) => `${REVIEW_TICKET_TASK_ID}:${ticketId}`;
+
+/** The real trigger, with a `global` key as in intake-ticket's triggerTriageTask. */
+export const triggerReviewTask: TriggerReviewFn = async (payload, { idempotencyKey }) =>
+  tasks.trigger<typeof reviewTicket>(REVIEW_TICKET_TASK_ID, payload, {
+    idempotencyKey: await idempotencyKeys.create(idempotencyKey, { scope: "global" }),
+  });
 
 export interface TriageDeps {
   repos: Pick<
@@ -86,6 +103,7 @@ export interface TriageDeps {
   e2eMode: boolean;
   /** Never throws (createAlertSink). */
   alert: AlertFn;
+  triggerReview: TriggerReviewFn;
   /** Test switch `langfuseDown`: every later trace export of this run fails. */
   setTraceSinkDown(down: boolean): void;
   logger: { info: LogFn; warn: LogFn; error: LogFn };
@@ -163,6 +181,7 @@ export function createTriageDeps(source: Record<string, string | undefined>): Tr
     },
     e2eMode: env.E2E_MODE,
     alert,
+    triggerReview: triggerReviewTask,
     setTraceSinkDown: traceSink.setDown,
     logger,
   };
@@ -187,7 +206,13 @@ const statusLabel = (status: string) =>
  * events kb_matched, fix_drafted, policy_decided and triaged, and last the
  * status `triaged`. Every AI step runs before the first write, so a failed AI
  * step leaves no triage result, no event and the status `redacted`. A ticket
- * already `triaged` (or later) is skipped with no call.
+ * already `triaged` (or later) is skipped with no AI call.
+ *
+ * Route `review` (P4-T4c): after the status write, review-ticket is
+ * triggered with the key `review-ticket:<ticketId>` and the payload's test
+ * switches unchanged. A run that finds the ticket already `triaged` with the
+ * saved route `review` (a crash after the status write) triggers again with
+ * the same key, which returns the first review run, and is skipped.
  *
  * Latency (P3-T10k): the judgments and the KB match (search, then rerank)
  * read only the redacted text, so they run in parallel. Both settle before
@@ -252,6 +277,13 @@ export async function runTriageTicket(
   if (!ticket) {
     log.error("triage-ticket: ticket not found", { ticketId });
     throw new AbortTaskRunError(`triage-ticket: ticket ${ticketId} not found`);
+  }
+  if (ticket.status === "triaged" && (await repos.getTriage(ticketId))?.route === "review") {
+    // Crash recovery: the run stopped after the status write. The trigger is
+    // idempotent (same key), so this returns the first review run if one started.
+    await enqueueReview(payload, deps);
+    log.info("triage-ticket: already triaged, review enqueued", { ticketId });
+    return { ticketId, skipped: true };
   }
   if (TRIAGED_OR_LATER.has(ticket.status)) {
     log.info("triage-ticket: already triaged, skipped", { ticketId, status: ticket.status });
@@ -326,6 +358,7 @@ export async function runTriageTicket(
     if (!written.has(type)) await repos.addEvent(ticketId, type, data);
   }
   await repos.setTicketStatus(ticketId, "triaged");
+  if (route === "review") await enqueueReview(payload, deps);
   timings.writeMs = clock() - writesStart;
   timings.totalMs = clock() - started;
   log.info("triage-ticket: triaged", {
@@ -338,6 +371,32 @@ export async function runTriageTicket(
   });
 
   return { ticketId, skipped: false, route, reasons };
+}
+
+/**
+ * Triggers review-ticket with the payload's test switches unchanged. A failed
+ * trigger records review_enqueue_failed (once), sets `failed`, raises the
+ * alert review_enqueue_failed with the move to `failed`, and aborts the run.
+ */
+async function enqueueReview(payload: TriageTicketPayload, deps: TriageDeps): Promise<void> {
+  const { ticketId, testOverrides } = payload;
+  const { repos, logger: log } = deps;
+  try {
+    await deps.triggerReview(
+      { ticketId, ...(testOverrides === undefined ? {} : { testOverrides }) },
+      { idempotencyKey: reviewIdempotencyKey(ticketId) },
+    );
+  } catch (triggerError) {
+    const error = errorClassName(triggerError);
+    const written = await repos.listEventTypes(ticketId, ["review_enqueue_failed"]);
+    if (!written.includes("review_enqueue_failed")) {
+      await repos.addEvent(ticketId, "review_enqueue_failed", { error });
+    }
+    const { changed } = await repos.setTicketStatus(ticketId, "failed");
+    if (changed) await deps.alert("review_enqueue_failed", { ticketId });
+    log.error("triage-ticket: review enqueue failed", { ticketId, error });
+    throw new AbortTaskRunError(`triage-ticket: could not enqueue review for ticket ${ticketId}`);
+  }
 }
 
 const TRIAGE_EVENTS = ["kb_matched", "fix_drafted", "policy_decided", "triaged"] as const;
@@ -659,18 +718,7 @@ export function createTriageFailureDeps(
   repos: TriageFailureDeps["repos"] &
     Pick<Repositories, "recordSecurityEvent"> = createRepositories(createDbClient(source)),
 ): TriageFailureDeps {
-  let alert: AlertFn;
-  try {
-    alert = createPipelineAlert(source, repos);
-  } catch (error) {
-    logger.error("triage-ticket: invalid alert env, Slack alert post off", {
-      error: errorClassName(error),
-    });
-    alert = createAlertSink({
-      recordSecurityEvent: repos.recordSecurityEvent,
-      logger: { error: (message) => logger.error(message) },
-    });
-  }
+  const alert = createFailureAlert("triage-ticket", source, repos);
   return { repos, alert, logger };
 }
 
