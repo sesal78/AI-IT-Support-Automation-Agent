@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { SENSITIVE_TOPICS } from "@ai-it-support/ai";
 import { canaryTicketText, type ReviewTicketPayload } from "@ai-it-support/shared";
 import { SlackApiError, createSlackClient } from "@ai-it-support/slack";
 import { HttpResponse } from "msw";
@@ -14,19 +13,23 @@ import {
 } from "../src/trigger/review-ticket.js";
 import { createTriageDeps, runTriageTicket } from "../src/trigger/triage-ticket.js";
 import { egress } from "../test-support/egress.js";
+import {
+  REVIEW_ENV,
+  SLACK_CHANNEL as CHANNEL,
+  SLACK_ORIGIN,
+  SLACK_REVIEWER as REVIEWER,
+  mockSensitiveAnswer,
+} from "../test-support/provider-mocks.js";
 import { createTokenBroker, type TokenBroker } from "../test-support/token-broker.js";
 import {
-  TYPESAFE_ORIGIN,
   eventTypes,
   intake,
-  questionKeys,
   quiet,
   requestsTo,
   sql,
   testEnv,
   testRepos,
   ticketStatus,
-  typesafeReply,
   useTriageStack,
 } from "./triage-harness.js";
 
@@ -40,18 +43,8 @@ import {
 
 useTriageStack();
 
-const SLACK_ORIGIN = "https://slack.com";
-const SLACK_HOST = "slack.com";
-const CHANNEL = "C0000000000";
-const REVIEWER = "U0000000000";
-const BOT_TOKEN = ["xoxb", "test", "0000000000", "fake"].join("-");
-
-const reviewEnv = () => ({
-  ...testEnv(),
-  SLACK_BOT_TOKEN: BOT_TOKEN,
-  SLACK_CHANNEL_ID: CHANNEL,
-  SLACK_REVIEW_TIMEOUT: "24h",
-});
+const SLACK_HOST = new URL(SLACK_ORIGIN).host;
+const reviewEnv = () => ({ ...testEnv(), ...REVIEW_ENV });
 
 // ---- Slack mock ----------------------------------------------------------------
 
@@ -82,24 +75,6 @@ function mockSlack(): void {
   });
 }
 
-/** TypeSafe flags the ticket as an HR matter; every other answer is the default. */
-function mockSensitiveAnswer(): void {
-  egress.mock(TYPESAFE_ORIGIN, async ({ request }) => {
-    const body = await request.text();
-    if (!questionKeys(body).includes("legal")) return typesafeReply(body);
-    return HttpResponse.json({
-      model: "jev-1.13.0",
-      answers: Object.fromEntries(
-        SENSITIVE_TOPICS.map((topic) => [
-          topic,
-          { type: "noul", noul: topic === "hr" ? 0.95 : 0.02 },
-        ]),
-      ),
-      usage: { input_tokens: 40, output_tokens: 6 },
-    });
-  });
-}
-
 type SlackCall = { path: string; body: Record<string, unknown> };
 const slackCalls = (): SlackCall[] =>
   requestsTo(SLACK_HOST).map((r) => ({
@@ -114,7 +89,7 @@ beforeEach(() => {
   tsCounter = 0;
   sleeps = [];
   mockSlack();
-  mockSensitiveAnswer();
+  mockSensitiveAnswer(egress);
   broker = createTokenBroker();
   egress.forbid(broker.marker);
 });
@@ -138,7 +113,7 @@ function reviewDeps(wait: ReviewWait = broker): ReviewDeps {
   return {
     ...createReviewDeps(env),
     wait,
-    slack: createSlackClient({ token: BOT_TOKEN, sleep: fakeSleep }),
+    slack: createSlackClient({ token: REVIEW_ENV.SLACK_BOT_TOKEN, sleep: fakeSleep }),
     alert: createPipelineAlert(env, testRepos(), {
       createClient: (options) => createSlackClient({ ...options, sleep: fakeSleep }),
       logger: { error: () => undefined },

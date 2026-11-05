@@ -3,7 +3,7 @@ import {
   REVIEW_TICKET_TASK_ID,
   TRIAGE_TICKET_TASK_ID,
 } from "@ai-it-support/shared";
-import { idempotencyKeys, tasks } from "@trigger.dev/sdk";
+import { idempotencyKeys, tasks, wait } from "@trigger.dev/sdk";
 import { HttpResponse } from "msw";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { healthcheck } from "../src/trigger/healthcheck.js";
@@ -11,13 +11,16 @@ import { triageIdempotencyKey, type intakeTicket } from "../src/trigger/intake-t
 import type { triageTicket } from "../src/trigger/triage-ticket.js";
 import { egress } from "../test-support/egress.js";
 import { startLocalRunner, type LocalRun, type LocalRunner } from "../test-support/local-runner.js";
+import { mockSensitiveAnswer } from "../test-support/provider-mocks.js";
 import {
   TYPESAFE_ORIGIN,
   createCanaryTicket,
   eventTypes,
   intake,
   questionKeys,
+  requestsTo,
   rowCount,
+  testRepos,
   testStack,
   ticketStatus,
   typesafeReply,
@@ -127,7 +130,7 @@ describe("local Trigger.dev runner", () => {
     expect((await eventTypes(ticketId)).filter((type) => type === "triaged")).toHaveLength(1);
   });
 
-  it("a review-ticket trigger is accepted and runs nothing (P4-T4c; the review body is P4-B7)", async () => {
+  it("a review-ticket run for a ticket that is not triaged aborts at once and writes nothing", async () => {
     const ticketId = await createCanaryTicket();
     const before = await writeCounts();
 
@@ -136,9 +139,72 @@ describe("local Trigger.dev runner", () => {
 
     expect((await listRuns(runner)).find((run) => run.id === handle.id)).toMatchObject({
       taskId: REVIEW_TICKET_TASK_ID,
+      status: "FAILED",
+      attempts: 1,
+      error: "AbortTaskRunError",
+    });
+    // The failure hook leaves a ticket this task does not own unchanged.
+    expect(await writeCounts()).toEqual(before);
+    expect(await ticketStatus(ticketId)).toBe("new");
+  });
+
+  it("a review-routed ticket waits (WAITING, not busy); wait.completeToken from the SDK resumes it", async () => {
+    mockSensitiveAnswer(egress);
+    const ticketId = await createCanaryTicket({ isTest: true });
+
+    await tasks.trigger<typeof intakeTicket>(INTAKE_TICKET_TASK_ID, { ticketId });
+    await runner.idle();
+
+    expect(await ticketStatus(ticketId)).toBe("review_pending");
+    const review = runner
+      .runs()
+      .find((run) => run.taskId === REVIEW_TICKET_TASK_ID && run.status === "WAITING");
+    const token = runner.broker.tokens().find((t) => t.idempotencyKey === `review:${ticketId}`);
+    expect(token?.state).toBe("waiting");
+    expect(review?.waitingOn).toBe(token?.id);
+    expect(requestsTo("slack.com").map((r) => r.path)).toEqual(["/api/chat.postMessage"]);
+
+    // As the interactivity handler does it: the row first, then the token.
+    const row = await testRepos().getTriageReview(ticketId);
+    await testRepos().decideReview(row!.id, "approve", "U0000000000");
+    await expect(
+      wait.completeToken(token!.id, { reviewId: row!.id, decision: "approve" }),
+    ).resolves.toEqual({
+      success: true,
+    });
+    await runner.idle();
+
+    expect(await ticketStatus(ticketId)).toBe("approved");
+    expect(runner.runs().find((run) => run.id === review?.id)).toMatchObject({
       status: "COMPLETED",
     });
-    expect(await writeCounts()).toEqual(before);
+    expect(runner.broker.get(token!.id)?.output).toEqual({
+      reviewId: row!.id,
+      decision: "approve",
+    });
+    expect(requestsTo("slack.com").map((r) => r.path)).toEqual([
+      "/api/chat.postMessage",
+      "/api/chat.update",
+    ]);
+  });
+
+  it("a completion for an unknown token gets 404; a timed-out token gives forToken ok: false", async () => {
+    await expect(wait.completeToken("waitpoint_unknown", {})).rejects.toMatchObject({
+      status: 404,
+    });
+
+    const token = await runner.broker.createToken({
+      timeout: "1m",
+      idempotencyKey: "it-timeout",
+      tags: [],
+    });
+    const waited = runner.broker.forToken(token.id);
+    expect(runner.broker.timeOut(token.id)).toBe(true);
+    await expect(waited).resolves.toEqual({ ok: false });
+    await expect(runner.broker.forToken(token.id)).resolves.toEqual({ ok: false });
+    // Settled tokens stay as they are.
+    expect(runner.broker.complete(token.id)).toBe(true);
+    expect(runner.broker.get(token.id)?.state).toBe("timed_out");
   });
 
   it("a trigger for an unknown task ID gets 404", async () => {
