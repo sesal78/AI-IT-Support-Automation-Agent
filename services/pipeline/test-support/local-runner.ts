@@ -28,7 +28,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 import { randomBytes } from "node:crypto";
 import { errorClassName } from "@ai-it-support/ai";
-import { INTAKE_TICKET_TASK_ID, TRIAGE_TICKET_TASK_ID } from "@ai-it-support/shared";
+import {
+  INTAKE_TICKET_TASK_ID,
+  REVIEW_TICKET_TASK_ID,
+  TRIAGE_TICKET_TASK_ID,
+} from "@ai-it-support/shared";
 import { AbortTaskRunError, auth } from "@trigger.dev/sdk";
 import { z } from "zod";
 import type { RestStack } from "../../../packages/db/integration/rest-stack.js";
@@ -49,6 +53,7 @@ import {
   runTriageTicket,
   triageTicketPayload,
 } from "../src/trigger/triage-ticket.js";
+import { reviewTicketPayload } from "../src/trigger/review-ticket.js";
 import { mockProviders, pipelineEnv } from "./provider-mocks.js";
 
 export type LocalRunStatus = "QUEUED" | "EXECUTING" | "COMPLETED" | "FAILED";
@@ -125,6 +130,10 @@ const TASKS: Record<string, TaskDef> = {
     (payload, error, env) => onTriageFailure({ payload, error }, createTriageFailureDeps(env)),
   ),
   healthcheck: defineTask(healthcheckPayload, (payload, env) => runHealthcheck(payload, env)),
+  // Triage starts review-ticket for a `review` route (P4-T4c). The runner
+  // accepts that trigger and runs nothing: the real review body needs Slack,
+  // which P4-B7 brings to the local stack.
+  [REVIEW_TICKET_TASK_ID]: defineTask(reviewTicketPayload, async () => undefined),
 };
 
 const MAX_ATTEMPTS = 3;

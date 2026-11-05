@@ -1,4 +1,8 @@
-import { INTAKE_TICKET_TASK_ID, TRIAGE_TICKET_TASK_ID } from "@ai-it-support/shared";
+import {
+  INTAKE_TICKET_TASK_ID,
+  REVIEW_TICKET_TASK_ID,
+  TRIAGE_TICKET_TASK_ID,
+} from "@ai-it-support/shared";
 import { idempotencyKeys, tasks } from "@trigger.dev/sdk";
 import { HttpResponse } from "msw";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -121,6 +125,20 @@ describe("local Trigger.dev runner", () => {
     expect(second.id).toBe(first.id);
     expect((await listRuns(runner)).filter((run) => run.idempotencyKey === key)).toHaveLength(1);
     expect((await eventTypes(ticketId)).filter((type) => type === "triaged")).toHaveLength(1);
+  });
+
+  it("a review-ticket trigger is accepted and runs nothing (P4-T4c; the review body is P4-B7)", async () => {
+    const ticketId = await createCanaryTicket();
+    const before = await writeCounts();
+
+    const handle = await tasks.trigger(REVIEW_TICKET_TASK_ID, { ticketId });
+    await runner.idle();
+
+    expect((await listRuns(runner)).find((run) => run.id === handle.id)).toMatchObject({
+      taskId: REVIEW_TICKET_TASK_ID,
+      status: "COMPLETED",
+    });
+    expect(await writeCounts()).toEqual(before);
   });
 
   it("a trigger for an unknown task ID gets 404", async () => {
