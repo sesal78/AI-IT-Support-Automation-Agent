@@ -27,7 +27,7 @@ export function wrongTokenFor(real: string): string {
   return candidate === real ? `LiveWrongToken${"y".repeat(fill)}` : candidate;
 }
 
-const floorMinute = (ms: number): number => Math.floor(ms / MINUTE_MS) * MINUTE_MS;
+export const floorMinute = (ms: number): number => Math.floor(ms / MINUTE_MS) * MINUTE_MS;
 
 const result = (pass: boolean, evidence: Evidence): ScenarioResult => ({
   status: pass ? "pass" : "fail",

@@ -64,16 +64,36 @@ describe("selectScenarios", () => {
     [["--phase", "4", "--phase", "3"]],
     [["--phase", "4", "--only", "T4.S.06"]],
     [["--phase", "9"]],
+    [["--from"]],
+    [["--from="]],
+    [["--from", "a.json", "--from", "b.json"]],
   ])("refuses %j", (argv) => {
     expect(() => selectScenarios(fixture, argv)).toThrow();
   });
 
-  it("the real registry has T4.S.06, not heavy, and nothing heavy by default", () => {
+  it("the real registry: --phase 4 gives the light T4.* scenarios, nothing heavy by default", () => {
     const real = createRegistry(scenarios);
     expect(real.get("T4.S.06")?.heavy).toBeUndefined();
-    expect(selectScenarios(real, ["--phase", "4"]).map((s) => s.id)).toEqual(["T4.S.06"]);
-    // Existing selection is unchanged: no scenario was heavy before phase 4.
-    expect(selectScenarios(real, []).map((s) => s.id)).toEqual(scenarios.map((s) => s.id));
+    expect(selectScenarios(real, ["--phase", "4"]).map((s) => s.id)).toEqual([
+      "T4.S.06",
+      "T4.L.01",
+      "T4.L.02",
+      "T4.L.03",
+      "T4.L.04",
+      "T4.S.01",
+      "T4.S.02",
+      "T4.S.03",
+      "T4.S.04",
+    ]);
+    // The default run is every scenario except the heavy phase 4 ones.
+    expect(selectScenarios(real, []).map((s) => s.id)).toEqual(
+      scenarios.filter((s) => s.heavy !== true).map((s) => s.id),
+    );
+    expect(scenarios.filter((s) => s.heavy === true).map((s) => s.id)).toEqual([
+      "T4.L.05",
+      "T4.F.01:start",
+      "T4.F.01:finish",
+    ]);
   });
 });
 
@@ -122,7 +142,7 @@ async function harness(slack: Partial<MockSlackOptions> = {}, slackVars = marker
 describe("T4.S.06", () => {
   it("passes against the mock: every probe refused, no request for the probe channel", async () => {
     const h = await harness();
-    const { code, report } = await h.run(["--phase", "4"]);
+    const { code, report } = await h.run(["--only", "T4.S.06"]);
     expect(code).toBe(0);
     expect(report.scenarios).toEqual([
       {

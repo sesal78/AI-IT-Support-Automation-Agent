@@ -1,7 +1,8 @@
 import type { MockReply, MockRequest } from "./mock-e2e.ts";
 
 /** What the mock does with the nth (1-based) judgment: a value, a failure, or never finishing. */
-export type MockJudgment = number | "failed" | "pending" | "bad_shape";
+/** `unredacted_input`: the POST is refused with 422, as the app refuses text redact() would change. */
+export type MockJudgment = number | "failed" | "pending" | "bad_shape" | "unredacted_input";
 
 /**
  * An `override` for startMockE2e that answers the judgment endpoints:
@@ -19,7 +20,11 @@ export function mockJudgments(outcome: (n: number, body: unknown) => MockJudgmen
       const body: unknown = JSON.parse(request.body);
       bodies.push(body);
       const runId = `run_mock${bodies.length}`;
-      scripted.set(runId, outcome(bodies.length, body));
+      const scriptedOutcome = outcome(bodies.length, body);
+      if (scriptedOutcome === "unredacted_input") {
+        return { status: 422, json: { error: "unredacted_input" } };
+      }
+      scripted.set(runId, scriptedOutcome);
       return { status: 202, json: { runId } };
     }
     const runId = request.path.split("/").pop() ?? "";

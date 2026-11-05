@@ -157,6 +157,8 @@ export interface MockE2e {
   readonly requests: MockRequest[];
   /** Most requests the mock was handling at one time. */
   readonly peakInFlight: number;
+  /** Most requests to one method and path (for example `POST /api/slack/interactivity`) at one time. */
+  peakInFlightOf(route: string): number;
   /** Test tickets by `testId`; a repeated `testId` is a duplicate, not a new ticket. */
   readonly testTickets: Map<string, MockTestTicket>;
   /** Most test tickets that were created and not yet finished at one time. */
@@ -499,12 +501,21 @@ export async function startMockE2e(options: MockE2eOptions): Promise<MockE2e> {
   );
   let inFlight = 0;
   let peakInFlight = 0;
+  const routes = new Map<string, { inFlight: number; peak: number }>();
   const server = createServer((incoming, response) => {
     inFlight += 1;
     peakInFlight = Math.max(peakInFlight, inFlight);
+    const routeKey = `${incoming.method ?? "GET"} ${new URL(incoming.url ?? "/", "http://127.0.0.1").pathname}`;
+    const route = routes.get(routeKey) ?? { inFlight: 0, peak: 0 };
+    routes.set(routeKey, route);
+    route.inFlight += 1;
+    route.peak = Math.max(route.peak, route.inFlight);
     let done = false;
     const finish = () => {
-      if (!done) inFlight -= 1;
+      if (!done) {
+        inFlight -= 1;
+        route.inFlight -= 1;
+      }
       done = true;
     };
     void (async () => {
@@ -555,6 +566,7 @@ export async function startMockE2e(options: MockE2eOptions): Promise<MockE2e> {
     get peakInFlight() {
       return peakInFlight;
     },
+    peakInFlightOf: (key) => routes.get(key)?.peak ?? 0,
     testTickets,
     maxOpenTickets: () => maxOpen,
     interactions,
