@@ -18,11 +18,11 @@ export interface MockReviewFaults {
   readonly editCard?: (testId: string, card: MockCard) => MockCard;
   /** policy_decided → review_requested, in ms (default 1 000). */
   readonly reviewAfterMs?: (testId: string) => number;
-  /** The status follows a recorded decision after this many ms (default 0). */
+  /** review_decided and the status follow a recorded decision after this many ms (default 500). */
   readonly decisionDelayMs?: number;
   /** Stored as the decider instead of the clicking user. */
   readonly decidedBy?: string;
-  /** The card is not updated after a decision. */
+  /** The card is not updated after a decision or a timeout. */
   readonly keepButtons?: boolean;
   /** One more event 1 s after review_decided. */
   readonly eventAfterDecision?: boolean;
@@ -36,6 +36,10 @@ export interface MockReviewFaults {
   readonly replayChanges?: boolean;
   /** Security event kinds that are never recorded. */
   readonly dropKinds?: readonly string[];
+  /** Any user may decide (no allow-list). */
+  readonly allowAnyUser?: boolean;
+  /** The payload's channel and message ts are not checked against the review. */
+  readonly skipBinding?: boolean;
   /** The nth (1-based) interactivity request answers 500. */
   readonly fail500?: (n: number) => boolean;
 }
@@ -76,6 +80,8 @@ export interface MockReviewTicket {
   status: string;
   events: Array<{ type: string; at: number }>;
   review: MockReviewRow | null;
+  /** The timed-out card update is done (it follows the status by CARD_LAG_MS). */
+  timeoutCardDone: boolean;
   /** A recorded decision whose status, event and card update are still to come. */
   pending: { decision: "approve" | "reject"; at: number } | null;
 }
@@ -118,13 +124,8 @@ function reviewCard(ticket: MockReviewTicket, reviewId: string): MockCard {
     blocks: [
       { type: "header", text: plain(`Review needed: ${title}`) },
       { type: "section", text: plain("Why: sensitive topic (HR)") },
-      {
-        type: "section",
-        fields: [
-          { type: "mrkdwn", text: "*Category*\nsoftware" },
-          { type: "mrkdwn", text: "*Priority*\nP3" },
-        ],
-      },
+      // Like packages/slack: the open card holds plain_text objects only.
+      { type: "section", text: plain("Category: software · Priority: P3") },
       { type: "section", text: plain(`Ticket (redacted)\n${truncate(ticket.description, 600)}`) },
       {
         type: "actions",
@@ -141,6 +142,11 @@ function reviewCard(ticket: MockReviewTicket, reviewId: string): MockCard {
     ],
   };
 }
+
+/** Like the review-ticket task: the status is written first, the card update follows. */
+export const CARD_LAG_MS = 1_000;
+/** Default time from a recorded click to review_decided and the status (the woken run). */
+export const DECISION_LAG_MS = 500;
 
 const timeoutSentence = (label: string) => `No decision within ${label}: sent to the manual queue`;
 
@@ -273,6 +279,14 @@ export function createMockReview(options: MockReviewOptions): MockReview {
         }
         t.events.push({ type: "review_timed_out", at: timeoutAt });
         t.status = "escalated_manual";
+      }
+      if (
+        t.status === "escalated_manual" &&
+        !t.timeoutCardDone &&
+        faults.keepButtons !== true &&
+        at >= timeoutAt + CARD_LAG_MS
+      ) {
+        t.timeoutCardDone = true;
         replaceCard(t, closedCard(t, plain(timeoutSentence(t.timeoutLabel)), "Review timed out: "));
       }
     }
@@ -299,6 +313,7 @@ export function createMockReview(options: MockReviewOptions): MockReview {
       status: "new",
       events: [],
       review: null,
+      timeoutCardDone: false,
       pending: null,
     };
     tickets.set(testId, ticket);
@@ -405,14 +420,16 @@ export function createMockReview(options: MockReviewOptions): MockReview {
     ) {
       return refuse(400, "bad_payload", "bad_payload");
     }
-    if (!options.reviewerIds.includes(userId)) return refuse(403, "forbidden", "not_allow_listed");
+    if (faults.allowAnyUser !== true && !options.reviewerIds.includes(userId))
+      return refuse(403, "forbidden", "not_allow_listed");
     const reviewId = action.value;
     const ticket = [...tickets.values()].find((t) => t.review?.id === reviewId);
     if (ticket === undefined) return refuse(404, "not_found", "unknown_review");
     const review = ticket.review!;
     if (
-      payload?.channel?.id !== options.channelId ||
-      payload?.container?.message_ts !== review.slackTs
+      faults.skipBinding !== true &&
+      (payload?.channel?.id !== options.channelId ||
+        payload?.container?.message_ts !== review.slackTs)
     ) {
       return refuse(403, "forbidden", "binding_mismatch");
     }
@@ -426,7 +443,7 @@ export function createMockReview(options: MockReviewOptions): MockReview {
     review.decidedBy = faults.decidedBy ?? userId;
     review.decidedAt = at;
     if (ticket.status === "review_pending") {
-      ticket.pending = { decision, at: at + (faults.decisionDelayMs ?? 0) };
+      ticket.pending = { decision, at: at + (faults.decisionDelayMs ?? DECISION_LAG_MS) };
     }
     return { status: 200, json: { outcome: "recorded" }, headers: NO_STORE };
   }

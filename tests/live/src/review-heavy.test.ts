@@ -125,7 +125,7 @@ describe("T4.F.01 waiting run", () => {
     expect(finish.code).toBe(0);
     expect(evidenceOf(finish.report)).toMatchObject({
       responseStatus: 200,
-      decidedMs: 0,
+      decidedMs: 500,
       status: "approved",
     });
     expect(ticket.status).toBe("approved");

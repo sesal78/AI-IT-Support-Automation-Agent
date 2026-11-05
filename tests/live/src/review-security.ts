@@ -7,6 +7,8 @@ import { result } from "./pipeline.ts";
 import {
   createdReviewTickets,
   createReviewTicket,
+  DECISION_LIMIT_MS,
+  DECISION_POLL_MS,
   decideAndWait,
   findCard,
   READ_SLACK,
@@ -57,86 +59,111 @@ export const forgedDecisionScenario: Scenario = {
 
     // B is approved first; its exact request is kept for the replay.
     const bSigned = signer.signedDecision({ ...ids(bReview), decision: "approve" });
-    const bFirst = await signer.send(bSigned);
-    if (bFirst.status !== 200 || bFirst.outcome !== "recorded") failedChecks.push("b-recorded");
-    const bBefore = await context.client.ticket(b.ticketId);
+    const statuses: Record<string, number | string | null> = {};
+    let bDecidedEvents: number | null = null;
+    let kinds: string[] = [];
+    let bAiCalls = b.view.aiCallCount;
+    let aFinal: Awaited<ReturnType<typeof decideAndWait>>;
+    try {
+      const bFirst = await signer.send(bSigned);
+      if (bFirst.status !== 200 || bFirst.outcome !== "recorded") failedChecks.push("b-recorded");
+      // The woken run writes review_decided and the status after the click: wait for approved.
+      const bBefore = await waitForStatus(context, b.ticketId, "approved");
+      if (bBefore.status !== "approved") failedChecks.push("b-approved");
 
-    const onA = async (check: string, expected: number, signed: SignedRequest) => {
-      const sent = await signer.send(signed);
-      if (sent.status !== expected) failedChecks.push(check);
-      return sent.status;
-    };
-    const forgedStatus = await onA(
-      "a-forged-401",
-      401,
-      signer.signedDecision({
-        ...ids(aReview),
-        decision: "approve",
-        secretOverride: randomSecret(),
-      }),
-    );
-    const staleStatus = await onA(
-      "a-stale-401",
-      401,
-      signer.signedDecision({ ...ids(aReview), decision: "approve", timestampOffsetSeconds: -301 }),
-    );
-    const notAllowedStatus = await onA(
-      "a-not-allow-listed-403",
-      403,
-      signer.signedDecision({ ...ids(aReview), decision: "approve", userId: NOT_ALLOW_LISTED }),
-    );
-    const bindingStatus = await onA(
-      "a-binding-mismatch-403",
-      403,
-      signer.signedDecision({
-        reviewId: aReview.id,
-        slackTs: bReview.slackTs,
-        decision: "approve",
-      }),
-    );
-    const aAfter = await context.client.ticket(a.ticketId);
-    const aStored = aAfter.reviews.find((r) => r.id === aReview.id);
-    if (aAfter.status !== "review_pending" || aStored?.decision !== null) {
-      failedChecks.push("a-still-waiting");
+      const onA = async (check: string, expected: number, signed: SignedRequest) => {
+        const sent = await signer.send(signed);
+        if (sent.status !== expected) failedChecks.push(check);
+        return sent.status;
+      };
+      statuses.forgedStatus = await onA(
+        "a-forged-401",
+        401,
+        signer.signedDecision({
+          ...ids(aReview),
+          decision: "approve",
+          secretOverride: randomSecret(),
+        }),
+      );
+      statuses.staleStatus = await onA(
+        "a-stale-401",
+        401,
+        signer.signedDecision({
+          ...ids(aReview),
+          decision: "approve",
+          timestampOffsetSeconds: -301,
+        }),
+      );
+      statuses.notAllowedStatus = await onA(
+        "a-not-allow-listed-403",
+        403,
+        signer.signedDecision({ ...ids(aReview), decision: "approve", userId: NOT_ALLOW_LISTED }),
+      );
+      statuses.bindingStatus = await onA(
+        "a-binding-mismatch-403",
+        403,
+        signer.signedDecision({
+          reviewId: aReview.id,
+          slackTs: bReview.slackTs,
+          decision: "approve",
+        }),
+      );
+      const aAfter = await context.client.ticket(a.ticketId);
+      const aStored = aAfter.reviews.find((r) => r.id === aReview.id);
+      if (aAfter.status !== "review_pending" || aStored?.decision !== null) {
+        failedChecks.push("a-still-waiting");
+      }
+
+      const replay = await signer.send(bSigned);
+      statuses.replayStatus = replay.status;
+      statuses.replayOutcome = replay.outcome;
+      if (replay.status !== 200 || replay.outcome !== "already_decided") {
+        failedChecks.push("b-replay-already-decided");
+      }
+      const bAfter = await context.client.ticket(b.ticketId);
+      bAiCalls = bAfter.aiCallCount;
+      if (
+        JSON.stringify(decisionOf(bBefore, bReview.id)) !==
+        JSON.stringify(decisionOf(bAfter, bReview.id))
+      ) {
+        failedChecks.push("b-unchanged");
+      }
+      bDecidedEvents = bAfter.events.filter((e) => e.type === "review_decided").length;
+      if (bDecidedEvents !== 1) failedChecks.push("b-one-review-decided");
+
+      const { events } = await context.client.securityEvents(new Date(since));
+      kinds = [...new Set(events.filter((e) => e.source === "slack").map((e) => e.kind))].sort();
+      for (const kind of S01_KINDS) if (!kinds.includes(kind)) failedChecks.push(`event-${kind}`);
+    } finally {
+      // A is approved, so its run ends now instead of at the timeout, even after an error.
+      aFinal = await decideAndWait(context, a.ticketId, aReview, "approve");
     }
-
-    const replay = await signer.send(bSigned);
-    if (replay.status !== 200 || replay.outcome !== "already_decided") {
-      failedChecks.push("b-replay-already-decided");
-    }
-    const bAfter = await context.client.ticket(b.ticketId);
-    if (
-      JSON.stringify(decisionOf(bBefore, bReview.id)) !==
-      JSON.stringify(decisionOf(bAfter, bReview.id))
-    ) {
-      failedChecks.push("b-unchanged");
-    }
-    const bDecidedEvents = bAfter.events.filter((e) => e.type === "review_decided").length;
-    if (bDecidedEvents !== 1) failedChecks.push("b-one-review-decided");
-
-    const { events } = await context.client.securityEvents(new Date(since));
-    const kinds = [...new Set(events.filter((e) => e.source === "slack").map((e) => e.kind))];
-    for (const kind of S01_KINDS) if (!kinds.includes(kind)) failedChecks.push(`event-${kind}`);
-
-    // A is approved, so its run ends now instead of at the timeout.
-    const aFinal = await decideAndWait(context, a.ticketId, aReview, "approve");
     if (aFinal.outcome !== "recorded") failedChecks.push("a-final-approve");
 
     return result(failedChecks, {
       ticketIds: [a.ticketId, b.ticketId],
       reviewIds: [aReview.id, bReview.id],
-      forgedStatus,
-      staleStatus,
-      notAllowedStatus,
-      bindingStatus,
-      replayStatus: replay.status,
-      replayOutcome: replay.outcome,
+      ...statuses,
       bDecidedEvents,
-      eventKinds: kinds.sort(),
-      aiCallCount: aFinal.view.aiCallCount + bAfter.aiCallCount,
+      eventKinds: kinds,
+      aiCallCount: aFinal.view.aiCallCount + bAiCalls,
     });
   },
 };
+
+/** Polls the view every 500 ms until it shows `status` or 5 s pass; returns the last view. */
+async function waitForStatus(
+  context: ScenarioContext,
+  ticketId: string,
+  status: string,
+): Promise<InternalTicketView> {
+  const deadline = context.now() + DECISION_LIMIT_MS;
+  for (;;) {
+    const view = await context.client.ticket(ticketId);
+    if (view.status === status || context.now() >= deadline) return view;
+    await context.sleep(DECISION_POLL_MS);
+  }
+}
 
 const ids = (review: { id: string; slackTs: string }) => ({
   reviewId: review.id,
@@ -154,6 +181,15 @@ function decisionOf(view: InternalTicketView, reviewId: string) {
         decidedAt: review.decidedAt,
         slackTs: review.slackTs,
       };
+}
+
+/** Every object in `value` with a string `text`, whatever its `type`. */
+function stringTexts(value: unknown): Array<{ type: unknown; text: string }> {
+  if (Array.isArray(value)) return value.flatMap(stringTexts);
+  if (typeof value !== "object" || value === null) return [];
+  const record = value as Record<string, unknown>;
+  const own = typeof record.text === "string" ? [{ type: record.type, text: record.text }] : [];
+  return [...own, ...Object.values(record).flatMap(stringTexts)];
 }
 
 /** The Slack markup T4.S.02 puts in the ticket title and description. */
@@ -185,8 +221,12 @@ export const markupScenario: Scenario = {
     const objects = textObjects(card.blocks ?? []);
     const mrkdwn = objects.filter((o) => o.type === "mrkdwn");
     const plain = objects.filter((o) => o.type === "plain_text");
+    // Every object with a string `text` that is not plain_text (mrkdwn, a markdown
+    // block, anything else Slack may parse): none may hold the broadcast.
+    const parsed = stringTexts(card.blocks ?? []).filter((o) => o.type !== "plain_text");
     const failedChecks = [
       ...(mrkdwn.every((o) => !o.text.includes("<")) ? [] : ["mrkdwn-no-markup"]),
+      ...(parsed.every((o) => !o.text.includes("<!channel>")) ? [] : ["markup-only-in-plain-text"]),
       ...(card.text.includes("&lt;!channel&gt;") ? [] : ["fallback-escaped"]),
       ...(plain.some((o) => o.text.includes(MARKUP)) ? [] : ["plain-text-unchanged"]),
     ];
@@ -194,6 +234,7 @@ export const markupScenario: Scenario = {
       ...evidence,
       mrkdwnObjects: mrkdwn.length,
       plainTextObjects: plain.length,
+      otherTextObjects: parsed.length,
     });
   },
 };
@@ -388,6 +429,8 @@ export const fuzzScenario: Scenario = {
       transportErrors,
       reviewsChecked: targets.length,
       reviewsChanged: changed,
+      // Run alone, the run has no reviews to compare: the check is reported as skipped.
+      skippedChecks: targets.length === 0 ? ["reviews-unchanged"] : [],
       healthStatus,
       aiCallCount: 0,
     });

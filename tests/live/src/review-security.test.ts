@@ -90,7 +90,7 @@ describe("T4.S.01 negative cases", () => {
     [
       "the replay changes B",
       { faults: { replayChanges: true } },
-      ["b-replay-already-decided", "b-one-review-decided"],
+      ["b-replay-already-decided", "b-unchanged", "b-one-review-decided"],
     ],
     [
       "a security event kind is missing",
@@ -102,6 +102,38 @@ describe("T4.S.01 negative cases", () => {
     const { code, report } = await h.run(["--only", "T4.S.01"]);
     expect(code).toBe(1);
     expect(evidenceOf(report)["failedChecks"]).toEqual(checks);
+  });
+
+  it.each<[string, ReviewHarnessOptions, string]>([
+    [
+      "the mock accepts a user not on the allow-list",
+      { faults: { allowAnyUser: true } },
+      "a-not-allow-listed-403",
+    ],
+    [
+      "the mock does not check the binding",
+      { faults: { skipBinding: true } },
+      "a-binding-mismatch-403",
+    ],
+  ])("fails, naming the check, when %s", async (_case, options, check) => {
+    const h = await harness(options);
+    const { code, report } = await h.run(["--only", "T4.S.01"]);
+    expect(code).toBe(1);
+    expect(evidenceOf(report)["failedChecks"]).toContain(check);
+  });
+
+  it("waits for B to be approved before counting its events", async () => {
+    const h = await harness({ faults: { decisionDelayMs: 2_000 } });
+    const { code, report } = await h.run(["--only", "T4.S.01"]);
+    expect(code).toBe(0);
+    expect(evidenceOf(report)["bDecidedEvents"]).toBe(1);
+  });
+
+  it("fails b-approved when B is not approved within 5 s, and still approves A", async () => {
+    const h = await harness({ faults: { decisionDelayMs: 6_000 } });
+    const { report } = await h.run(["--only", "T4.S.01"]);
+    expect(evidenceOf(report)["failedChecks"]).toContain("b-approved");
+    expect(h.review.tickets.get(`${RUN_ID}:S01:1`)!.review!.decision).toBe("approve");
   });
 
   it("is not_run without the signing variables and creates no ticket", async () => {
@@ -137,8 +169,24 @@ describe("T4.S.02 markup", () => {
       }),
     },
   });
-  it.each<[string, ReviewHarnessOptions, string]>([
-    ["a mrkdwn field holds <!channel>", addMrkdwn("<!channel>"), "mrkdwn-no-markup"],
+  it.each<[string, ReviewHarnessOptions, string[]]>([
+    [
+      "a mrkdwn field holds <!channel>",
+      addMrkdwn("<!channel>"),
+      ["mrkdwn-no-markup", "markup-only-in-plain-text"],
+    ],
+    [
+      "a non-plain object (a markdown block) holds <!channel>",
+      {
+        faults: {
+          editCard: (_id: string, card: MockCard) => ({
+            ...card,
+            blocks: [...card.blocks, { type: "markdown", text: "<!channel>" }],
+          }),
+        },
+      },
+      ["markup-only-in-plain-text"],
+    ],
     [
       "the fallback text is not escaped",
       {
@@ -149,17 +197,28 @@ describe("T4.S.02 markup", () => {
           }),
         },
       },
-      "fallback-escaped",
+      ["fallback-escaped"],
     ],
-  ])("fails when %s", async (_case, options, check) => {
+  ])("fails when %s", async (_case, options, checks) => {
     const h = await harness(options);
     const { code, report } = await h.run(["--only", "T4.S.02"]);
     expect(code).toBe(1);
-    expect(evidenceOf(report)["failedChecks"]).toEqual([check]);
+    expect(evidenceOf(report)["failedChecks"]).toEqual(checks);
   });
 });
 
 describe("T4.S.03 fuzz", () => {
+  it("reports reviews-unchanged as skipped when the run created no review", async () => {
+    const h = await harness();
+    const { code, report } = await h.run(["--only", "T4.S.03"]);
+    expect(code).toBe(0);
+    expect(evidenceOf(report)).toMatchObject({
+      reviewsChecked: 0,
+      skippedChecks: ["reviews-unchanged"],
+      failedChecks: [],
+    });
+  });
+
   it("fails when one request gets 500, and never has more than 10 in flight", async () => {
     const h = await harness({ delayMs: 5, faults: { fail500: (n) => n === 7 } });
     const { code, report } = await h.run(["--only", "T4.S.03"]);

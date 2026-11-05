@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { canaryRunId } from "./observability.ts";
 import { truncate } from "./review-flow.ts";
 import { TEST_SLACK } from "./testing/env.ts";
-import type { MockCard } from "./testing/mock-review.ts";
+import { CARD_LAG_MS, type MockCard } from "./testing/mock-review.ts";
 import {
   startReviewHarness,
   type ReviewHarness,
@@ -63,7 +63,7 @@ describe("review flow scenarios against the mocks", () => {
     for (const word of TICKET_WORDS) expect(text).not.toContain(word);
     for (const canary of buildCanaries(canaryRunId(RUN_ID)))
       expect(text).not.toContain(canary.value);
-    expect(report.scenarios[1]!.evidence).toMatchObject({ responseStatus: 200, decidedMs: 0 });
+    expect(report.scenarios[1]!.evidence).toMatchObject({ responseStatus: 200, decidedMs: 500 });
     expect(report.scenarios[2]!.evidence).toMatchObject({ eventsAfter: 0 });
     expect(report.scenarios[3]!.evidence).toMatchObject({
       threadNotes: 1,
@@ -160,6 +160,54 @@ describe("T4.L.01 negative cases", () => {
     expect(failedChecks(report)).toEqual([check]);
   });
 
+  it("skips J4 when a canary is on the card, so leaked text never goes to TypeSafe", async () => {
+    const h = await harness(
+      withCard((card) => ({
+        ...card,
+        blocks: [
+          ...card.blocks,
+          {
+            type: "section",
+            text: { type: "plain_text", text: buildCanaries(canaryRunId(RUN_ID))[0]!.value },
+          },
+        ],
+      })),
+    );
+    const { report } = await h.run(["--only", "T4.L.01"]);
+    expect(h.count("POST", "/api/internal/judgments")).toBe(0);
+    expect(report.scenarios[0]!.evidence).toMatchObject({
+      judgeStatus: "skipped",
+      failedChecks: ["no-canaries"],
+    });
+  });
+
+  it("records j4-score when the judgments route answers 422 unredacted_input", async () => {
+    const h = await harness({ judge: () => "unredacted_input" });
+    const { code, report } = await h.run(["--only", "T4.L.01"]);
+    expect(code).toBe(1);
+    expect(report.scenarios[0]!.error).toBeUndefined();
+    expect(report.scenarios[0]!.evidence).toMatchObject({
+      judgeStatus: "refused",
+      judgeHttpStatus: 422,
+      judgeScore: null,
+      failedChecks: ["j4-score"],
+    });
+  });
+
+  it("keeps the earlier check results when the judge refuses", async () => {
+    const h = await harness({
+      judge: () => "unredacted_input",
+      ...withCard((card) => ({
+        ...card,
+        blocks: blocks(card).map((b) =>
+          b.type === "actions" ? { ...b, elements: (b.elements as unknown[]).slice(0, 1) } : b,
+        ),
+      })),
+    });
+    const { report } = await h.run(["--only", "T4.L.01"]);
+    expect(failedChecks(report)).toEqual(["two-buttons", "j4-score"]);
+  });
+
   it("does not call the judge when the card is missing", async () => {
     const h = await harness({ faults: { hideCard: () => true } });
     await h.run(["--only", "T4.L.01"]);
@@ -238,6 +286,27 @@ describe("T4.L.03 reject", () => {
 });
 
 describe("T4.L.04 timeout", () => {
+  it("waits for the card: the mock closes it CARD_LAG_MS after it sets escalated_manual", async () => {
+    // The scenario sees escalated_manual at the exact timeout tick, when the card
+    // is still open; a single card read right then would fail card-no-buttons.
+    const h = await harness();
+    const { code, report } = await h.run(["--only", "T4.L.04"]);
+    expect(code).toBe(0);
+    const ticket = h.review.tickets.get(`${RUN_ID}:L04:1`)!;
+    const at = ticket.events.find((e) => e.type === "review_timed_out")!.at;
+    expect(at - ticket.createdAt).toBe(6_000 + 120_000);
+    expect(report.scenarios[0]!.evidence["escalatedMs"]).toBe(120_000);
+    expect(ticket.timeoutCardDone).toBe(true);
+    expect(CARD_LAG_MS).toBeGreaterThan(0);
+  });
+
+  it("fails card-no-buttons when the card is never closed after the timeout", async () => {
+    const h = await harness({ faults: { keepButtons: true } });
+    const { code, report } = await h.run(["--only", "T4.L.04"]);
+    expect(code).toBe(1);
+    expect(failedChecks(report)).toEqual(["card-no-buttons"]);
+  });
+
   it("passes when the mock escalates and posts the thread reply", async () => {
     const h = await harness();
     const { code, report } = await h.run(["--only", "T4.L.04"]);

@@ -10,6 +10,7 @@ import {
   type InternalTicketView,
   type JudgeDefinition,
 } from "@ai-it-support/shared";
+import { LiveContractError } from "./client.ts";
 import { missingSlackEnv, type SlackEnvName } from "./config.ts";
 import { createJudgeClient } from "./judge.ts";
 import { canaryRunId } from "./observability.ts";
@@ -312,20 +313,35 @@ export const reviewCardScenario: Scenario = {
     ) {
       failedChecks.push("header-redacted-title");
     }
-    const judged = await createJudgeClient(context.client, {
-      now: context.now,
-      sleep: context.sleep,
-    }).judge(loadJ4(), {
-      message: cardMessageText(card),
-      reader: "a reviewer who must approve or reject an IT support ticket",
-    });
-    const judgeScore = judged.status === "completed" ? judged.value : null;
-    if (judgeScore === null || judgeScore < J4_MIN_SCORE) failedChecks.push("j4-score");
+    // Leaked text never goes to TypeSafe: with a canary on the card, J4 is skipped.
+    let judgeStatus = "skipped";
+    let judgeHttpStatus: number | null = null;
+    let judgeScore: number | null = null;
+    if (canaryHits === 0) {
+      try {
+        const judged = await createJudgeClient(context.client, {
+          now: context.now,
+          sleep: context.sleep,
+        }).judge(loadJ4(), {
+          message: cardMessageText(card),
+          reader: "a reviewer who must approve or reject an IT support ticket",
+        });
+        judgeStatus = judged.status;
+        if (judged.status === "completed") judgeScore = judged.value;
+      } catch (error) {
+        // The judgments route refuses text redact() would change (422 unredacted_input).
+        if (!(error instanceof LiveContractError)) throw error;
+        judgeStatus = "refused";
+        judgeHttpStatus = error.status;
+      }
+      if (judgeScore === null || judgeScore < J4_MIN_SCORE) failedChecks.push("j4-score");
+    }
     return result(failedChecks, {
       ...baseEvidence(ticket),
       buttons: found.length,
       canaryHits,
-      judgeStatus: judged.status,
+      judgeStatus,
+      judgeHttpStatus,
       judgeScore,
     });
   },
@@ -414,6 +430,7 @@ export const timeoutScenario: Scenario = {
     }
     const failedChecks: string[] = [];
     const escalated = view.status === "escalated_manual";
+    const escalatedMs = escalated ? context.now() - start : null;
     if (!escalated) failedChecks.push("escalated-manual");
     if (reviewOf(view, ticket.review.id)?.decision !== "timeout") {
       failedChecks.push("decision-timeout");
@@ -424,11 +441,12 @@ export const timeoutScenario: Scenario = {
     const thread = await slack.replies(channelId, ts);
     const notes = thread.filter((m) => m.ts !== ts && m.text.includes(TIMEOUT_NOTE)).length;
     if (notes === 0) failedChecks.push("thread-note");
-    const card = await findCard(slack, ts);
+    // The task sets escalated_manual before it updates the card, so wait for the update.
+    const card = await waitForClosedCard(context, slack, ts, TIMEOUT_NOTE, DECISION_LIMIT_MS);
     if (card === undefined || hasActions(card)) failedChecks.push("card-no-buttons");
     return result(failedChecks, {
       ...baseEvidence(ticket, view),
-      escalatedMs: escalated ? context.now() - start : null,
+      escalatedMs,
       threadNotes: notes,
     });
   },
