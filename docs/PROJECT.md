@@ -27,7 +27,7 @@ release authority. An agent never self-approves a production release at ANY leve
 
 ## 1. Overview
 
-This is a portfolio demo of an AI service-desk agent for IT support tickets. A requester submits a ticket through a web form (email is added in the last phase). The system stores the raw ticket, makes a redacted copy, and checks for sensitive topics. TypeSafe then makes typed judgments on the ticket: category, priority, urgency, route, and duplicate/outage. The system finds matching knowledge-base articles, and DeepSeek drafts the fix steps from those articles. Code decides the next step. Some tickets go straight to ServiceNow. Sensitive or uncertain tickets wait for a human to press Approve or Reject in Slack. For a small set of simple problems (a locked account, a forgotten password), the system can also propose an auto-fix on the ServiceNow user record. It runs the fix only after a Slack Approve. Every helpdesk is reached through one connector interface. ServiceNow is the only connector built in v1. This rebuilds an n8n version that leaked unredacted PII to OpenAI and ignored human decisions (see `legacy/n8n/README.md`).
+This is a portfolio demo of an AI service-desk agent for IT support tickets. A requester submits a ticket through a web form (email is added in the last phase). The system stores the raw ticket, makes a redacted copy, and checks for sensitive topics. TypeSafe then makes typed judgments on the ticket: category, priority, urgency, route, and duplicate/outage. The system finds matching knowledge-base articles, and DeepSeek drafts the fix steps from those articles. Code decides the next step. Some tickets go straight to ServiceNow. Sensitive or uncertain tickets wait for a human to press Approve or Reject in Slack. For a small set of simple problems (a locked account, a forgotten password), the system can also propose an auto-fix on the ServiceNow user record. It runs the fix only after a Slack Approve. Every helpdesk is reached through one connector interface. v1 has two connectors: ServiceNow, and a built-in helpdesk on this project's own database, where invited staff sign in and work tickets in the web app. The `HELPDESK` setting picks one, and a client can switch later with no code change (added 2026-11-05). This rebuilds an n8n version that leaked unredacted PII to OpenAI and ignored human decisions (see `legacy/n8n/README.md`).
 
 ## 2. Goals & Success Criteria
 
@@ -42,9 +42,10 @@ This is a portfolio demo of an AI service-desk agent for IT support tickets. A r
 
 - NOT building: Microsoft Teams intake or approvals
 - NOT building: multi-tenant / SaaS (one demo setup only)
-- NOT building: an in-app approval queue. Approvals happen in Slack only.
+- NOT building: a separate in-app approval queue. Slack stays the review channel. Only with `HELPDESK=builtin` can an admin also Approve or Reject a waiting ticket from its ticket page, through the same decision rules as Slack (2026-11-05).
 - NOT building: n8n in the new system (the old workflows stay in `legacy/` for reference only)
-- NOT building: Jira Service Management, Zendesk or other helpdesk connectors in v1. The connector interface is built, so they can be added later.
+- NOT building: Jira Service Management, Zendesk or other third-party helpdesk connectors in v1. The connector interface is built, so they can be added later. The built-in helpdesk (2026-11-05) is our own, not a third-party connector.
+- NOT building: a full helpdesk product in the built-in option: no SLAs, no requester portal or email threads, no staff self-sign-up, no staff-management screen (Seun adds staff), no raw-text view for staff (pending decision, §11), and no moving tickets between helpdesks after a switch.
 - NOT building: auto-fix on any system other than ServiceNow `dev420188` `demo.*` users (no Okta, Entra, AD or real accounts)
 - NOT building: auto-fix without a human Slack Approve
 - NOT building: use of real customer or employee ticket data. The demo uses synthetic data only.
@@ -72,6 +73,7 @@ This is a portfolio demo of an AI service-desk agent for IT support tickets. A r
 - Reviewer → gets a Slack message in `#ai-it-support-automation-agent` → presses Approve or Reject → the ticket goes to ServiceNow, or to the manual queue with no incident
 - Reviewer → gets an auto-fix proposal in Slack (action, target `demo.*` user, reason) → Approve runs it and the result is checked; Reject closes it with no change
 - Admin (Seun) → signs in → views tickets, audit trail and triage metrics in a read-only dashboard
+- Staff (built-in helpdesk only) → signs in → lists tickets, opens one, adds a note, assigns it, changes its state; an admin can also decide a waiting review
 
 **Requester**
 - **Data permissions:** creates a ticket. Reads only the ticket ID and status that the system returns.
@@ -82,6 +84,11 @@ This is a portfolio demo of an AI service-desk agent for IT support tickets. A r
 - **Data permissions:** reads the redacted ticket and the AI suggestion in Slack. Approves or rejects.
 - **Harm on failure:** a wrong approval creates a wrong incident. A missed approval means a ticket waits.
 - **Sensitive actions:** every Approve or Reject is audit-logged with the Slack user ID and a timestamp. Slack request signatures are verified. An auto-fix Approve only works if the Slack user ID is on a reviewer allow-list (`SLACK_REVIEWER_IDS`).
+
+**Staff (built-in helpdesk, `HELPDESK=builtin`)**
+- **Data permissions:** invited users with an active `staff` row, role `agent` or `admin`. Read redacted ticket text, triage results and history; never raw text, requester name or email. Add notes, assign, change helpdesk state; only `admin` decides waiting reviews. Delete nothing.
+- **Harm on failure:** a wrong state or assignment slows a fix; an access bypass would expose tickets (synthetic in the demo).
+- **Sensitive actions:** login required (Supabase Auth, invite-only). Row-level security lets only active staff read tickets. Every staff action writes an audit event.
 
 **Admin**
 - **Data permissions:** reads all tickets, including raw text, plus the audit log and metrics. Can switch shadow mode on and off through an env var. Deletes nothing through the UI.
@@ -97,7 +104,7 @@ This is a portfolio demo of an AI service-desk agent for IT support tickets. A r
 | AI (judgments) | TypeSafe (Jev), JS SDK | Returns typed answers (Choice/Score/Noul) with real probabilities, instead of an LLM rating its own confidence |
 | AI (text) | DeepSeek V4.1 Flash via OpenCode Go (Seun's subscription; OpenAI-compatible), called through the Vercel AI SDK | Already paid for; Go docs state zero data retention for DeepSeek models (checked 2026-10-04). `LLM_BASE_URL` and `LLM_MODEL` env vars let us swap providers. |
 | Database | Supabase Postgres + pgvector, with migrations, on the existing self-hosted Supabase stack on Dokploy | Decided. Holds tickets, the audit log and KB vectors in one place. This stack is shared with other apps, so this project's objects stay isolated (see §11). |
-| Auth | Supabase Auth (admin dashboard only). Slack signing secret for Slack callbacks. | Tech-stack default *(default — not discussed)* |
+| Auth | Supabase Auth: staff login for the built-in helpdesk (invite-only, roles `agent` and `admin`), and the admin dashboard if phase 7 is built. Slack signing secret for Slack callbacks. | Tech-stack default *(default — not discussed)* |
 | Hosting | Next.js in Docker on the user's Dokploy instance. Trigger.dev cloud for tasks. Cloudflare in front, with Turnstile on the form. | Decided. Turnstile/Cloudflare *(default — not discussed)* |
 | Observability | Langfuse (AI traces/evals), Sentry (errors), structured logs, error alerts to Slack | Tech-stack default *(default — not discussed)* |
 | Email (phase 8) | Resend inbound | Tech-stack default *(default — not discussed)* |
@@ -124,9 +131,9 @@ flowchart LR
   SN --> DB
 ```
 
-- `apps/web`: form, admin dashboard, intake API, Slack interactivity endpoint (verifies the signature, then completes the wait token)
+- `apps/web`: form, admin dashboard, intake API, Slack interactivity endpoint (verifies the signature, then completes the wait token), and the staff screens under `/staff` (built-in helpdesk only)
 - `services/pipeline`: Trigger.dev tasks: `intake-ticket`, `triage-ticket` (includes the Slack review step), `helpdesk-sync`, `autofix-execute`, `kb-ingest`, `helpdesk-health`, `ops-fault-drill`
-- `packages/helpdesk`: a `HelpdeskConnector` interface (`createTicket`, `addNote`, `updateTicket`, `findByExternalRef`, `health`). The only v1 implementation is `ServiceNowConnector`. The code picks the connector through the `HELPDESK=servicenow` config.
+- `packages/helpdesk`: a `HelpdeskConnector` interface (`createTicket`, `addNote`, `updateTicket`, `findByExternalRef`, `health`). v1 implementations: `ServiceNowConnector` and `BuiltinConnector` (our own `itsupport` tables). `HELPDESK=servicenow` or `HELPDESK=builtin` picks one; both pass the same contract tests.
 - `packages/autofix`: an allow-list of actions, each with `precheck` / `execute` / `verify` / `undo`. v1 actions: `unlock_account` (`locked_out=false`) and `force_password_reset` (`password_needs_reset=true`), on `sys_user` records whose `user_name` starts with `demo.` and that do not hold the `admin` role.
 - `packages/shared`: zod schemas (ticket, triage result, events), redaction module, and a category map to the 6 `dev420188` incident categories, verified on 2026-09-27: `database`, `inquiry`, `software`, `hardware`, `password_reset`, `network`
 - `packages/ai`: a TypeSafe client and an LLM client, each behind a small interface so each can be swapped
@@ -141,6 +148,7 @@ flowchart LR
 - `reviews`: ticket_id, kind (triage/autofix), proposal_id, slack_user_id, decision (approve/reject/timeout), decided_at, wait_token_id, slack_ts. **Internal.**
 - `ticket_events`: an append-only audit log (ticket_id, type, payload, at). **Internal.**
 - `autofix_actions`: ticket_id, action, target_user_name, status (proposed/approved/rejected/executed/verified/failed/undone/refused), refusal_reason, before_state, after_state, approved_by, executed_at. **Internal.**
+- Built-in helpdesk (only used with `HELPDESK=builtin`): `staff` (auth user ID, email, display name, role `agent|admin`, active), `helpdesk_tickets` (ticket_id, number `HD…`, state, priority, category, assignee), `helpdesk_notes` and `helpdesk_assignments` (append-only). **Internal.** Staff read them under row-level security.
 - `kb_articles`: slug, title, content, category, assignment_group, full-text `search` column (Postgres full-text + TypeSafe rerank; no embeddings in v1, decided 2026-10-04). **Public/internal.**
 - External: ServiceNow `dev420188` incident table (**internal**, demo instance). Slack channel (**internal**, redacted text only). TypeSafe and OpenCode Go (**receive redacted text only**).
 
@@ -163,7 +171,7 @@ flowchart LR
 | 2 | Intake + safety | On staging: a form submit returns a ticket ID in < 5 s. The raw ticket is stored. The redacted copy replaces a test SSN/email/card with `[REDACTED_*]`. A spam submit without Turnstile is rejected with a 4xx. A ticket with a sensitive topic in the body is flagged. | done (signed off 2026-10-01) |
 | 3 | AI triage + KB | ~30 synthetic KB articles ingested. The eval run on ≥ 50 labeled tickets meets the §2 targets. Langfuse shows only redacted text in every AI call. | done (released 2026-10-25) |
 | 4 | Slack review | A low-confidence or sensitive ticket posts to `#ai-it-support-automation-agent`. Approve resumes the run. Reject creates no incident. No answer before the timeout escalates the ticket to the manual queue. An invalid Slack signature returns 401. | pending |
-| 5 | Helpdesk connector + ServiceNow | `HelpdeskConnector` has contract tests that any connector must pass. On `dev420188`: an auto ticket creates 1 incident with one of the 6 verified categories and the right caller. A duplicate submit creates no second incident. The update path adds a work note. `SHADOW_MODE=true` writes nothing. The health check reports a sleeping instance clearly. | pending |
+| 5 | Helpdesk connector + ServiceNow + built-in helpdesk | `HelpdeskConnector` has contract tests that any connector must pass. On `dev420188`: an auto ticket creates 1 incident with one of the 6 verified categories and the right caller. A duplicate submit creates no second incident. The update path adds a work note. `SHADOW_MODE=true` writes nothing. The health check reports a sleeping instance clearly. Built-in option (2026-11-05): `BuiltinConnector` passes the same contract tests; `HELPDESK=builtin` or `servicenow` works from the same build; invited staff sign in, see redacted text only, list, open, note, assign and change state; only active staff can read tickets (row-level security); every staff action writes an event; a Slack decision and a staff decision end in the same ticket state. | pending |
 | 6 | Auto-fix | Seeded `demo.*` users exist on `dev420188`. A locked-account ticket → Slack proposal → Approve → `locked_out=false` is verified by re-reading the record, plus a work note. A Reject changes nothing. A non-demo or `admin` target is refused before Slack. The undo for each action was rehearsed on staging once. | optional (scope cut 2026-10-26) |
 | 7 | Ops + dashboard | Admin login works. The dashboard shows tickets, auto-fix actions, the audit trail and metrics. A forced pipeline failure produces a Sentry event and a Slack alert. | optional (scope cut 2026-10-26) |
 | 8 | Email intake | An email to the Resend inbound address creates a ticket that goes through the same pipeline as the form. | optional (scope cut 2026-10-26) |
@@ -407,6 +415,7 @@ the rollback once on staging so the first real execution isn't during a fire.
 | Env var name of the TypeSafe key in the Homebase key store | name only, from the user | Phase 1 | Yes | Yes | 2026-09-27: `TYPESAFE_API_KEY` (confirmed by the user) |
 | Staging environment | separate Dokploy app + Trigger.dev `staging` env / N/A with reason | Phase 1 | Yes | Yes | 2026-09-27: separate Dokploy staging app built from `dev` + Trigger.dev `staging` env |
 | Separate Trigger.dev environment for production | upgrade Trigger.dev plan (adds `staging`) / preview branches / keep sharing `prod` | before the first real production release | No | Yes | 2026-10-04: keep sharing `prod` — staging is the live demo; no separate production app (plan D8) |
+| Built-in helpdesk: can staff see raw ticket text? | redacted only / admin-only raw view with an audit event | before P5-T17 (ticket screens) | No (built for the default) | No | open — default redacted only (plan §6.3.1 Q1) |
 
 Rules: an agent that hits a pending decision mid-task STOPS and asks — it never
 picks an option itself. A decision that blocks release cannot still be pending
@@ -481,6 +490,7 @@ at §6 phase sign-off of the final phase.
 - 2026-10-24 — Phase 3 complete (agent, plan §2.2); release pending Seun
 - 2026-10-25 — Phase 3 released. Seun merged release PR #120 (`main` = `e2fa806`, hotfix #118 closed as superseded); staging app deployed `e2fa806` (Next.js 16.4.2) and main Trigger.dev `prod` version `20261024.1` (LLM on OpenRouter, env pushed by Seun with `push_env.py --only trigger-main`). Release smoke: 3 real staging tickets — `db9140b8-6bc2-4248-921e-6d25579e6220` password → `auto`; `5c39fa0f-d95b-4fa5-a3f4-f420597e0726` laptop boot → `review` (`ungrounded_fix`, no KB article); `de944027-07ac-4035-96a4-208b83c94af9` HR → `review` (sensitive `hr`); all `is_test = false`, 5 AI calls each. 24 h watch (to 2026-10-25 17:50 AEDT): `/api/health` 200 and every config feature true at each check, no app restart, 6 runs all completed and 0 failed (last Trigger.dev check 10:07 AEDT; the Trigger.dev connection was down for the final check, and Langfuse shows no AI calls after the smoke tickets), Langfuse scan 15 observations, 0 hits. Slack approval UAT moves to the phase 4 release.
 - 2026-10-26 — Scope cut approved by Seun (option A): (1) required scope is phases 4 and 5, then the final release gate (plan §7, adapted to phases 3–5); phases 6–8 (auto-fix, ops dashboard, email intake) become optional extras, not required for release; (2) the remaining phase 4 tasks are bundled into 8 larger tasks P4-B1…P4-B8 (lean mode, ~450 changed lines per normal task, §7; mapping in `docs/specs/2026-10-25-phase-4-slack-review.md`, "Bundles (2026-10-26)"); (3) the full `pnpm test:mutation -- --all` gate is judged by CI, not run locally (local runs time out on this PC); a builder runs mutation only for the modules it touches; (4) 2 reviews (`high-risk`) only for the shared-database migration and the Slack signature/decision code; everything else gets 1 review.
+- 2026-11-05 — Built-in helpdesk option chosen by Seun (option B): `HELPDESK=builtin|servicenow`, `BuiltinConnector` on our own database, invite-only staff login (Supabase Auth, roles `agent`/`admin`), staff screens in `apps/web`, row-level security, an event per staff action; Slack review unchanged. Tasks P5-T9–P5-T22 and bundles P5-B1–P5-B15 in plan §6.3.1 (proposed; Seun approves by merging the plan PR)
 
 ## 12. Constraints & Risks
 
