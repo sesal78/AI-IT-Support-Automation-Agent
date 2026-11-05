@@ -59,3 +59,15 @@ describe("effectiveTestOverrides", () => {
     }
   });
 });
+
+describe("reviewTimeout switch", () => {
+  it("accepts whole minutes from 1m to 60m", () => {
+    for (const value of ["1m", "30m", "60m"]) {
+      expect(testOverridesSchema.parse({ reviewTimeout: value })).toEqual({ reviewTimeout: value });
+    }
+  });
+
+  it.each(["2h", "0m", "61m", "99m", "05m", "30", "m", " 30m", 30])("rejects %j", (value) => {
+    expect(testOverridesSchema.safeParse({ reviewTimeout: value }).success).toBe(false);
+  });
+});

@@ -366,18 +366,21 @@ export function createRepositories(client: DbClient) {
       return parseRow("saveRedaction", redactionSchema, result);
     },
 
-    /** Counts one security event (RPC security_event_record; one row per source/kind/minute). */
+    /**
+     * Counts one security event (RPC security_event_record; one row per
+     * source/kind/minute) and returns the new count of that minute's row.
+     */
     async recordSecurityEvent(
       source: string,
       kind: string,
       sample: Record<string, unknown>,
-    ): Promise<void> {
+    ): Promise<number> {
       const result = await client.rpc("security_event_record", {
         p_source: source,
         p_kind: kind,
         p_sample: sample,
       });
-      if (result.error) throw supabaseError("recordSecurityEvent", result.error);
+      return parseRow("recordSecurityEvent", z.number().int().min(1), result);
     },
 
     /**

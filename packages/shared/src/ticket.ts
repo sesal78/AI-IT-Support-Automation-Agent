@@ -38,3 +38,15 @@ export interface TriageTicketPayload {
   /** Test switches from the E2E test route only; applied from P3-T10c. */
   testOverrides?: TestOverrides;
 }
+
+/**
+ * Trigger.dev id of the review task (services/pipeline, P4-T4a), triggered
+ * by string id with `ReviewTicketPayload` for a ticket routed to `review`.
+ */
+export const REVIEW_TICKET_TASK_ID = "review-ticket";
+
+export interface ReviewTicketPayload {
+  ticketId: string;
+  /** Test switches; they take effect only in E2E mode on a test ticket. */
+  testOverrides?: TestOverrides;
+}
