@@ -14,6 +14,8 @@ const turnstileTestSiteKey = `1x${"0".repeat(20)}AA`;
 // the local REST stack (Docker) and the local Trigger.dev runner; see
 // e2e/support/pipeline-stack.ts.
 const pipelinePort = 3003;
+// The review spec (P4-T9c) starts its own stack the same way, on its own port.
+const reviewPort = 3004;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -25,13 +27,18 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      testIgnore: "**/pipeline.spec.ts",
+      testIgnore: ["**/pipeline.spec.ts", "**/review.spec.ts"],
       use: { ...devices["Desktop Chrome"] },
     },
     {
       name: "pipeline",
       testMatch: "**/pipeline.spec.ts",
       use: { ...devices["Desktop Chrome"], baseURL: `http://127.0.0.1:${pipelinePort}` },
+    },
+    {
+      name: "review",
+      testMatch: "**/review.spec.ts",
+      use: { ...devices["Desktop Chrome"], baseURL: `http://127.0.0.1:${reviewPort}` },
     },
   ],
   webServer: {
