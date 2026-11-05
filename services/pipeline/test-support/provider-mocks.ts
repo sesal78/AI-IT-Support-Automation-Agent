@@ -89,6 +89,53 @@ export function mockProviders(recorder: EgressRecorder): void {
   recorder.mock(LANGFUSE_BASE_URL, () => HttpResponse.json({}));
 }
 
+/** A TypeSafe sensitive-check answer that flags the ticket as an HR matter (route review). */
+export const sensitiveReply = () =>
+  HttpResponse.json({
+    model: MODEL,
+    answers: Object.fromEntries(
+      SENSITIVE_TOPICS.map((topic) => [
+        topic,
+        { type: "noul", noul: topic === "hr" ? 0.95 : 0.02 },
+      ]),
+    ),
+    usage: TOKENS,
+  });
+
+/** The TypeSafe mock with the sensitive answer; every other request kind keeps its default. */
+export function mockSensitiveAnswer(recorder: EgressRecorder): void {
+  recorder.mock(TYPESAFE_ORIGIN, async ({ request }) => {
+    const body = await request.text();
+    return questionKeys(body).includes("legal") ? sensitiveReply() : typesafeReply(body);
+  });
+}
+
+export const SLACK_ORIGIN = "https://slack.com";
+export const SLACK_CHANNEL = "C0000000000";
+export const SLACK_REVIEWER = "U0000000000";
+
+/** The Slack env of review-ticket: test fakes, the token built at run time. */
+export const REVIEW_ENV = {
+  SLACK_BOT_TOKEN: ["xoxb", "test", "0000000000", "fake"].join("-"),
+  SLACK_CHANNEL_ID: SLACK_CHANNEL,
+  SLACK_REVIEW_TIMEOUT: "24h",
+};
+
+/** The Slack Web API: chat.postMessage answers a new ts each time, chat.update ok. */
+export function mockSlack(recorder: EgressRecorder): void {
+  let posted = 0;
+  recorder.mock(SLACK_ORIGIN, ({ request }) => {
+    const method = new URL(request.url).pathname;
+    if (method === "/api/chat.postMessage") {
+      posted += 1;
+      const ts = `1790000000.${String(posted).padStart(6, "0")}`;
+      return HttpResponse.json({ ok: true, channel: SLACK_CHANNEL, ts });
+    }
+    if (method === "/api/chat.update") return HttpResponse.json({ ok: true });
+    return HttpResponse.json({ ok: false, error: "unknown_method" });
+  });
+}
+
 /** The pipeline env for the local REST stack, with test-only provider keys. */
 export function pipelineEnv(stack: RestStack, e2eMode = false): Record<string, string> {
   return {
