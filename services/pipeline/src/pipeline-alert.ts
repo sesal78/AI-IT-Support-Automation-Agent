@@ -1,4 +1,4 @@
-import { createAlertSink, type AlertFn } from "@ai-it-support/ai";
+import { createAlertSink, errorClassName, type AlertFn } from "@ai-it-support/ai";
 import type { Repositories } from "@ai-it-support/db";
 import { e2eEnvShape, parseEnv, slackClientEnvShape } from "@ai-it-support/shared";
 import { createSlackClient, type SlackClient } from "@ai-it-support/slack";
@@ -44,4 +44,28 @@ export function createPipelineAlert(
     postAlert,
     environment: E2E_MODE ? "e2e" : "staging",
   });
+}
+
+/**
+ * The alert sink for a task's `onFailure` hook. The run may have failed on an
+ * invalid Slack or E2E_MODE value, which must not stop the failure from being
+ * recorded: then it falls back to a sink without a Slack post and logs the
+ * error class name, prefixed with `task`.
+ */
+export function createFailureAlert(
+  task: string,
+  source: Record<string, string | undefined>,
+  repos: Pick<Repositories, "recordSecurityEvent">,
+): AlertFn {
+  try {
+    return createPipelineAlert(source, repos);
+  } catch (error) {
+    triggerLogger.error(`${task}: invalid alert env, Slack alert post off`, {
+      error: errorClassName(error),
+    });
+    return createAlertSink({
+      recordSecurityEvent: repos.recordSecurityEvent,
+      logger: { error: (message) => triggerLogger.error(message) },
+    });
+  }
 }
