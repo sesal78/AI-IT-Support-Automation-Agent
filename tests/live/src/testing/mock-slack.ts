@@ -45,6 +45,30 @@ export interface MockSlack {
   methods(): string[];
 }
 
+/** Like Slack's read answers: `&`, `<` and `>` in plain_text objects come back as entities. */
+const encode = (text: string) =>
+  text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+
+function encodePlainText(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(encodePlainText);
+  if (typeof value !== "object" || value === null) return value;
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.entries(record).map(([key, child]) => [
+      key,
+      key === "text" && record.type === "plain_text" && typeof child === "string"
+        ? encode(child)
+        : encodePlainText(child),
+    ]),
+  );
+}
+
+/** A message as Slack's history and replies return it (the stored one is left as sent). */
+const asRead = (message: MockSlackMessage): MockSlackMessage =>
+  message.blocks === undefined
+    ? message
+    : { ...message, blocks: message.blocks.map(encodePlainText) };
+
 const json = (body: unknown) =>
   new Response(JSON.stringify(body), {
     status: 200,
@@ -63,7 +87,7 @@ export function createMockSlack(options: MockSlackOptions): MockSlack {
     const next = start + pageSize < list.length ? String(start + pageSize) : "";
     return {
       ok: true,
-      messages: slice,
+      messages: slice.map(asRead),
       has_more: next !== "",
       response_metadata: { next_cursor: next },
     };

@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { fuzzRequests, MARKUP, S03_ALLOWED, seededRandom } from "./review-security.ts";
 import type { ScenarioContext } from "./runner.ts";
+import { decodeSlackEntities } from "./review-flow.ts";
 import { markerSlackEnv, TEST_SLACK } from "./testing/env.ts";
 import type { MockCard } from "./testing/mock-review.ts";
 import {
@@ -168,6 +169,29 @@ describe("T4.S.02 markup", () => {
     expect(JSON.stringify(card.blocks)).toContain(JSON.stringify(MARKUP).slice(1, -1));
   });
 
+  it("passes when history returns plain_text entity-encoded, as real Slack does", async () => {
+    const h = await harness();
+    const { code } = await h.run(["--only", "T4.S.02"]);
+    expect(code).toBe(0);
+    const ticket = h.review.tickets.get(`${RUN_ID}:S02:1`)!;
+    const response = await h.slack.fetch(new URL("https://slack.com/api/conversations.history"), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${markerSlackEnv().E2E_SLACK_BOT_TOKEN}` },
+      body: new URLSearchParams({ channel: TEST_SLACK.channelId }).toString(),
+    });
+    const { messages } = (await response.json()) as { messages: Array<{ ts: string }> };
+    const read = JSON.stringify(messages.find((m) => m.ts === ticket.review!.slackTs));
+    // The raw markup is never in the read-back card; only its encoded form is.
+    expect(read).not.toContain(MARKUP);
+    expect(read).toContain("&lt;!channel&gt; &lt;!here&gt; &lt;@U00000000&gt;");
+  });
+
+  it("decodes exactly &lt;, &gt; and &amp;, with &amp; last", () => {
+    expect(decodeSlackEntities("&lt;!channel&gt; a &amp; b")).toBe("<!channel> a & b");
+    expect(decodeSlackEntities("&amp;lt;")).toBe("&lt;");
+    expect(decodeSlackEntities("&quot;&#39;")).toBe("&quot;&#39;");
+  });
+
   const addMrkdwn = (text: string) => ({
     faults: {
       editCard: (_id: string, card: MockCard) => ({
@@ -205,6 +229,20 @@ describe("T4.S.02 markup", () => {
         },
       },
       ["fallback-escaped"],
+    ],
+    [
+      "the plain_text holds the markup encoded twice",
+      {
+        faults: {
+          editCard: (_id: string, card: MockCard) => ({
+            ...card,
+            blocks: JSON.parse(
+              JSON.stringify(card.blocks).replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
+            ) as unknown[],
+          }),
+        },
+      },
+      ["plain-text-unchanged"],
     ],
   ])("fails when %s", async (_case, options, checks) => {
     const h = await harness(options);

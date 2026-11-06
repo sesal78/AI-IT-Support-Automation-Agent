@@ -154,6 +154,13 @@ export async function findCard(
   return messages.find((message) => message.ts === ts);
 }
 
+/**
+ * Undoes the 3 entities Slack's `conversations.history` writes into text it
+ * returns (`&lt;`, `&gt;`, `&amp;`), with `&amp;` last so `&amp;lt;` stays `&lt;`.
+ */
+export const decodeSlackEntities = (text: string): string =>
+  text.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
+
 /** Every Slack text object (`plain_text` or `mrkdwn`) in the blocks, depth first. */
 export function textObjects(value: unknown): Array<{ type: string; text: string }> {
   if (Array.isArray(value)) return value.flatMap(textObjects);
