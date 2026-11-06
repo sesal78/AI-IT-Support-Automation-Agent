@@ -80,6 +80,28 @@ T4.L.03 decided in 7 251 ms.
 - Rolled back by redeploying `06941e3` as `20261106.2`.
 - Finish: approved in 12.9 s (report `2026-11-06T01-30-35-254Z-0f3485fe`, Fri 12:30 PM).
 
+## Rollback rehearsal (T4.R.01, universal DoD 8): PASS
+
+By hand, Fri 6 Nov.
+
+1. 1:33 PM: temporary branch `rollback/t4-r01` made at `272a3eb` (phase 3 e2e code); the e2e app was switched to it.
+2. Dokploy deployment `7OKI7Hh7iuhCGM7XbQr-A` finished 1:35 PM. `/api/health` 200; config showed no `slackInteractivity` flag, which confirms the old code.
+3. 1:39 PM: rolled forward to branch `dev`. `/api/health` 200; config all true, including `slackInteractivity`.
+4. `--only T4.L.02` passed (report `2026-11-06T02-42-24-975Z-b63dd5c9`). Temporary branch deleted.
+5. The Trigger.dev side is T4.F.01 (`20261106.1` → `20261106.2`).
+
+## PII canaries (universal DoD 9): PASS
+
+- `pnpm scan:traces --since 2026-11-05T20:45:00Z` for runs `417b3b31`, `2c67b3d3`, `0a24b650`: 327 observations on 4 pages, 0 hard hits, 0 warnings.
+- `pnpm scan:logs` on the e2e app container logs (last 6 h, 24 lines) for the same 3 runs: 0 hard hits, 1 warning (`unredacted:IPV4` on the Next.js start banner `0.0.0.0:3000`; phase 3 had the same).
+- Trigger.dev runs for canary ticket `6089ae05` inspected: intake `run_06gqt1c38c8puj1hlfa1qrb9a2`, triage `run_06gqt1cvc8b8ekk1oau2fo26a2`, review `run_06gqt1f9ke3jng1a6ibspnf1a2`, judge `run_06gqt1g2qc3unukha6kvmd2ia`. Payloads, outputs and traces hold IDs, route and reasons only.
+- Slack history scan in T4.L.01: 0 canaries.
+
+## Goal check (universal DoD 10): PASS
+
+- T4.L.02: a synthetic HR complaint got a card in `#itsupport-e2e`, a signed approve, then `approved` (run 2: 6 742 ms; run 3: pass).
+- T4.L.03: a second HR complaint was rejected, ended `rejected`, and had no further event within 30 s (run 2: 7 251 ms).
+
 ## Phase 4 DoD (spec coverage matrix)
 
 | DoD | Item | Status | Evidence |
@@ -101,15 +123,15 @@ T4.S.04 (staging) is pending release.
 |---|---|---|---|
 | 1 | Tasks done, merged, reviewed | pass | PR list above. |
 | 2 | PROJECT §9 gates, coverage floors | pass | CI on `dev`, green on #138–#140. |
-| 3 | Mutation score ≥ 80 % on guards | pass | CI mutation job, green on #138–#140 (timeout 120 min, #133). |
-| 4 | Semgrep: no unaccepted high finding | not recorded | CI `semgrep` job; its result is not copied here. |
+| 3 | Mutation score ≥ 80 % on guards | pass | CI `mutation` job (Stryker on the guard modules) green on #138–#140 (timeout 120 min, #133). |
+| 4 | Semgrep: no unaccepted high finding | pass | CI `semgrep` job green on #135, #138, #139 and #140. No accepted-risk entries added in phase 4. |
 | 5 | Migration up, down, tested, applied | pass | T4.I.07 (CI); H15 applied 26 Oct; `migration0005` true in `/api/health/config`. |
 | 6 | `dev` deployed to e2e; `.env.example` complete | pass | Deploy from `06941e3`; `/api/health` 200; config all true. |
 | 7 | Live suite green twice in a row | pass with decision | Runs 2 and 3, 8/9 each; T4.S.04 waits for the release. T4.L.05 and T4.F.01 passed separately. |
-| 8 | Rollback rehearsed on e2e | pending | T4.R.01 by hand not recorded. The T4.F.01 rollback is recorded above. |
-| 9 | No PII canary in external sinks | partial | Slack history scan in T4.L.01 passed. `scan:traces` and `scan:logs` results are not recorded. |
-| 10 | Goal check | not recorded | Step O5 (HR complaint approve, second ticket reject) has no recorded result. T4.L.02 and T4.L.03 cover approve and reject on e2e. |
-| 11 | Evidence file | this file | LLM and TypeSafe monthly counts are not recorded; only `aiCallCount` 102 and 108 for T4.L.05. |
+| 8 | Rollback rehearsed on e2e | pass | T4.R.01, below. |
+| 9 | No PII canary in external sinks | pass | Traces, logs, Trigger.dev runs and the Slack history scan, below. |
+| 10 | Goal check | pass | T4.L.02 (approve) and T4.L.03 (reject), below. |
+| 11 | Evidence file | pass | This file. November usage so far: LLM 76 of 2 000 (3.8 %), TypeSafe 1 119 of 20 000 (5.6 %); both inside the 25 % and 50 % limits. |
 | 12 | PROJECT §6/§11 updated | partial | §11 lines added with this PR. §6 stays `pending` until the release. |
 
 ## Open points
@@ -119,5 +141,3 @@ T4.S.04 (staging) is pending release.
 - T4.S.04 runs on staging after the release.
 - DoD 1 burst limit: 20 tickets at once can queue a review run for over a
   minute (Trigger.dev concurrency). Accepted.
-- Not in this file yet: T4.R.01, `scan:traces` / `scan:logs`, the O5 goal
-  check, monthly LLM and TypeSafe counts, the Semgrep result.
