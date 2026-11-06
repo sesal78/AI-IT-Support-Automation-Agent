@@ -22,6 +22,9 @@ function stubEnv(overrides: Record<string, string | undefined> = {}) {
   vi.stubEnv("TURNSTILE_SITE_KEY", "fake-turnstile-site");
   vi.stubEnv("INTERNAL_API_TOKEN", INTERNAL_TOKEN);
   vi.stubEnv("E2E_MODE", undefined);
+  vi.stubEnv("SLACK_SIGNING_SECRET", "k".repeat(32));
+  vi.stubEnv("SLACK_REVIEWER_IDS", "U0000000001");
+  vi.stubEnv("SLACK_CHANNEL_ID", "C0000000001");
   for (const [key, value] of Object.entries(overrides)) vi.stubEnv(key, value);
 }
 
@@ -34,7 +37,7 @@ async function load(overrides?: Record<string, string | undefined>): Promise<Rou
 beforeEach(() => {
   vi.resetModules();
   probeSchema.mockReset();
-  probeSchema.mockResolvedValue({ database: true, migration0003: true });
+  probeSchema.mockResolvedValue({ database: true, migration0003: true, migration0005: true });
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -53,12 +56,23 @@ describe("GET /api/health/config", () => {
       features: {
         database: true,
         migration0003: true,
+        migration0005: true,
         pipelineTrigger: true,
         turnstile: true,
         internalApi: true,
         e2eMode: false,
+        slackInteractivity: true,
       },
     });
+  });
+
+  it("reports slackInteractivity true with the Slack env set, and the schema stays strict", async () => {
+    const { GET } = await load();
+    const body = await (await GET()).json();
+    expect(body.features.slackInteractivity).toBe(true);
+    expect(healthConfigSchema.safeParse(body).success).toBe(true);
+    const extra = { ...body, features: { ...body.features, slackInteractivity: "yes" } };
+    expect(healthConfigSchema.safeParse(extra).success).toBe(false);
   });
 
   it("follows E2E_MODE=true", async () => {
@@ -68,13 +82,32 @@ describe("GET /api/health/config", () => {
   });
 
   it("reports migration0003 false but database true when one probe fails, still 200", async () => {
-    probeSchema.mockResolvedValue({ database: true, migration0003: false });
+    probeSchema.mockResolvedValue({ database: true, migration0003: false, migration0005: true });
     const { GET } = await load();
     const res = await GET();
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.features.database).toBe(true);
     expect(body.features.migration0003).toBe(false);
+  });
+
+  it("reports migration0005 false with status 200 and the other flags unchanged when only the reviews probe fails", async () => {
+    probeSchema.mockResolvedValue({ database: true, migration0003: true, migration0005: false });
+    const { GET } = await load();
+    const res = await GET();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(healthConfigSchema.safeParse(body).success).toBe(true);
+    expect(body.features).toEqual({
+      database: true,
+      migration0003: true,
+      migration0005: false,
+      pipelineTrigger: true,
+      turnstile: true,
+      internalApi: true,
+      e2eMode: false,
+      slackInteractivity: true,
+    });
   });
 
   it("reports database and migration0003 false, 200, no error text, when the probe throws", async () => {
@@ -113,6 +146,7 @@ describe("GET /api/health/config", () => {
       TURNSTILE_SITE_KEY: "g".repeat(24),
       INTERNAL_API_TOKEN: "q".repeat(32),
       TYPESAFE_API_KEY: "h".repeat(24),
+      SLACK_SIGNING_SECRET: "j".repeat(32),
     };
     const version = "v".repeat(10);
     const { GET } = await load({ ...markers, APP_VERSION: version });

@@ -20,10 +20,17 @@ export {
   internalEnvShape,
   llmEnvShape,
   liveEnvShape,
+  liveSlackEnvShape,
   parseEnv,
   phase1EnvShape,
   policyEnvShape,
+  slackBotToken,
+  slackChannelId,
+  slackInteractivityEnvShape,
+  slackUserId,
   sensitiveCheckEnvShape,
+  slackClientEnvShape,
+  reviewEnvShape,
   triggerProjectEnvShape,
   type EnvIssue,
 } from "./env.js";
@@ -43,7 +50,11 @@ export {
   KB_QUERY_MIN_WORD_LENGTH,
 } from "./kb-query.js";
 
-export { internalTicketViewSchema, type InternalTicketView } from "./internal-ticket.js";
+export {
+  internalReviewSchema,
+  internalTicketViewSchema,
+  type InternalTicketView,
+} from "./internal-ticket.js";
 export {
   internalSecurityEventsSchema,
   internalUsageSchema,
@@ -74,9 +85,11 @@ export {
 } from "./test-overrides.js";
 export {
   INTAKE_TICKET_TASK_ID,
+  REVIEW_TICKET_TASK_ID,
   TRIAGE_TICKET_TASK_ID,
   ticketSubmissionSchema,
   type IntakeTicketPayload,
+  type ReviewTicketPayload,
   type TicketSubmission,
   type TriageTicketPayload,
 } from "./ticket.js";
@@ -127,3 +140,10 @@ export {
   type JudgeTextOutput,
   type JudgeTextPayload,
 } from "./judge.js";
+export {
+  signSlackRequest,
+  verifySlackRequest,
+  type SlackRequestHeaders,
+  type SlackVerifyFailure,
+  type SlackVerifyResult,
+} from "./slack-signature.js";

@@ -8,6 +8,7 @@ const flags: EnvFlags = {
   turnstile: true,
   internalApi: true,
   e2eMode: false,
+  slackInteractivity: true,
 };
 
 type Probe = () => Promise<SchemaProbeResult>;
@@ -17,7 +18,8 @@ function setup(probe: Probe) {
   const provider = createHealthConfigProvider({ probe, flags, now: () => time });
   return { provider, advance: (ms: number) => (time += ms), set: (t: number) => (time = t) };
 }
-const allOk: Probe = () => Promise.resolve({ database: true, migration0003: true });
+const allOk: Probe = () =>
+  Promise.resolve({ database: true, migration0003: true, migration0005: true });
 
 describe("createHealthConfigProvider", () => {
   it("combines the probe with the env flags", async () => {
@@ -27,16 +29,20 @@ describe("createHealthConfigProvider", () => {
       features: {
         database: true,
         migration0003: true,
+        migration0005: true,
         pipelineTrigger: true,
         turnstile: true,
         internalApi: true,
         e2eMode: false,
+        slackInteractivity: true,
       },
     });
   });
 
   it("reports probe results as given", async () => {
-    const { provider } = setup(() => Promise.resolve({ database: true, migration0003: false }));
+    const { provider } = setup(() =>
+      Promise.resolve({ database: true, migration0003: false, migration0005: true }),
+    );
     const body = await provider.get();
     expect(body.features.database).toBe(true);
     expect(body.features.migration0003).toBe(false);
@@ -72,7 +78,7 @@ describe("createHealthConfigProvider", () => {
     const probe = vi.fn<Probe>(() => new Promise((resolve) => (release = resolve)));
     const { provider } = setup(probe);
     const all = Promise.all([provider.get(), provider.get(), provider.get()]);
-    release({ database: true, migration0003: true });
+    release({ database: true, migration0003: true, migration0005: true });
     const bodies = await all;
     expect(probe).toHaveBeenCalledTimes(1);
     expect(bodies[0]).toEqual(bodies[2]);
@@ -115,8 +121,8 @@ describe("createHealthConfigProvider", () => {
   it("recovers in the next window after a failed probe", async () => {
     const probe = vi
       .fn<Probe>()
-      .mockResolvedValueOnce({ database: false, migration0003: false })
-      .mockResolvedValueOnce({ database: true, migration0003: true });
+      .mockResolvedValueOnce({ database: false, migration0003: false, migration0005: false })
+      .mockResolvedValueOnce({ database: true, migration0003: true, migration0005: true });
     const { provider, advance } = setup(probe);
     expect((await provider.get()).features.database).toBe(false);
     advance(60_000);

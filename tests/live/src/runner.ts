@@ -30,11 +30,19 @@ export interface ScenarioContext {
   readonly sleep: (ms: number) => Promise<void>;
   /** This run's ID; scenarios build their test IDs from it. */
   readonly runId: string;
+  /** The `.loop-evidence` folder (a scenario may write a hand-off file under `live/`). */
+  readonly evidenceDir: string;
+  /** The `--from <file>` argument, for a scenario with `needsFrom`. */
+  readonly from: string | undefined;
 }
 
 export interface Scenario {
   /** Test ID from the plan, for example `T3.S.02`. */
   readonly id: string;
+  /** Heavy scenarios (many tickets or long waits) run only when named with `--only`. */
+  readonly heavy?: boolean;
+  /** The scenario reads the file named by `--from`; the run refuses to start without it. */
+  readonly needsFrom?: boolean;
   run(context: ScenarioContext): Promise<ScenarioResult>;
 }
 
@@ -71,23 +79,83 @@ export function createRegistry(scenarios: readonly Scenario[]): ReadonlyMap<stri
   return registry;
 }
 
-class UsageError extends Error {
+/** A usage problem. Its message is fixed text that names arguments, never a value. */
+export class UsageError extends Error {
   override readonly name = "UsageError";
 }
 
-function parseArgs(argv: readonly string[]): { only: string[] | undefined } {
+const PHASE = /^[1-9][0-9]?$/;
+
+function parseArgs(argv: readonly string[]): {
+  only: string[] | undefined;
+  phase: string | undefined;
+  from: string | undefined;
+} {
   let only: string[] | undefined;
+  let phase: string | undefined;
+  let from: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
+    if (arg === "--") continue;
+    if (arg === "--from" || arg.startsWith("--from=")) {
+      const value = arg === "--from" ? argv[++i] : arg.slice("--from=".length);
+      if (value === undefined || value === "" || from !== undefined) {
+        throw new UsageError("--from needs one file path");
+      }
+      from = value;
+      continue;
+    }
+    if (arg === "--phase" || arg.startsWith("--phase=")) {
+      const value = arg === "--phase" ? argv[++i] : arg.slice("--phase=".length);
+      if (value === undefined || !PHASE.test(value) || phase !== undefined) {
+        throw new UsageError("--phase needs one phase number (1-99)");
+      }
+      phase = value;
+      continue;
+    }
     let value: string | undefined;
     if (arg === "--only") value = argv[++i];
     else if (arg.startsWith("--only=")) value = arg.slice("--only=".length);
-    else if (arg === "--") continue;
-    else throw new UsageError("unknown argument (known: --only <id,id,...>)");
+    else {
+      throw new UsageError(
+        "unknown argument (known: --only <id,id,...>, --phase <n>, --from <file>)",
+      );
+    }
     if (value === undefined || value === "") throw new UsageError("--only needs test IDs");
     only = [...(only ?? []), ...value.split(",").filter((id) => id !== "")];
   }
-  return { only };
+  if (only !== undefined && phase !== undefined) {
+    throw new UsageError("--only and --phase cannot be combined");
+  }
+  return { only, phase, from };
+}
+
+/**
+ * The scenarios a run selects: the `--only` IDs in the given order (heavy ones
+ * included); else, with `--phase <n>`, the non-heavy scenarios whose ID starts
+ * with `T<n>.`; else every non-heavy scenario.
+ */
+export function selectScenarios(
+  registry: ReadonlyMap<string, Scenario>,
+  argv: readonly string[],
+): Scenario[] {
+  const { only, phase } = parseArgs(argv);
+  if (only !== undefined) {
+    const unknown = only.filter((id) => !registry.has(id));
+    if (unknown.length > 0) {
+      const shown = unknown.map((id) => (ID_PATTERN.test(id) ? id : "(malformed)"));
+      throw new UsageError(
+        `unknown test IDs: ${shown.join(", ")}. Known: ${[...registry.keys()].join(", ") || "(none)"}`,
+      );
+    }
+    return only.map((id) => registry.get(id)!);
+  }
+  const light = [...registry.values()].filter((scenario) => scenario.heavy !== true);
+  if (phase === undefined) return light;
+  const inPhase = light.filter((scenario) => scenario.id.startsWith(`T${phase}.`));
+  // An empty phase is a typo, not a green run.
+  if (inPhase.length === 0) throw new UsageError(`--phase ${phase}: no scenarios`);
+  return inPhase;
 }
 
 function cleanEvidence(evidence: unknown, secrets: readonly string[]): Evidence | null {
@@ -132,19 +200,18 @@ export async function runLive(options: RunLiveOptions): Promise<number> {
   let registry: ReadonlyMap<string, Scenario>;
   let selected: Scenario[];
   let config: LiveConfig;
+  let from: string | undefined;
   try {
     registry = createRegistry(options.scenarios);
-    const { only } = parseArgs(options.argv);
-    if (only !== undefined) {
-      const unknown = only.filter((id) => !registry.has(id));
-      if (unknown.length > 0) {
-        const shown = unknown.map((id) => (ID_PATTERN.test(id) ? id : "(malformed)"));
-        throw new UsageError(
-          `unknown test IDs: ${shown.join(", ")}. Known: ${[...registry.keys()].join(", ") || "(none)"}`,
-        );
-      }
+    selected = selectScenarios(registry, options.argv);
+    from = parseArgs(options.argv).from;
+    const reader = selected.find((scenario) => scenario.needsFrom === true);
+    if (reader !== undefined && from === undefined) {
+      throw new UsageError(`${reader.id} needs --from <file>`);
     }
-    selected = only === undefined ? [...registry.values()] : only.map((id) => registry.get(id)!);
+    if (reader === undefined && from !== undefined) {
+      throw new UsageError("--from is only for a scenario that reads a file");
+    }
     config = loadLiveConfig(options.env);
   } catch (error) {
     // Only our own errors carry safe messages; anything else shows its class.
@@ -174,6 +241,8 @@ export async function runLive(options: RunLiveOptions): Promise<number> {
     now,
     sleep,
     runId,
+    evidenceDir: options.evidenceDir,
+    from,
   };
 
   const entries: ReportEntry[] = [];
@@ -188,6 +257,8 @@ export async function runLive(options: RunLiveOptions): Promise<number> {
           ? { id: scenario.id, status: "fail", ms: 0, evidence: {}, error: "EvidenceRefused" }
           : { id: scenario.id, status: result.status, ms: 0, evidence };
     } catch (error) {
+      // A usage problem found while running (an unreadable --from file) is told, as fixed text.
+      if (error instanceof UsageError) options.stderr(`live: ${scenario.id}: ${error.message}`);
       entry = {
         id: scenario.id,
         status: "fail",

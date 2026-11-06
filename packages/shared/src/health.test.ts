@@ -6,10 +6,12 @@ const valid = {
   features: {
     database: true,
     migration0003: false,
+    migration0005: true,
     pipelineTrigger: true,
     turnstile: true,
     internalApi: true,
     e2eMode: false,
+    slackInteractivity: true,
   },
 };
 

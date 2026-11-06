@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { verifySlackRequest, type SlackVerifyResult } from "@ai-it-support/shared";
 
 /** What the mock saw of one request. Header values are compared, never stored. */
 export interface MockRequest {
@@ -17,6 +18,11 @@ export interface MockRequest {
   readonly body: string;
   /** Mock clock time the request arrived. */
   readonly at: number;
+  /**
+   * The shared verifier's result for `POST /api/slack/interactivity` when
+   * `slackSigningSecret` is set; else null.
+   */
+  readonly slack: SlackVerifyResult | null;
 }
 
 export interface MockReply {
@@ -120,6 +126,12 @@ export interface MockE2eOptions {
   readonly ticketView?: (testId: string, reads: number) => MockTicketView | undefined;
   /** Changes how the mock pipeline treats a ticket; gets the default outcome. */
   readonly pipeline?: (ticket: MockTicketInput, defaults: MockTicketOutcome) => MockTicketOutcome;
+  /**
+   * The e2e test signing secret. When set, `POST /api/slack/interactivity`
+   * (behind Access) verifies with the shared `verifySlackRequest`: 401 on any
+   * failure, 200 `{ outcome: "recorded" }` for a `block_actions` payload.
+   */
+  readonly slackSigningSecret?: string;
 }
 
 export interface MockTicketView {
@@ -145,10 +157,14 @@ export interface MockE2e {
   readonly requests: MockRequest[];
   /** Most requests the mock was handling at one time. */
   readonly peakInFlight: number;
+  /** Most requests to one method and path (for example `POST /api/slack/interactivity`) at one time. */
+  peakInFlightOf(route: string): number;
   /** Test tickets by `testId`; a repeated `testId` is a duplicate, not a new ticket. */
   readonly testTickets: Map<string, MockTestTicket>;
   /** Most test tickets that were created and not yet finished at one time. */
   readonly maxOpenTickets: () => number;
+  /** Parsed payloads of verified interactivity requests, in order. */
+  readonly interactions: unknown[];
   close(): Promise<void>;
 }
 
@@ -259,10 +275,31 @@ function ticketView(ticket: MockTicketInput, outcome: MockTicketOutcome, at: num
   };
 }
 
+const INTERACTIVITY = "/api/slack/interactivity";
+const NO_STORE = { "Cache-Control": "no-store" };
+
+function interactivity(request: MockRequest, interactions: unknown[]): MockReply {
+  if (request.slack === null || !request.slack.ok) {
+    return { status: 401, json: { error: "unauthorized" }, headers: NO_STORE };
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(new URLSearchParams(request.body).get("payload") ?? "");
+  } catch {
+    payload = undefined;
+  }
+  if ((payload as { type?: unknown } | undefined)?.type !== "block_actions") {
+    return { status: 400, json: { error: "bad_payload" }, headers: NO_STORE };
+  }
+  interactions.push(payload);
+  return { status: 200, json: { outcome: "recorded" }, headers: NO_STORE };
+}
+
 function createDefaultRoute(
   options: MockE2eOptions,
   testTickets: Map<string, MockTestTicket>,
   onOpen: (open: number) => void,
+  interactions: unknown[],
 ) {
   const mode = options.securityEvents ?? "per-minute";
   const now = options.now ?? Date.now;
@@ -324,6 +361,10 @@ function createDefaultRoute(
     if (!request.accessOk) {
       return options.accessDenial === "redirect" ? ACCESS_LOGIN_REDIRECT : ACCESS_DENIED;
     }
+    if (path === INTERACTIVITY && options.slackSigningSecret !== undefined) {
+      if (method !== "POST") return { status: 405, text: "", headers: NO_STORE };
+      return interactivity(request, interactions);
+    }
     if (method === "GET" && path === "/api/health") {
       return { status: 200, json: { status: "ok", version: "0.0.0-mock" } };
     }
@@ -335,10 +376,12 @@ function createDefaultRoute(
           features: {
             database: true,
             migration0003: true,
+            migration0005: true,
             pipelineTrigger: true,
             turnstile: true,
             internalApi: true,
             e2eMode: true,
+            slackInteractivity: true,
           },
         },
       };
@@ -447,17 +490,32 @@ export async function startMockE2e(options: MockE2eOptions): Promise<MockE2e> {
   const now = options.now ?? Date.now;
   const testTickets = new Map<string, MockTestTicket>();
   let maxOpen = 0;
-  const defaultRoute = createDefaultRoute(options, testTickets, (open) => {
-    maxOpen = Math.max(maxOpen, open);
-  });
+  const interactions: unknown[] = [];
+  const defaultRoute = createDefaultRoute(
+    options,
+    testTickets,
+    (open) => {
+      maxOpen = Math.max(maxOpen, open);
+    },
+    interactions,
+  );
   let inFlight = 0;
   let peakInFlight = 0;
+  const routes = new Map<string, { inFlight: number; peak: number }>();
   const server = createServer((incoming, response) => {
     inFlight += 1;
     peakInFlight = Math.max(peakInFlight, inFlight);
+    const routeKey = `${incoming.method ?? "GET"} ${new URL(incoming.url ?? "/", "http://127.0.0.1").pathname}`;
+    const route = routes.get(routeKey) ?? { inFlight: 0, peak: 0 };
+    routes.set(routeKey, route);
+    route.inFlight += 1;
+    route.peak = Math.max(route.peak, route.inFlight);
     let done = false;
     const finish = () => {
-      if (!done) inFlight -= 1;
+      if (!done) {
+        inFlight -= 1;
+        route.inFlight -= 1;
+      }
       done = true;
     };
     void (async () => {
@@ -465,6 +523,8 @@ export async function startMockE2e(options: MockE2eOptions): Promise<MockE2e> {
       const authorization = incoming.headers["authorization"];
       const accessId = incoming.headers["cf-access-client-id"];
       const accessSecret = incoming.headers["cf-access-client-secret"];
+      const body = await readBody(incoming);
+      const at = now();
       const request: MockRequest = {
         method: incoming.method ?? "GET",
         path: url.pathname,
@@ -475,8 +535,17 @@ export async function startMockE2e(options: MockE2eOptions): Promise<MockE2e> {
         hasAuthorization: authorization !== undefined,
         hasBearer: typeof authorization === "string" && authorization.startsWith("Bearer "),
         bearerOk: authorization === `Bearer ${options.token}`,
-        body: await readBody(incoming),
-        at: now(),
+        body,
+        at,
+        slack:
+          options.slackSigningSecret !== undefined && url.pathname === INTERACTIVITY
+            ? verifySlackRequest({
+                secret: options.slackSigningSecret,
+                headers: incoming.headers,
+                body,
+                nowSeconds: Math.floor(at / 1000),
+              })
+            : null,
       };
       requests.push(request);
       const answer = options.override?.(request) ?? defaultRoute(request);
@@ -497,8 +566,10 @@ export async function startMockE2e(options: MockE2eOptions): Promise<MockE2e> {
     get peakInFlight() {
       return peakInFlight;
     },
+    peakInFlightOf: (key) => routes.get(key)?.peak ?? 0,
     testTickets,
     maxOpenTickets: () => maxOpen,
+    interactions,
     close: () =>
       new Promise<void>((closed, fail) => {
         server.closeAllConnections();

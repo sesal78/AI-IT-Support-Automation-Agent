@@ -219,7 +219,12 @@ export const triage = (
 ) =>
   runTriageTicket(
     payload,
-    { ...createTriageDeps({ ...testEnv(), ...envOverrides }), logger: quiet },
+    {
+      ...createTriageDeps({ ...testEnv(), ...envOverrides }),
+      // The review run is not part of these suites (P4-B7 adds it).
+      triggerReview: async () => undefined,
+      logger: quiet,
+    },
     attempt,
   );
 

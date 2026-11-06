@@ -24,6 +24,9 @@ const fakeEnv = {
   INTERNAL_API_TOKEN: "fakeE2eInternalApiToken0123456789AB",
   TURNSTILE_SECRET_KEY: "fake-e2e-turnstile-secret-key",
   TURNSTILE_SITE_KEY: "fake-e2e-turnstile-site-key",
+  SLACK_SIGNING_SECRET: "f".repeat(32),
+  SLACK_REVIEWER_IDS: "U0000000000",
+  SLACK_CHANNEL_ID: "C0000000000",
 };
 
 function docker(args, { inherit = false } = {}) {

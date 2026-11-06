@@ -53,6 +53,43 @@ describe("guard-modules.json", () => {
     expect(redact?.related).toBe(false);
   });
 
+  // P4-T3a / T4.S.05: the Slack signature verifier is an authentication guard.
+  it("lists the Slack signature module with 90 % statements and an 80 % mutation floor", () => {
+    const slack = guardModules.find(
+      ({ path }) => path === "packages/shared/src/slack-signature.ts",
+    );
+    expect(slack).toEqual({
+      path: "packages/shared/src/slack-signature.ts",
+      statements: 90,
+      mutation: 80,
+      related: false,
+    });
+  });
+
+  // P4-T3b (plan T4.S.05): the Slack interaction rules carry both floors.
+  it("lists the Slack interaction rules with both floors", () => {
+    const interaction = guardModules.find(
+      ({ path }) => path === "apps/web/src/lib/slack/interaction.ts",
+    );
+    expect(interaction).toEqual({
+      path: "apps/web/src/lib/slack/interaction.ts",
+      statements: 90,
+      mutation: 80,
+    });
+  });
+
+  // P4-B3 (plan T4.S.05): the interactivity handler and the decision module carry both floors.
+  it.each(["apps/web/src/lib/slack/handler.ts", "apps/web/src/lib/slack/decide.ts"])(
+    "lists %s with both floors",
+    (path) => {
+      expect(guardModules.find((module) => module.path === path)).toEqual({
+        path,
+        statements: 90,
+        mutation: 80,
+      });
+    },
+  );
+
   it("lists only files that exist in the repo", () => {
     expect(missingGuardModules(guardModules, repoRoot)).toEqual([]);
   });

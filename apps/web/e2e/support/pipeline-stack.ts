@@ -2,9 +2,11 @@
 //
 // Started from the spec's worker process (Playwright transpiles the imported
 // test-support sources):
-// 1. the local REST stack (Docker: Postgres with migrations 0001-0003 + PostgREST),
-// 2. the local Trigger.dev runner (P3-T10g), which runs the real intake and
-//    triage bodies in this process with canned TypeSafe, LLM and Langfuse answers,
+// 1. the local REST stack (Docker: Postgres with migrations 0001-0005 + PostgREST)
+//    with the 30 seed KB articles, as the shared database has them,
+// 2. the local Trigger.dev runner (P3-T10g, P4-T9c), which runs the real intake,
+//    triage and review bodies in this process with canned TypeSafe, LLM,
+//    Langfuse and Slack answers, and completes wait tokens for the web app,
 // 3. the built web app (`next start`, run `pnpm build` first) with E2E_MODE=true,
 //    pointed at both, with the egress preload loaded through NODE_OPTIONS.
 // Every value below is a test fake built at run time; nothing real is used.
@@ -17,6 +19,7 @@ import {
   startRestStack,
   type RestStack,
 } from "../../../../packages/db/integration/rest-stack.js";
+import { seedKnowledgeBase } from "../../../../services/pipeline/test-support/kb-seed.js";
 import {
   startLocalRunner,
   type LocalRunner,
@@ -78,6 +81,7 @@ export async function startPipelineStack(baseURL: string): Promise<PipelineStack
 
   try {
     stack = await startRestStack();
+    await seedKnowledgeBase(stack);
     runner = await startLocalRunner({ restStack: stack });
 
     const internalToken = "e".repeat(32);
@@ -103,6 +107,9 @@ export async function startPipelineStack(baseURL: string): Promise<PipelineStack
         // Cloudflare's published always-pass test site key; the browser widget is stubbed.
         TURNSTILE_SITE_KEY: `1x${"0".repeat(20)}AA`,
         E2E_MODE: "true",
+        SLACK_SIGNING_SECRET: "f".repeat(32),
+        SLACK_REVIEWER_IDS: "U0000000000",
+        SLACK_CHANNEL_ID: "C0000000000",
       },
     });
     // Kept for the error message only; the app never logs request data.

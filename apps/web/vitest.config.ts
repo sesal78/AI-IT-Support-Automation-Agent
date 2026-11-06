@@ -18,13 +18,16 @@ export default defineProject({
     name: "web",
     environment: "node",
     include: ["src/**/*.test.{ts,tsx}"],
-    // Obvious fakes for the phase 2 env vars, so a test that stubs only the
+    // Obvious fakes for the phase 2 and 4 env vars, so a test that stubs only the
     // phase 1 vars still loads the env module. Tests that check these vars
     // stub or unset them explicitly.
     env: {
       INTERNAL_API_TOKEN: "fakeInternalApiToken0123456789ABCDEF",
       TURNSTILE_SECRET_KEY: "fake-turnstile-secret-key",
       TURNSTILE_SITE_KEY: "fake-turnstile-site-key",
+      SLACK_SIGNING_SECRET: "f".repeat(32),
+      SLACK_REVIEWER_IDS: "U0000000000",
+      SLACK_CHANNEL_ID: "C0000000000",
     },
   },
 });

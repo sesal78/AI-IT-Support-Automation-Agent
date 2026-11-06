@@ -25,7 +25,7 @@ import {
   type TraceSpan,
   type TriageJudgeDeps,
 } from "@ai-it-support/ai";
-import { AbortTaskRunError } from "@trigger.dev/sdk";
+import { AbortTaskRunError, logger as triggerLogger } from "@trigger.dev/sdk";
 import { describe, expect, it, vi } from "vitest";
 import {
   createSwitchableSink,
@@ -165,6 +165,8 @@ interface Options {
   groundingError?: () => Error;
   /** Thrown by the drafter when it returns an error for the input. */
   draftError?: (input: { capOverride?: number }) => Error | undefined;
+  /** Thrown by triggerReview. */
+  triggerError?: Error;
   /** Milliseconds each call waits on the (fake) clock: a step name, or `event` for every event. */
   latency?: Partial<Record<string, number>>;
 }
@@ -311,6 +313,10 @@ function harness(options: Options = {}) {
     e2eMode: options.e2eMode ?? false,
     alert: vi.fn(async (kind: string, alertOptions?: unknown) => {
       alerts.push([kind, alertOptions]);
+    }),
+    triggerReview: vi.fn(async () => {
+      step("triggerReview");
+      if (options.triggerError) throw options.triggerError;
     }),
     setTraceSinkDown: vi.fn(),
     logger: { info: log, warn: log, error: log },
@@ -477,8 +483,10 @@ describe("triage-ticket task", () => {
         skipped: true,
       });
 
-      expect(h.calls).toEqual(["getTicket"]);
+      // A triaged ticket's route is read: only `review` is enqueued again (P4-T4c).
+      expect(h.calls).toEqual(status === "triaged" ? ["getTicket", "getTriage"] : ["getTicket"]);
       expect(h.aiInputs).toEqual([]);
+      expect(h.deps.triggerReview).not.toHaveBeenCalled();
     },
   );
 
@@ -578,6 +586,85 @@ const WRITE_POSITIONS = [
   "status:triaged",
 ];
 
+describe("triage-ticket starts the review (P4-T4c)", () => {
+  const review = { triage: triageRow(true) };
+  const key = `review-ticket:${ticketId}`;
+
+  it("a review ticket: triggerReview once, after the status write, with the switches unchanged", async () => {
+    const h = harness({ ...review, e2eMode: true, isTest: true });
+    const testOverrides = { reviewTimeout: "30m", langfuseDown: false };
+
+    await expect(runTriageTicket({ ticketId, testOverrides }, h.deps)).resolves.toMatchObject({
+      route: "review",
+    });
+
+    expect(h.calls.slice(-2)).toEqual(["status:triaged", "triggerReview"]);
+    expect(h.deps.triggerReview).toHaveBeenCalledTimes(1);
+    expect(h.deps.triggerReview).toHaveBeenCalledWith(
+      { ticketId, testOverrides },
+      { idempotencyKey: key },
+    );
+  });
+
+  it("a review ticket without switches gets { ticketId } only", async () => {
+    const h = harness(review);
+    await runTriageTicket({ ticketId }, h.deps);
+    expect(h.deps.triggerReview).toHaveBeenCalledWith({ ticketId }, { idempotencyKey: key });
+  });
+
+  it("an auto ticket: no trigger, the status stays triaged", async () => {
+    const h = harness();
+    await expect(runTriageTicket({ ticketId }, h.deps)).resolves.toMatchObject({ route: "auto" });
+    expect(h.deps.triggerReview).not.toHaveBeenCalled();
+    expect(h.statuses).toEqual(["triaged"]);
+  });
+
+  it("a failed trigger: review_enqueue_failed { error }, failed, one alert, abort naming the ID", async () => {
+    const h = harness({ ...review, triggerError: new TypeError("MARKER-trigger-detail") });
+
+    const error = await runTriageTicket({ ticketId }, h.deps).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(AbortTaskRunError);
+    expect(String((error as Error).message)).toContain(ticketId);
+    expect(h.events.at(-1)).toEqual({
+      type: "review_enqueue_failed",
+      payload: { error: "TypeError" },
+    });
+    expect(h.statuses).toEqual(["triaged", "failed"]);
+    expect(h.alerts).toEqual([["review_enqueue_failed", { ticketId }]]);
+    expect(JSON.stringify(h.logs)).not.toContain("MARKER-trigger-detail");
+  });
+
+  it("crash recovery: a triaged review ticket is enqueued again, same key, no AI call, no event", async () => {
+    const h = harness({
+      found: ticket("triaged"),
+      triage: { ...triageRow(true), route: "review", triaged_at: now },
+    });
+
+    await expect(runTriageTicket({ ticketId }, h.deps)).resolves.toEqual({
+      ticketId,
+      skipped: true,
+    });
+
+    expect(h.deps.triggerReview).toHaveBeenCalledWith({ ticketId }, { idempotencyKey: key });
+    expect(h.aiCalls()).toBe(0);
+    expect(h.events).toEqual([]);
+    expect(h.statuses).toEqual([]);
+  });
+
+  it("a review_pending ticket: no trigger, skipped", async () => {
+    const h = harness({
+      found: ticket("review_pending"),
+      triage: { ...triageRow(true), route: "review" },
+    });
+    await expect(runTriageTicket({ ticketId }, h.deps)).resolves.toEqual({
+      ticketId,
+      skipped: true,
+    });
+    expect(h.deps.triggerReview).not.toHaveBeenCalled();
+  });
+});
+
 describe("triage-ticket retry after a failed write", () => {
   // Sensitive and ungrounded, so the policy_decided reasons are not trivial.
   const options = { triage: triageRow(true), grounding: { score: 0.2, flagged: true } };
@@ -621,7 +708,8 @@ describe("triage-ticket retry after a failed write", () => {
       ticketId,
       skipped: true,
     });
-    expect(h.calls.slice(before)).toEqual(["getTicket"]);
+    // Routed review: the review trigger is repeated with the same key (P4-T4c).
+    expect(h.calls.slice(before)).toEqual(["getTicket", "getTriage", "triggerReview"]);
   });
 
   it("a failure before the save makes the retry run every AI step again", async () => {
@@ -1402,6 +1490,43 @@ describe("createTriageDeps", () => {
     LANGFUSE_SECRET_KEY: "s".repeat(8),
     LANGFUSE_BASE_URL: "https://langfuse.example.test",
   };
+
+  it("builds the alert with createPipelineAlert (a bad Slack channel fails the run, naming it)", () => {
+    const token = ["xoxb", "test", "0000000000", "fake"].join("-");
+    const slack = { SLACK_BOT_TOKEN: token, SLACK_CHANNEL_ID: "#general" };
+    expect(() => createTriageDeps({ ...env, ...slack })).toThrow(/SLACK_CHANNEL_ID/);
+  });
+
+  it.each([
+    ["a bad Slack channel", { SLACK_CHANNEL_ID: "#general" }],
+    ["a bad E2E_MODE", { E2E_MODE: "TRUE" }],
+  ])(
+    "still records an exhausted triage with %s: event, status, alert, class name logged",
+    async (_name, bad) => {
+      const token = ["xoxb", "test", "0000000000", "fake"].join("-");
+      const errorLog = vi.spyOn(triggerLogger, "error").mockImplementation(() => {});
+      const h = harness();
+      const recordSecurityEvent = vi.fn(async () => 1);
+      const deps = createTriageFailureDeps(
+        { ...env, SLACK_BOT_TOKEN: token, SLACK_CHANNEL_ID: "C0000000001", ...bad },
+        { ...h.deps.repos, recordSecurityEvent },
+      );
+      await expect(
+        onTriageFailure({ payload: { ticketId }, error: new TypeError("x") }, deps),
+      ).resolves.toBeUndefined();
+      expect(h.events).toEqual([{ type: "triage_failed", payload: { error: "TypeError" } }]);
+      expect(h.statuses).toEqual(["failed"]);
+      expect(recordSecurityEvent).toHaveBeenCalledWith("pipeline", "alert:triage_failed", {
+        ticketId,
+      });
+      expect(errorLog).toHaveBeenCalledWith(
+        "triage-ticket: invalid alert env, Slack alert post off",
+        { error: "Error" },
+      );
+      expect(JSON.stringify(errorLog.mock.calls)).not.toContain("#general");
+      errorLog.mockRestore();
+    },
+  );
 
   it("builds deps with the default policy thresholds", () => {
     const deps = createTriageDeps(env);

@@ -2,7 +2,6 @@ import {
   CAP_REACHED_CHECKER,
   classifySensitive,
   createAiRuntime,
-  createAlertSink,
   createLangfuseSink,
   createMeter,
   createTypeSafeChecker,
@@ -31,6 +30,7 @@ import {
 } from "@ai-it-support/shared";
 import { AbortTaskRunError, idempotencyKeys, logger, schemaTask, tasks } from "@trigger.dev/sdk";
 import { z } from "zod";
+import { createPipelineAlert } from "../pipeline-alert.js";
 import type { triageTicket } from "./triage-ticket.js";
 
 // Payload type is shared with the POST /api/tickets caller (packages/shared).
@@ -96,10 +96,7 @@ export function createIntakeDeps(source: Record<string, string | undefined>): In
   const env = parseEnv(intakeEnvShape, source);
   const repos = createRepositories(createDbClient(source));
   const environment = env.E2E_MODE ? "e2e" : "staging";
-  const alert = createAlertSink({
-    recordSecurityEvent: repos.recordSecurityEvent,
-    logger: { error: (message) => logger.error(message) },
-  });
+  const alert = createPipelineAlert(source, repos);
   const meter = createMeter({
     repos,
     caps: { llm: env.LLM_MONTHLY_CALL_CAP, typesafe: env.TYPESAFE_MONTHLY_CALL_CAP },

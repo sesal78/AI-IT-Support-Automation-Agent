@@ -9,6 +9,7 @@ import {
   runSql,
   startPgContainer,
   type PgContainer,
+  type SqlRun,
 } from "./pg-container.js";
 
 // Shared helpers for the migration 0003 integration tests (one container per test file).
@@ -53,6 +54,12 @@ export function applied(sql: string): void {
   const run = runSql(container, sql);
   expect(run.stderr).not.toMatch(/ERROR/);
   expect(run.status).toBe(0);
+}
+
+/** Runs a SQL file with psql in one transaction and returns the run (for files expected to fail). */
+export function run(sql: string): SqlRun {
+  if (!container) throw new Error("container not started");
+  return runSql(container, sql);
 }
 
 /** The phase-2 columns of every phase-2 table, in a stable order. */

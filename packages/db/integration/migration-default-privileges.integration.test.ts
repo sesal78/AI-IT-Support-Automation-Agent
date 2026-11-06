@@ -16,6 +16,9 @@ import {
 // test applies EVERY up file in supabase/migrations, new ones included, with
 // Supabase-like default privileges in place, once as postgres and once as
 // supabase_admin, and expects those roles to hold no right on any of them.
+// The end state covers every table up to 0005 (itsupport.reviews included):
+// the rights come from has_*_privilege over the catalog, not from the SQL text.
+// Then every down file runs in reverse and the schema is gone.
 
 const supabaseDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../../supabase");
 const read = (file: string) => readFileSync(resolve(supabaseDir, file), "utf8");
@@ -24,6 +27,7 @@ const UPS = readdirSync(resolve(supabaseDir, "migrations"))
   .sort();
 const DOWNS = UPS.map((name) => name.replace(/\.sql$/, ".down.sql")).reverse();
 const LOCK = "0004_itsupport_lock_sequences.sql";
+const REVIEWS = "0005_itsupport_reviews.sql";
 const OWNERS = ["postgres", "supabase_admin"] as const;
 const ROLES = ["anon", "authenticated", "public"];
 const DEFAULT_ROWS = [
@@ -114,6 +118,7 @@ describe.each(OWNERS)(
       await as("supabase_admin").query(defaults("grant"));
       const lock = UPS.indexOf(LOCK);
       expect(lock).toBeGreaterThan(0);
+      expect(UPS.indexOf(REVIEWS)).toBeGreaterThan(lock);
       // Up to 0003 the defaults leave ticket_events_id_seq open, so the test can see a missing revoke.
       for (const name of UPS.slice(0, lock)) await as(owner).query(read(`migrations/${name}`));
       expect(await rights()).toEqual(
@@ -130,6 +135,7 @@ describe.each(OWNERS)(
             (t) => `table itsupport.${t}`,
           ),
           ...["kb_articles", "ai_calls", "security_events"].map((t) => `table itsupport.${t}`),
+          "table itsupport.reviews",
           "sequence itsupport.ticket_events_id_seq",
           "sequence itsupport.security_events_id_seq",
           "function itsupport.reject_ticket_event_change()",
@@ -138,6 +144,29 @@ describe.each(OWNERS)(
         ]),
       );
       expect(objects.filter((o) => o.owner !== owner)).toEqual([]);
+
+      // reviews by name: no table or column right for public, anon or authenticated,
+      // while the defaults still grant every new table to all three.
+      const reviews = await as("postgres").query(
+        `select r from unnest($1::text[]) r
+         where has_table_privilege(r, 'itsupport.reviews',
+             'select, insert, update, delete, truncate, references, trigger, maintain')
+           or has_any_column_privilege(r, 'itsupport.reviews', 'select, insert, update, references')`,
+        [ROLES],
+      );
+      expect(reviews.rows).toEqual([]);
+      await as(owner).query("begin");
+      try {
+        await as(owner).query("create table itsupport.probe (id int)");
+        const probe = await as(owner).query(
+          `select r from unnest($1::text[]) r where has_table_privilege(r, 'itsupport.probe', 'select')
+           order by 1`,
+          [ROLES],
+        );
+        expect(probe.rows.map((row: { r: string }) => row.r)).toEqual([...ROLES].sort());
+      } finally {
+        await as(owner).query("rollback");
+      }
     });
 
     it("the 0004 check flags exactly its two default-privilege rows, and none once they are removed", async () => {

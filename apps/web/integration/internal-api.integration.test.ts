@@ -73,6 +73,9 @@ async function load(target: RestStack, e2eMode: boolean): Promise<Handlers> {
   vi.stubEnv("TURNSTILE_SECRET_KEY", "fake-turnstile-secret-key");
   vi.stubEnv("TURNSTILE_SITE_KEY", "fake-turnstile-site-key");
   vi.stubEnv("INTERNAL_API_TOKEN", TOKEN);
+  vi.stubEnv("SLACK_SIGNING_SECRET", "f".repeat(32));
+  vi.stubEnv("SLACK_REVIEWER_IDS", "U0000000000");
+  vi.stubEnv("SLACK_CHANNEL_ID", "C0000000000");
   vi.stubEnv("E2E_MODE", e2eMode ? "true" : "false");
   return {
     ticket: await import("../src/app/api/internal/tickets/[id]/route"),
@@ -375,13 +378,16 @@ describe("usage", () => {
 });
 
 describe("health config", () => {
-  type Health = { features: { database: boolean; migration0003: boolean } };
+  type Health = {
+    features: { database: boolean; migration0003: boolean; migration0005: boolean };
+  };
 
   it("reports migration0003 true on the full stack", async () => {
     const app = await load(stack(), false); // fresh module: empty probe cache
     const body = (await (await app.health.GET()).json()) as Health;
     expect(body.features.database).toBe(true);
     expect(body.features.migration0003).toBe(true);
+    expect(body.features.migration0005).toBe(true);
   });
 
   it("reports migration0003 false on a stack with only 0001 and 0002", async () => {
@@ -391,6 +397,7 @@ describe("health config", () => {
       const body = (await (await app.health.GET()).json()) as Health;
       expect(body.features.database).toBe(true);
       expect(body.features.migration0003).toBe(false);
+      expect(body.features.migration0005).toBe(false);
     } finally {
       await removeRestStack(old);
     }
