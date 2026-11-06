@@ -89,6 +89,19 @@ describe("T4.L.05 sensitive replay", () => {
     });
   });
 
+  it("waits for review_requested when the card ts comes first (the real task order)", async () => {
+    const h = await harness({ faults: { requestedEventLagMs: 400 } });
+    const { code, report } = await h.run(["--only", "T4.L.05"]);
+    expect(code).toBe(0);
+    expect(evidenceOf(report)).toMatchObject({
+      cards: 20,
+      missingTimes: [],
+      maxLatencyMs: 1_400,
+      failedChecks: [],
+    });
+    expect(evidenceOf(report)["latenciesMs"]).toHaveLength(20);
+  });
+
   it("fails, naming the ticket, when one latency is 11 seconds", async () => {
     const h = await harness({
       faults: { reviewAfterMs: (id) => (id.endsWith(":L05:E070") ? 11_000 : 1_000) },

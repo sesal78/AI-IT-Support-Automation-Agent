@@ -18,6 +18,11 @@ export interface MockReviewFaults {
   readonly editCard?: (testId: string, card: MockCard) => MockCard;
   /** policy_decided → review_requested, in ms (default 1 000). */
   readonly reviewAfterMs?: (testId: string) => number;
+  /**
+   * The review_requested event follows the card ts by this many ms (default 0).
+   * The real task stores the card ts first and writes the event afterwards.
+   */
+  readonly requestedEventLagMs?: number;
   /** review_decided and the status follow a recorded decision after this many ms (default 500). */
   readonly decisionDelayMs?: number;
   /** Stored as the decider instead of the clicking user. */
@@ -84,6 +89,8 @@ export interface MockReviewTicket {
   timeoutCardDone: boolean;
   /** A recorded decision whose status, event and card update are still to come. */
   pending: { decision: "approve" | "reject"; at: number } | null;
+  /** When the review_requested event is still to be written (requestedEventLagMs). */
+  requestedEventAt: number | null;
 }
 
 export interface MockReview {
@@ -229,7 +236,11 @@ export function createMockReview(options: MockReviewOptions): MockReview {
           });
         }
         t.status = "review_pending";
-        t.events.push({ type: "review_requested", at: requestedAt });
+        t.requestedEventAt = requestedAt + (faults.requestedEventLagMs ?? 0);
+      }
+      if (t.requestedEventAt !== null && at >= t.requestedEventAt) {
+        t.events.push({ type: "review_requested", at: t.requestedEventAt });
+        t.requestedEventAt = null;
       }
       if (t.status === "review_pending" && t.pending !== null && at >= t.pending.at) {
         const { decision, at: decidedAt } = t.pending;
@@ -315,6 +326,7 @@ export function createMockReview(options: MockReviewOptions): MockReview {
       review: null,
       timeoutCardDone: false,
       pending: null,
+      requestedEventAt: null,
     };
     tickets.set(testId, ticket);
     return { status: 201, json: { ticketId: ticket.id, queued: true } };

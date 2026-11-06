@@ -78,8 +78,13 @@ export const sensitiveReplayScenario: Scenario = {
       const at = context.now();
       pending = pending.filter(({ ticketId, deadline }) => {
         const view = views.get(ticketId)!;
+        // The task stores the card ts before it writes review_requested, so a
+        // card alone is not enough: wait for the event as well (live run
+        // 2026-11-06: 17 of 20 views were read in that gap).
         const done =
-          (view.status === "review_pending" && cardReview(view) !== undefined) ||
+          (view.status === "review_pending" &&
+            cardReview(view) !== undefined &&
+            eventAt(view, "review_requested") !== null) ||
           view.status === "failed";
         return !done && at < deadline;
       });
