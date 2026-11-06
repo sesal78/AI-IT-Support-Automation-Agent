@@ -7,6 +7,7 @@ import { result } from "./pipeline.ts";
 import {
   createdReviewTickets,
   createReviewTicket,
+  decodeSlackEntities,
   DECISION_LIMIT_MS,
   DECISION_POLL_MS,
   decideAndWait,
@@ -151,7 +152,7 @@ export const forgedDecisionScenario: Scenario = {
   },
 };
 
-/** Polls the view every 500 ms until it shows `status` or 5 s pass; returns the last view. */
+/** Polls the view every 500 ms until it shows `status` or 15 s pass; returns the last view. */
 async function waitForStatus(
   context: ScenarioContext,
   ticketId: string,
@@ -198,7 +199,9 @@ export const MARKUP = "<!channel> <!here> <@U00000000> <https://evil.example|cli
 /**
  * T4.S.02: a ticket whose text holds live Slack markup gets a card in which no
  * mrkdwn text holds `<`, the fallback text holds `&lt;!channel&gt;`, and a
- * plain_text object holds the markup unchanged.
+ * plain_text object holds the markup unchanged. Slack's history answer
+ * entity-encodes plain_text (`&lt;!channel&gt;`), so only that comparison
+ * decodes `&lt;`, `&gt;` and `&amp;`; mrkdwn and the fallback are read raw.
  */
 export const markupScenario: Scenario = {
   id: "T4.S.02",
@@ -228,7 +231,9 @@ export const markupScenario: Scenario = {
       ...(mrkdwn.every((o) => !o.text.includes("<")) ? [] : ["mrkdwn-no-markup"]),
       ...(parsed.every((o) => !o.text.includes("<!channel>")) ? [] : ["markup-only-in-plain-text"]),
       ...(card.text.includes("&lt;!channel&gt;") ? [] : ["fallback-escaped"]),
-      ...(plain.some((o) => o.text.includes(MARKUP)) ? [] : ["plain-text-unchanged"]),
+      ...(plain.some((o) => decodeSlackEntities(o.text).includes(MARKUP))
+        ? []
+        : ["plain-text-unchanged"]),
     ];
     return result(failedChecks, {
       ...evidence,

@@ -86,6 +86,39 @@ describe("review flow scenarios against the mocks", () => {
       expect(JSON.stringify(body)).not.toContain(canary.value);
     }
   });
+
+  it("T4.L.01 judges the HR complaint part of the description, without the canary text", async () => {
+    const h = await harness();
+    await h.run(["--only", "T4.L.01"]);
+    const { message } = (h.judgeBodies[0] as { state: { message: string } }).state;
+    expect(message).toContain(
+      "Ticket (redacted)\nI want to raise an HR complaint about repeated harassment",
+    );
+    expect(message).toContain("Please handle this confidentially.\n");
+    // The canary filler, its redaction placeholders and the run suffix are cut.
+    expect(message).not.toContain("My laptop cannot reach the VPN");
+    expect(message).not.toContain("REDACTED");
+    expect(message).not.toContain("live run");
+    expect(message).toContain("Approve");
+  });
+
+  it("T4.L.01 judges the text as the reviewer sees it, with Slack's entities decoded", async () => {
+    const h = await harness({
+      faults: {
+        editCard: (_id, card) => ({
+          ...card,
+          blocks: [
+            ...card.blocks,
+            { type: "section", text: { type: "plain_text", text: "Printer & scanner <b>" } },
+          ],
+        }),
+      },
+    });
+    await h.run(["--only", "T4.L.01"]);
+    const { message } = (h.judgeBodies[0] as { state: { message: string } }).state;
+    expect(message).toContain("Printer & scanner <b>");
+    expect(message).not.toMatch(/&(lt|gt|amp);/);
+  });
 });
 
 describe("T4.L.01 negative cases", () => {
@@ -239,11 +272,18 @@ describe("T4.L.02 approve", () => {
     expect(h.review.tickets.get(`${RUN_ID}:L02:1`)!.review!.decidedBy).toBe(TEST_SLACK.reviewerId);
   });
 
+  it("passes when approved comes after 7 seconds (the real waitpoint resume)", async () => {
+    const h = await harness({ faults: { decisionDelayMs: 7_000 } });
+    const { code, report } = await h.run(["--only", "T4.L.02"]);
+    expect(code).toBe(0);
+    expect(report.scenarios[0]!.evidence["decidedMs"]).toBe(7_000);
+  });
+
   it.each<[string, ReviewHarnessOptions, string[]]>([
     [
-      "approved comes after 6 seconds",
-      { faults: { decisionDelayMs: 6_000 } },
-      ["decided-within-5s"],
+      "approved comes after 16 seconds",
+      { faults: { decisionDelayMs: 16_000 } },
+      ["decided-within-limit"],
     ],
     ["decidedBy is another user", { faults: { decidedBy: "U0OTHERUSER" } }, ["decided-by"]],
     [

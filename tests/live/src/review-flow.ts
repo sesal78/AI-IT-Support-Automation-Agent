@@ -21,8 +21,12 @@ import { createSlackSigner, type Decision, type SlackSigner } from "./slack-sign
 
 /** A review ticket must show `review_pending` with a card ts within this time of its creation. */
 export const REVIEW_LIMIT_MS = 60_000;
-/** After a decision is recorded, the view must show it within this time (T4.L.02). */
-export const DECISION_LIMIT_MS = 5_000;
+/**
+ * After a decision is recorded, the view must show it within this time
+ * (T4.L.02, T4.L.03, T4.S.01 b-approved, T4.F.01:finish). Seun 2026-11-06,
+ * option A: the real Trigger.dev waitpoint resume takes about 7 s.
+ */
+export const DECISION_LIMIT_MS = 15_000;
 export const DECISION_POLL_MS = 500;
 /** No event may follow `review_decided` within this time (T4.L.03). */
 export const QUIET_MS = 30_000;
@@ -150,6 +154,13 @@ export async function findCard(
   return messages.find((message) => message.ts === ts);
 }
 
+/**
+ * Undoes the 3 entities Slack's `conversations.history` writes into text it
+ * returns (`&lt;`, `&gt;`, `&amp;`), with `&amp;` last so `&amp;lt;` stays `&lt;`.
+ */
+export const decodeSlackEntities = (text: string): string =>
+  text.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
+
 /** Every Slack text object (`plain_text` or `mrkdwn`) in the blocks, depth first. */
 export function textObjects(value: unknown): Array<{ type: string; text: string }> {
   if (Array.isArray(value)) return value.flatMap(textObjects);
@@ -225,7 +236,7 @@ const DECIDED_STATUS: Record<Decision, string> = { approve: "approved", reject: 
 
 /**
  * Signs and sends one decision as E2E_SLACK_REVIEWER_ID, then polls the view
- * every 500 ms until it shows the decision or 5 s pass after the answer.
+ * every 500 ms until it shows the decision or 15 s pass after the answer.
  */
 export async function decideAndWait(
   context: ScenarioContext,
@@ -270,16 +281,31 @@ function loadJ4(): JudgeDefinition {
   return judgeDefinitionSchema.parse(JSON.parse(readFileSync(J4_FILE, "utf8")));
 }
 
-/** What J4 reads: the card's text objects, in block order, one per line. */
-export const cardMessageText = (card: SlackMessage): string =>
+/** The start of the card's description section (`packages/slack` and the mock). */
+export const DESCRIPTION_HEAD = "Ticket (redacted)\n";
+
+/**
+ * What J4 reads: the card's text objects, in block order, one per line, as the
+ * reviewer sees them (Slack's `&lt;`, `&gt;`, `&amp;` decoded). In the
+ * description section, everything from `cutAt` on is left out: T4.L.01 adds
+ * the canary text there for the leak check, and its placeholders and filler
+ * are test text, not what a reviewer of a real ticket reads.
+ */
+export const cardMessageText = (card: SlackMessage, cutAt?: string): string =>
   textObjects(card.blocks ?? [])
-    .map((object) => object.text)
+    .map((object) => {
+      const text = decodeSlackEntities(object.text);
+      if (cutAt === undefined || !text.startsWith(DESCRIPTION_HEAD)) return text;
+      const at = text.indexOf(cutAt);
+      return at < 0 ? text : text.slice(0, at).trimEnd();
+    })
     .join("\n");
 
 /**
  * T4.L.01: the HR complaint plus the run's 10 canaries gets a card in
  * #itsupport-e2e with the two buttons, the redacted title as header and no
  * canary anywhere in the message JSON; J4 scores the card's text at 0.7 or more.
+ * J4 reads the card text decoded, with the canary part of the description cut.
  */
 export const reviewCardScenario: Scenario = {
   id: "T4.L.01",
@@ -323,7 +349,8 @@ export const reviewCardScenario: Scenario = {
           now: context.now,
           sleep: context.sleep,
         }).judge(loadJ4(), {
-          message: cardMessageText(card),
+          // The HR complaint part of the description only: the canary text is cut.
+          message: cardMessageText(card, canaryTicketText(canaryRun).split("\n")[0]),
           reader: "a reviewer who must approve or reject an IT support ticket",
         });
         judgeStatus = judged.status;
@@ -365,7 +392,7 @@ function decisionScenario(id: string, decision: Decision): Scenario {
       );
       const failedChecks: string[] = [];
       if (decided.status !== 200 || decided.outcome !== "recorded") failedChecks.push("recorded");
-      if (decided.decidedMs === null) failedChecks.push("decided-within-5s");
+      if (decided.decidedMs === null) failedChecks.push("decided-within-limit");
       const stored = reviewOf(decided.view, ticket.review.id);
       if (stored?.decision !== decision) failedChecks.push("review-decision");
       if (stored?.decidedBy !== context.config.slack.reviewerId) failedChecks.push("decided-by");

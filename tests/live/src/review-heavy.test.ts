@@ -131,8 +131,20 @@ describe("T4.F.01 waiting run", () => {
     expect(ticket.status).toBe("approved");
   });
 
-  it("finish fails when the status is not approved within 5 seconds", async () => {
-    const h = await harness({ faults: { decisionDelayMs: 6_000 } });
+  it("finish passes when approved comes after 7 seconds (the real waitpoint resume)", async () => {
+    const h = await harness({ faults: { decisionDelayMs: 7_000 } });
+    await h.run(["--only", "T4.F.01:start"]);
+    const finish = await h.run(
+      ["--only", "T4.F.01:finish", `--from=${f01File(h.dir, RUN_ID)}`],
+      undefined,
+      "run-mock-0002",
+    );
+    expect(finish.code).toBe(0);
+    expect(evidenceOf(finish.report)["decidedMs"]).toBe(7_000);
+  });
+
+  it("finish fails when the status is not approved within 15 seconds", async () => {
+    const h = await harness({ faults: { decisionDelayMs: 16_000 } });
     await h.run(["--only", "T4.F.01:start"]);
     const finish = await h.run(
       ["--only", "T4.F.01:finish", `--from=${f01File(h.dir, RUN_ID)}`],
@@ -140,7 +152,7 @@ describe("T4.F.01 waiting run", () => {
       "run-mock-0002",
     );
     expect(finish.code).toBe(1);
-    expect(evidenceOf(finish.report)["failedChecks"]).toEqual(["approved-within-5s"]);
+    expect(evidenceOf(finish.report)["failedChecks"]).toEqual(["approved-within-limit"]);
   });
 
   it("start writes no file when the card is missing", async () => {

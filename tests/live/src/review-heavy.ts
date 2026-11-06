@@ -184,7 +184,7 @@ export const waitingRunStartScenario: Scenario = {
 
 /**
  * T4.F.01:finish --from <file>: signs an approve for the review in the file and
- * expects `approved` within 5 s.
+ * expects `approved` within 15 s (DECISION_LIMIT_MS).
  */
 export const waitingRunFinishScenario: Scenario = {
   id: "T4.F.01:finish",
@@ -208,7 +208,7 @@ export const waitingRunFinishScenario: Scenario = {
     const stored = decided.view.reviews.find((r) => r.id === handOff.reviewId);
     const failedChecks = [
       ...(decided.status === 200 && decided.outcome === "recorded" ? [] : ["recorded"]),
-      ...(decided.decidedMs === null ? ["approved-within-5s"] : []),
+      ...(decided.decidedMs === null ? ["approved-within-limit"] : []),
       ...(stored?.decision === "approve" ? [] : ["review-decision"]),
     ];
     return result(failedChecks, {
