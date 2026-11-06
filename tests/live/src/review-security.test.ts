@@ -129,8 +129,15 @@ describe("T4.S.01 negative cases", () => {
     expect(evidenceOf(report)["bDecidedEvents"]).toBe(1);
   });
 
-  it("fails b-approved when B is not approved within 5 s, and still approves A", async () => {
-    const h = await harness({ faults: { decisionDelayMs: 6_000 } });
+  it("passes when B is approved after 7 s (the real waitpoint resume)", async () => {
+    const h = await harness({ faults: { decisionDelayMs: 7_000 } });
+    const { code, report } = await h.run(["--only", "T4.S.01"]);
+    expect(code).toBe(0);
+    expect(evidenceOf(report)["failedChecks"]).toEqual([]);
+  });
+
+  it("fails b-approved when B is not approved within 15 s, and still approves A", async () => {
+    const h = await harness({ faults: { decisionDelayMs: 16_000 } });
     const { report } = await h.run(["--only", "T4.S.01"]);
     expect(evidenceOf(report)["failedChecks"]).toContain("b-approved");
     expect(h.review.tickets.get(`${RUN_ID}:S01:1`)!.review!.decision).toBe("approve");

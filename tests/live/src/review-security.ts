@@ -151,7 +151,7 @@ export const forgedDecisionScenario: Scenario = {
   },
 };
 
-/** Polls the view every 500 ms until it shows `status` or 5 s pass; returns the last view. */
+/** Polls the view every 500 ms until it shows `status` or 15 s pass; returns the last view. */
 async function waitForStatus(
   context: ScenarioContext,
   ticketId: string,

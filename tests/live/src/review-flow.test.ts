@@ -239,11 +239,18 @@ describe("T4.L.02 approve", () => {
     expect(h.review.tickets.get(`${RUN_ID}:L02:1`)!.review!.decidedBy).toBe(TEST_SLACK.reviewerId);
   });
 
+  it("passes when approved comes after 7 seconds (the real waitpoint resume)", async () => {
+    const h = await harness({ faults: { decisionDelayMs: 7_000 } });
+    const { code, report } = await h.run(["--only", "T4.L.02"]);
+    expect(code).toBe(0);
+    expect(report.scenarios[0]!.evidence["decidedMs"]).toBe(7_000);
+  });
+
   it.each<[string, ReviewHarnessOptions, string[]]>([
     [
-      "approved comes after 6 seconds",
-      { faults: { decisionDelayMs: 6_000 } },
-      ["decided-within-5s"],
+      "approved comes after 16 seconds",
+      { faults: { decisionDelayMs: 16_000 } },
+      ["decided-within-limit"],
     ],
     ["decidedBy is another user", { faults: { decidedBy: "U0OTHERUSER" } }, ["decided-by"]],
     [

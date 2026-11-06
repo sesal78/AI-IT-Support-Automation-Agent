@@ -21,8 +21,12 @@ import { createSlackSigner, type Decision, type SlackSigner } from "./slack-sign
 
 /** A review ticket must show `review_pending` with a card ts within this time of its creation. */
 export const REVIEW_LIMIT_MS = 60_000;
-/** After a decision is recorded, the view must show it within this time (T4.L.02). */
-export const DECISION_LIMIT_MS = 5_000;
+/**
+ * After a decision is recorded, the view must show it within this time
+ * (T4.L.02, T4.L.03, T4.S.01 b-approved, T4.F.01:finish). Seun 2026-11-06,
+ * option A: the real Trigger.dev waitpoint resume takes about 7 s.
+ */
+export const DECISION_LIMIT_MS = 15_000;
 export const DECISION_POLL_MS = 500;
 /** No event may follow `review_decided` within this time (T4.L.03). */
 export const QUIET_MS = 30_000;
@@ -225,7 +229,7 @@ const DECIDED_STATUS: Record<Decision, string> = { approve: "approved", reject: 
 
 /**
  * Signs and sends one decision as E2E_SLACK_REVIEWER_ID, then polls the view
- * every 500 ms until it shows the decision or 5 s pass after the answer.
+ * every 500 ms until it shows the decision or 15 s pass after the answer.
  */
 export async function decideAndWait(
   context: ScenarioContext,
@@ -365,7 +369,7 @@ function decisionScenario(id: string, decision: Decision): Scenario {
       );
       const failedChecks: string[] = [];
       if (decided.status !== 200 || decided.outcome !== "recorded") failedChecks.push("recorded");
-      if (decided.decidedMs === null) failedChecks.push("decided-within-5s");
+      if (decided.decidedMs === null) failedChecks.push("decided-within-limit");
       const stored = reviewOf(decided.view, ticket.review.id);
       if (stored?.decision !== decision) failedChecks.push("review-decision");
       if (stored?.decidedBy !== context.config.slack.reviewerId) failedChecks.push("decided-by");
