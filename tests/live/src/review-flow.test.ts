@@ -86,6 +86,39 @@ describe("review flow scenarios against the mocks", () => {
       expect(JSON.stringify(body)).not.toContain(canary.value);
     }
   });
+
+  it("T4.L.01 judges the HR complaint part of the description, without the canary text", async () => {
+    const h = await harness();
+    await h.run(["--only", "T4.L.01"]);
+    const { message } = (h.judgeBodies[0] as { state: { message: string } }).state;
+    expect(message).toContain(
+      "Ticket (redacted)\nI want to raise an HR complaint about repeated harassment",
+    );
+    expect(message).toContain("Please handle this confidentially.\n");
+    // The canary filler, its redaction placeholders and the run suffix are cut.
+    expect(message).not.toContain("My laptop cannot reach the VPN");
+    expect(message).not.toContain("REDACTED");
+    expect(message).not.toContain("live run");
+    expect(message).toContain("Approve");
+  });
+
+  it("T4.L.01 judges the text as the reviewer sees it, with Slack's entities decoded", async () => {
+    const h = await harness({
+      faults: {
+        editCard: (_id, card) => ({
+          ...card,
+          blocks: [
+            ...card.blocks,
+            { type: "section", text: { type: "plain_text", text: "Printer & scanner <b>" } },
+          ],
+        }),
+      },
+    });
+    await h.run(["--only", "T4.L.01"]);
+    const { message } = (h.judgeBodies[0] as { state: { message: string } }).state;
+    expect(message).toContain("Printer & scanner <b>");
+    expect(message).not.toMatch(/&(lt|gt|amp);/);
+  });
 });
 
 describe("T4.L.01 negative cases", () => {

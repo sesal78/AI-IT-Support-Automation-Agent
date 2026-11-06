@@ -281,16 +281,31 @@ function loadJ4(): JudgeDefinition {
   return judgeDefinitionSchema.parse(JSON.parse(readFileSync(J4_FILE, "utf8")));
 }
 
-/** What J4 reads: the card's text objects, in block order, one per line. */
-export const cardMessageText = (card: SlackMessage): string =>
+/** The start of the card's description section (`packages/slack` and the mock). */
+export const DESCRIPTION_HEAD = "Ticket (redacted)\n";
+
+/**
+ * What J4 reads: the card's text objects, in block order, one per line, as the
+ * reviewer sees them (Slack's `&lt;`, `&gt;`, `&amp;` decoded). In the
+ * description section, everything from `cutAt` on is left out: T4.L.01 adds
+ * the canary text there for the leak check, and its placeholders and filler
+ * are test text, not what a reviewer of a real ticket reads.
+ */
+export const cardMessageText = (card: SlackMessage, cutAt?: string): string =>
   textObjects(card.blocks ?? [])
-    .map((object) => object.text)
+    .map((object) => {
+      const text = decodeSlackEntities(object.text);
+      if (cutAt === undefined || !text.startsWith(DESCRIPTION_HEAD)) return text;
+      const at = text.indexOf(cutAt);
+      return at < 0 ? text : text.slice(0, at).trimEnd();
+    })
     .join("\n");
 
 /**
  * T4.L.01: the HR complaint plus the run's 10 canaries gets a card in
  * #itsupport-e2e with the two buttons, the redacted title as header and no
  * canary anywhere in the message JSON; J4 scores the card's text at 0.7 or more.
+ * J4 reads the card text decoded, with the canary part of the description cut.
  */
 export const reviewCardScenario: Scenario = {
   id: "T4.L.01",
@@ -334,7 +349,8 @@ export const reviewCardScenario: Scenario = {
           now: context.now,
           sleep: context.sleep,
         }).judge(loadJ4(), {
-          message: cardMessageText(card),
+          // The HR complaint part of the description only: the canary text is cut.
+          message: cardMessageText(card, canaryTicketText(canaryRun).split("\n")[0]),
           reader: "a reviewer who must approve or reject an IT support ticket",
         });
         judgeStatus = judged.status;
