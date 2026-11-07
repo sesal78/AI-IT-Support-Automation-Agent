@@ -101,6 +101,8 @@ beforeAll(async () => {
   container = await startPgContainer();
   for (const user of OWNERS) {
     const c = new pg.Client({ ...clientFor(container), user, password: container.password });
+    // A dropped connection emits "error"; without a listener it would crash the run.
+    c.on("error", (error) => console.error(`default-privileges ${user} client error:`, error));
     await c.connect();
     clients.set(user, c);
   }

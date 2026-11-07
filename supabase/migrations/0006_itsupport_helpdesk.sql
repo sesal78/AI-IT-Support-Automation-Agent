@@ -18,10 +18,21 @@
 -- 0004 and 0005 checks also stay all ok = true.
 -- Applying this to the shared Supabase database is human step H28b.
 -- Apply as ONE transaction: Supabase Studio runs a script as one transaction; with psql use --single-transaction.
+-- H28b: paste this file into Studio UNEDITED (no reformatting, no trimmed
+-- comments inside the function): the check compares the function body.
+-- Lock timeout: each lock waits at most 5 s (`set local lock_timeout` below).
+-- If it fails with 55P03 (lock_not_available), another session holds a lock on
+-- itsupport.tickets: wait and re-run; nothing was applied. `set local` lasts
+-- until the end of the transaction, so it works in Studio and under psql
+-- --single-transaction. Run outside a transaction (psql without
+-- --single-transaction), `set local` only warns and has no effect: no lock
+-- timeout, and each statement commits on its own. Never run it that way.
 -- The down file is DESTRUCTIVE (it drops every notification row, the index
 -- and every ticket number); it needs human approval.
 -- No identity column. The one new sequence is read only inside the security
 -- definer function, so no role gets a sequence right and 0004's lock holds.
+
+set local lock_timeout = '5s';
 
 create table if not exists itsupport.notifications (
   id uuid primary key default gen_random_uuid(),
