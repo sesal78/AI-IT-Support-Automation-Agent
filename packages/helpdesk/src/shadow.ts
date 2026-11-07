@@ -12,13 +12,13 @@ export interface ShadowOptions {
 /**
  * Shadow mode: when `enabled`, every write is skipped and the inner connector
  * is never called for it; reads (`findByExternalRef`, `health`) pass through.
- * When not enabled, the connector itself comes back unchanged.
+ * Only exactly `false` returns the connector unchanged; any other value fails closed.
  */
 export function withShadowMode(
   connector: HelpdeskConnector,
   options: ShadowOptions,
 ): HelpdeskConnector {
-  if (options.enabled !== true) return connector;
+  if (options.enabled === false) return connector;
   const skip = (operation: ShadowOperation): ShadowSkip => {
     options.log?.("shadow_skipped", { operation });
     return { skipped: "shadow" };

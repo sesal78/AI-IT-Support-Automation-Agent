@@ -67,6 +67,17 @@ describe("withShadowMode", () => {
     ]);
   });
 
+  it.each([undefined, 0, "no", null, 1, "yes"])(
+    "fails closed: enabled=%j (not exactly false) gives the wrapper, not the raw connector",
+    async (enabled) => {
+      const inner = new FakeConnector();
+      const wrapped = withShadowMode(inner, { enabled: enabled as unknown as boolean });
+      expect(wrapped).not.toBe(inner);
+      expect(await wrapped.createTicket(input)).toEqual({ skipped: "shadow" });
+      expect(inner.calls).toEqual([]);
+    },
+  );
+
   it("passes a read failure through to the caller", async () => {
     const inner = new FakeConnector();
     const wrapped = withShadowMode(inner, { enabled: true });
