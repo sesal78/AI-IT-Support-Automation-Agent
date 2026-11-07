@@ -2,7 +2,8 @@
 //
 // Started from the spec's worker process (Playwright transpiles the imported
 // test-support sources):
-// 1. the local REST stack (Docker: Postgres with migrations 0001-0005 + PostgREST)
+// 1. the local REST stack (Docker: Postgres with migrations 0001-0006 + PostgREST
+//    + GoTrue with sign-up off, sharing one per-run JWT secret)
 //    with the 30 seed KB articles, as the shared database has them,
 // 2. the local Trigger.dev runner (P3-T10g, P4-T9c), which runs the real intake,
 //    triage and review bodies in this process with canned TypeSafe, LLM,
