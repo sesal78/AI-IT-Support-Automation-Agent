@@ -18,6 +18,10 @@ import {
 // Pinned PostgREST image: latest stable release on Docker Hub (v16.4,
 // published 2026-09-24, checked 2026-09-29).
 export const POSTGREST_IMAGE = "postgrest/postgrest:v16.4";
+// Pinned GoTrue image: the version the shared stack runs (H26, read from
+// /auth/v1/health on 2026-11-06). Same tag convention as the images above.
+export const GOTRUE_VERSION = "v2.189.0";
+export const GOTRUE_IMAGE = `supabase/gotrue:${GOTRUE_VERSION}`;
 
 const SCHEMA = "itsupport";
 // Every up file, in order, so each REST-stack test runs on the schema the
@@ -37,17 +41,19 @@ const migrationsDir = resolve(
 );
 
 /**
- * A throwaway Supabase-like REST stack: supabase/postgres + PostgREST on a
- * private Docker network, plus an in-process `/rest/v1` gateway on 127.0.0.1.
+ * A throwaway Supabase-like stack: supabase/postgres + PostgREST + GoTrue on a
+ * private Docker network, plus an in-process gateway on 127.0.0.1 that serves
+ * `/rest/v1` and `/auth/v1`. PostgREST and GoTrue share one per-run JWT secret.
  */
 export interface RestStack {
   pg: PgContainer;
-  /** Pass as SUPABASE_URL: supabase-js appends `/rest/v1`, the gateway strips it. */
+  /** Pass as SUPABASE_URL: supabase-js appends `/rest/v1` or `/auth/v1`, the gateway strips it. */
   url: string;
   /** A service_role JWT signed with this run's random PostgREST secret. */
   serviceRoleKey: string;
   network: string;
   restContainer: string;
+  authContainer: string;
   gateway: Server | undefined;
 }
 
@@ -66,22 +72,26 @@ export function mintJwt(secret: string, claims: Record<string, unknown>): string
 
 /**
  * Stands in for Supabase's API gateway (Kong): forwards `/rest/v1/*` to
- * PostgREST's root and rejects any other path.
+ * PostgREST's root, `/auth/v1/*` to GoTrue's root and rejects any other path.
  */
-function startGateway(restPort: number): Promise<Server> {
+function startGateway(routes: Record<string, number>): Promise<Server> {
   const server = createServer((req, res) => {
     const url = req.url ?? "/";
-    if (!url.startsWith("/rest/v1/") && url !== "/rest/v1") {
+    const prefix = Object.keys(routes).find(
+      (candidate) => url === candidate || url.startsWith(`${candidate}/`),
+    );
+    const port = prefix === undefined ? undefined : routes[prefix];
+    if (prefix === undefined || port === undefined) {
       res.writeHead(404).end();
       return;
     }
     const upstream = request(
       {
         host: "127.0.0.1",
-        port: restPort,
+        port,
         method: req.method,
-        path: url.slice("/rest/v1".length) || "/",
-        headers: { ...req.headers, host: `127.0.0.1:${restPort}` },
+        path: url.slice(prefix.length) || "/",
+        headers: { ...req.headers, host: `127.0.0.1:${port}` },
       },
       (upstreamRes) => {
         res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
@@ -116,8 +126,57 @@ async function waitForRest(url: string, key: string, timeoutMs: number): Promise
   throw new Error(`PostgREST not ready after ${timeoutMs} ms: ${last}`);
 }
 
+async function waitForAuth(url: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let last = "";
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${url}/auth/v1/health`);
+      if (res.ok) return;
+      last = `HTTP ${res.status}`;
+    } catch (error) {
+      last = String(error);
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
+  }
+  throw new Error(`GoTrue not ready after ${timeoutMs} ms: ${last}`);
+}
+
+function publishedPort(container: string, port: string): number {
+  const mapping = docker(["port", container, `${port}/tcp`]).split(/\r?\n/)[0] ?? "";
+  const match = /^127\.0\.0\.1:(\d+)$/.exec(mapping);
+  if (!match?.[1]) throw new Error(`unexpected port mapping for ${container}: "${mapping}"`);
+  return Number(match[1]);
+}
+
 /**
- * Starts Postgres 17 with migrations 0001 to 0005 applied, then PostgREST exposing `itsupport`.
+ * Sets a login password on a reserved role of the supabase/postgres image, as
+ * the superuser `supabase_admin` (only a superuser may alter these roles).
+ */
+function setRolePassword(pg: PgContainer, role: string, password: string): void {
+  const run = spawnSync(
+    "docker",
+    [
+      "exec",
+      "--env",
+      `PGPASSWORD=${pg.password}`,
+      pg.name,
+      "psql",
+      "--host=127.0.0.1",
+      "--username=supabase_admin",
+      "--dbname=postgres",
+      "--no-psqlrc",
+      "--set=ON_ERROR_STOP=1",
+      `--command=alter role ${role} with login password '${password}'`,
+    ],
+    { encoding: "utf8" },
+  );
+  if (run.status !== 0) throw new Error(`setting the ${role} password failed:\n${run.stderr}`);
+}
+
+/**
+ * Starts Postgres 17 with the migrations applied, then PostgREST exposing
+ * `itsupport` and GoTrue (sign-up disabled) on the same database and JWT secret.
  * `migrations` (file names in order) lets a test start an older shape, e.g. 0001 and 0002 only.
  */
 export async function startRestStack(
@@ -127,6 +186,7 @@ export async function startRestStack(
   const suffix = randomBytes(4).toString("hex");
   const network = `${CONTAINER_PREFIX}net-${suffix}`;
   const restContainer = `${CONTAINER_PREFIX}rest-${suffix}`;
+  const authContainer = `${CONTAINER_PREFIX}auth-${suffix}`;
   // Fake per-run secret (PostgREST needs at least 32 characters).
   const jwtSecret = randomBytes(32).toString("hex");
   const stack: RestStack = {
@@ -135,6 +195,7 @@ export async function startRestStack(
     serviceRoleKey: mintJwt(jwtSecret, { role: "service_role" }),
     network,
     restContainer,
+    authContainer,
     gateway: undefined,
   };
   try {
@@ -147,32 +208,13 @@ export async function startRestStack(
     }
 
     // PostgREST logs in as `authenticator` and switches to the JWT's role, as
-    // on Supabase. The supabase/postgres image ships `authenticator` (member of
-    // anon, authenticated, service_role) without a usable password; like
-    // Supabase's own setup, set one as the superuser `supabase_admin` (only a
-    // superuser may alter this reserved role). Fake, per-run value.
+    // on Supabase; GoTrue logs in as `supabase_auth_admin`, which owns the
+    // `auth` schema. The supabase/postgres image ships both roles without a
+    // usable password; like Supabase's own setup, set one. Fake, per-run values.
     const authenticatorPassword = randomBytes(18).toString("hex");
-    const setPassword = spawnSync(
-      "docker",
-      [
-        "exec",
-        "--env",
-        `PGPASSWORD=${stack.pg.password}`,
-        stack.pg.name,
-        "psql",
-        "--host=127.0.0.1",
-        "--username=supabase_admin",
-        "--dbname=postgres",
-        "--no-psqlrc",
-        "--set=ON_ERROR_STOP=1",
-        `--command=alter role authenticator with login password '${authenticatorPassword}'`,
-      ],
-      { encoding: "utf8" },
-    );
-    if (setPassword.status !== 0) {
-      throw new Error(`setting the authenticator password failed:
-${setPassword.stderr}`);
-    }
+    const authAdminPassword = randomBytes(18).toString("hex");
+    setRolePassword(stack.pg, "authenticator", authenticatorPassword);
+    setRolePassword(stack.pg, "supabase_auth_admin", authAdminPassword);
 
     docker([
       "run",
@@ -195,29 +237,81 @@ ${setPassword.stderr}`);
       "127.0.0.1::3000",
       POSTGREST_IMAGE,
     ]);
-    const mapping = docker(["port", restContainer, "3000/tcp"]).split(/\r?\n/)[0] ?? "";
-    const match = /^127\.0\.0\.1:(\d+)$/.exec(mapping);
-    if (!match?.[1]) throw new Error(`unexpected port mapping for ${restContainer}: "${mapping}"`);
+    docker([
+      "run",
+      "--detach",
+      "--name",
+      authContainer,
+      "--label",
+      LABEL,
+      "--network",
+      network,
+      "--env",
+      "GOTRUE_API_HOST=0.0.0.0",
+      "--env",
+      "PORT=9999",
+      "--env",
+      "API_EXTERNAL_URL=http://127.0.0.1:9999",
+      "--env",
+      "GOTRUE_SITE_URL=http://127.0.0.1:3000",
+      "--env",
+      "GOTRUE_DB_DRIVER=postgres",
+      "--env",
+      `GOTRUE_DB_DATABASE_URL=postgres://supabase_auth_admin:${authAdminPassword}@${PG_NETWORK_ALIAS}:5432/postgres`,
+      "--env",
+      `GOTRUE_JWT_SECRET=${jwtSecret}`,
+      "--env",
+      "GOTRUE_JWT_EXP=3600",
+      "--env",
+      "GOTRUE_JWT_AUD=authenticated",
+      "--env",
+      "GOTRUE_JWT_DEFAULT_GROUP_NAME=authenticated",
+      "--env",
+      "GOTRUE_JWT_ADMIN_ROLES=service_role",
+      // Invite-only, as the app expects (G7): users come from the admin API.
+      "--env",
+      "GOTRUE_DISABLE_SIGNUP=true",
+      "--env",
+      "GOTRUE_EXTERNAL_EMAIL_ENABLED=true",
+      "--env",
+      "GOTRUE_MAILER_AUTOCONFIRM=false",
+      "--env",
+      "GOTRUE_EXTERNAL_PHONE_ENABLED=false",
+      "--publish",
+      "127.0.0.1::9999",
+      GOTRUE_IMAGE,
+    ]);
 
-    stack.gateway = await startGateway(Number(match[1]));
+    stack.gateway = await startGateway({
+      "/rest/v1": publishedPort(restContainer, "3000"),
+      "/auth/v1": publishedPort(authContainer, "9999"),
+    });
     stack.url = `http://127.0.0.1:${(stack.gateway.address() as AddressInfo).port}`;
-    await waitForRest(stack.url, stack.serviceRoleKey, timeoutMs);
+    await Promise.all([
+      waitForRest(stack.url, stack.serviceRoleKey, timeoutMs),
+      waitForAuth(stack.url, timeoutMs),
+    ]);
     return stack;
   } catch (error) {
-    const logs = spawnSync("docker", ["logs", "--tail", "30", restContainer], { encoding: "utf8" });
+    const logs = [restContainer, authContainer].map((container) => {
+      const run = spawnSync("docker", ["logs", "--tail", "30", container], { encoding: "utf8" });
+      return `${container}:\n${run.stdout ?? ""}${run.stderr ?? ""}`;
+    });
     await removeRestStack(stack);
-    throw new Error(`${String(error)}\n${logs.stdout ?? ""}${logs.stderr ?? ""}`);
+    throw new Error(`${String(error)}\n${logs.join("\n")}`);
   }
 }
 
-/** Removes both containers, the network and the gateway. Safe to call twice. */
+/** Removes the three containers, the network and the gateway. Safe to call twice. */
 export async function removeRestStack(stack: RestStack | undefined): Promise<void> {
   if (!stack) return;
   if (stack.gateway?.listening) {
     stack.gateway.closeAllConnections();
     await new Promise((resolvePromise) => stack.gateway?.close(() => resolvePromise(undefined)));
   }
-  spawnSync("docker", ["rm", "--force", "--volumes", stack.restContainer], { encoding: "utf8" });
+  spawnSync("docker", ["rm", "--force", "--volumes", stack.restContainer, stack.authContainer], {
+    encoding: "utf8",
+  });
   if (stack.pg.name) removePgContainer(stack.pg);
   spawnSync("docker", ["network", "rm", stack.network], { encoding: "utf8" });
 }
