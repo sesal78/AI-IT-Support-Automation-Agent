@@ -271,6 +271,33 @@ export const slackClientEnvShape = {
   SLACK_ALERT_CHANNEL_ID: slackChannelId().optional(),
 };
 
+/** One plain lower-case address: no display name, no `+` tag, no quotes, no spaces. */
+export const REPLY_ADDRESS_RE =
+  /^(?=[^@]{1,64}@)[a-z0-9]+(?:[._-][a-z0-9]+)*@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
+
+const replyAddress = () =>
+  z.string().max(254).regex(REPLY_ADDRESS_RE, "must be one lower-case email address");
+
+/**
+ * Reply email variables (services/pipeline, P5-T8a). RESEND_API_KEY is never
+ * echoed. REPLY_ALLOWED_RECIPIENTS is a comma-separated list without spaces
+ * of 1-20 distinct lower-case addresses, parsed into an array.
+ */
+export const replyEnvShape = {
+  RESEND_API_KEY: z.string().regex(/^re_[A-Za-z0-9_]{20,}$/, "must be a Resend API key"),
+  REPLY_FROM: replyAddress(),
+  REPLY_ALLOWED_RECIPIENTS: z
+    .string()
+    .transform((value) => value.split(","))
+    .pipe(
+      z
+        .array(replyAddress())
+        .min(1)
+        .max(20, "must list at most 20 addresses")
+        .refine((list) => new Set(list).size === list.length, "must not repeat an address"),
+    ),
+};
+
 const MINUTES_PER_UNIT = { m: 1, h: 60, d: 1440 } as const;
 
 /**

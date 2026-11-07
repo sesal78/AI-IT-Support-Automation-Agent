@@ -13,6 +13,15 @@ export const ticketSubmissionSchema = z.object({
   turnstileToken: z.string().min(1),
 });
 
+/**
+ * Display number of a ticket: `ITS-` plus 6 digits (phase 5, resolved points
+ * 20-22). Display only: it is never an identifier. `$` without the `m` flag
+ * matches only at the very end, so a trailing CR or LF fails.
+ */
+export const TICKET_NUMBER_RE = /^ITS-[0-9]{6}$/;
+
+export const ticketNumberSchema = z.string().regex(TICKET_NUMBER_RE, "must be a ticket number");
+
 export type TicketSubmission = z.infer<typeof ticketSubmissionSchema>;
 
 /**
