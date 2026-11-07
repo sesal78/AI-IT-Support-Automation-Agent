@@ -7,6 +7,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "verify:personas": "pnpm --filter @ai-it-support/shared run build && node src/verify-personas-cli.ts",
     "test:browser": "playwright test"
   },
   "dependencies": {
