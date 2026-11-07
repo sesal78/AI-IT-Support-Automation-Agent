@@ -1,6 +1,12 @@
 export { HelpdeskError, InstanceAsleepError, type HelpdeskErrorCode } from "./errors.js";
 export { FakeConnector, type FakeCall } from "./fake.js";
 export {
+  withShadowMode,
+  shadowEnabled,
+  type ShadowOperation,
+  type ShadowOptions,
+} from "./shadow.js";
+export {
   UPDATE_STATES,
   type CreateHelpdeskTicketInput,
   type CreatedHelpdeskTicket,

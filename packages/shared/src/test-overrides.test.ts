@@ -71,3 +71,21 @@ describe("reviewTimeout switch", () => {
     expect(testOverridesSchema.safeParse({ reviewTimeout: value }).success).toBe(false);
   });
 });
+
+describe("shadowMode switch", () => {
+  it("accepts only true", () => {
+    expect(testOverridesSchema.parse({ shadowMode: true })).toEqual({ shadowMode: true });
+    expect(testOverridesSchema.parse({})).toEqual({});
+  });
+
+  it.each([false, "true", 1, null])("rejects %j", (value) => {
+    expect(testOverridesSchema.safeParse({ shadowMode: value }).success).toBe(false);
+  });
+
+  it("takes effect only with e2eMode and isTest", () => {
+    const requested = { shadowMode: true };
+    expect(effectiveTestOverrides({ e2eMode: true, isTest: true, requested })).toEqual(requested);
+    expect(effectiveTestOverrides({ e2eMode: true, isTest: false, requested })).toEqual({});
+    expect(effectiveTestOverrides({ e2eMode: false, isTest: true, requested })).toEqual({});
+  });
+});
