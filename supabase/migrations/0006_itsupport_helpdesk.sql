@@ -98,20 +98,19 @@ alter table itsupport.tickets add column if not exists ticket_number text;
 -- so no insert runs in between. Then the sequence continues after the highest
 -- number. When nothing was numbered (no ticket, or a re-run) the sequence is
 -- left where it is, so a re-run neither renumbers nor moves it.
-with top (n) as (
-  select coalesce(max(substr(ticket_number, 5)::integer), 0) from itsupport.tickets
+-- No table aliases (`alias.column` would read as a schema to the schema scan).
+with todo (todo_id, todo_n) as (
+  select id, (select coalesce(max(substr(ticket_number, 5)::integer), 0) from itsupport.tickets)
+    + row_number() over (order by created_at, id)
+  from itsupport.tickets
+  where ticket_number is null
 ),
-todo (id, n) as (
-  select t.id, top.n + row_number() over (order by t.created_at, t.id)
-  from itsupport.tickets t, top
-  where t.ticket_number is null
-),
-done (n) as (
-  update itsupport.tickets t set ticket_number = 'ITS-' || lpad(todo.n::text, 6, '0')
-  from todo where t.id = todo.id
-  returning todo.n
+done (done_n) as (
+  update itsupport.tickets set ticket_number = 'ITS-' || lpad(todo_n::text, 6, '0')
+  from todo where id = todo_id
+  returning todo_n
 )
-select setval('itsupport.ticket_number_seq', max(done.n), true) from done having count(*) > 0;
+select setval('itsupport.ticket_number_seq', max(done_n), true) from done having count(*) > 0;
 
 alter table itsupport.tickets
   drop constraint if exists tickets_ticket_number_key,
