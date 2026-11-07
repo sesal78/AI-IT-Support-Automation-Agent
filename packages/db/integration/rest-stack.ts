@@ -78,8 +78,7 @@ function startGateway(routes: Record<string, number>): Promise<Server> {
   const server = createServer((req, res) => {
     const url = req.url ?? "/";
     const prefix = Object.keys(routes).find(
-      (candidate) =>
-        url === candidate || url.startsWith(`${candidate}/`),
+      (candidate) => url === candidate || url.startsWith(`${candidate}/`),
     );
     const port = prefix === undefined ? undefined : routes[prefix];
     if (prefix === undefined || port === undefined) {

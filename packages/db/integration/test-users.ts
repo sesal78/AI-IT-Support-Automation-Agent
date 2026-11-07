@@ -49,7 +49,8 @@ export async function createTestStaffUser(
     },
     body: JSON.stringify({ email, password, email_confirm: confirmed }),
   });
-  if (!res.ok) throw new Error(`createTestStaffUser: GoTrue admin create failed (HTTP ${res.status})`);
+  if (!res.ok)
+    throw new Error(`createTestStaffUser: GoTrue admin create failed (HTTP ${res.status})`);
   const { id: userId } = (await res.json()) as { id: string };
 
   let staffId: string | undefined;

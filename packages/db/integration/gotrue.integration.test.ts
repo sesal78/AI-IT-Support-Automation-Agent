@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it, vi, type MockInstance } from "vitest";
+import { format } from "node:util";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createEgressRecorder } from "../../shared/test-support/egress-recorder.js";
 import { clientFor } from "./pg-container.js";
 import {
@@ -20,7 +21,35 @@ import { createTestStaffUser, type TestStaffUser } from "./test-users.js";
 let stack: RestStack | undefined;
 const egress = createEgressRecorder();
 const passwords: string[] = [];
-let outputSpies: MockInstance[] = [];
+const output: string[] = [];
+let stopOutputRecorder: () => void = () => undefined;
+
+/**
+ * The log recorder (P5-T15 criterion 4): wraps every console method and raw
+ * stdout/stderr write of this file, passes each call through and keeps its
+ * text for the leak check. Plain wrappers, not `vi.spyOn`: Vitest resets spy
+ * calls between tests, which would empty the record.
+ */
+function recordOutput(): () => void {
+  const restores: Array<() => void> = [];
+  for (const stream of [process.stdout, process.stderr]) {
+    const original = stream.write;
+    stream.write = function (this: NodeJS.WriteStream, chunk: unknown, ...rest: unknown[]) {
+      output.push(typeof chunk === "string" ? chunk : Buffer.from(chunk as Uint8Array).toString());
+      return (original as (...args: unknown[]) => boolean).call(this, chunk, ...rest);
+    } as typeof stream.write;
+    restores.push(() => (stream.write = original));
+  }
+  for (const name of ["log", "info", "warn", "error", "debug"] as const) {
+    const original = console[name];
+    console[name] = (...args: unknown[]) => {
+      output.push(format(...args));
+      original(...args);
+    };
+    restores.push(() => (console[name] = original));
+  }
+  return () => restores.forEach((restore) => restore());
+}
 
 function live(): RestStack {
   if (!stack) throw new Error("stack not started");
@@ -57,13 +86,8 @@ function whoami(token: string): Promise<Response> {
 
 beforeAll(async () => {
   egress.start();
-  // The log recorder: every console call and raw stdout/stderr write of this
-  // file passes through and is kept for the leak check (P5-T15 criterion 4).
-  outputSpies = [
-    vi.spyOn(process.stdout, "write"),
-    vi.spyOn(process.stderr, "write"),
-    ...(["log", "info", "warn", "error", "debug"] as const).map((name) => vi.spyOn(console, name)),
-  ];
+  stopOutputRecorder = recordOutput();
+  console.info("output recorder probe");
   stack = await startRestStack();
 
   // Test-only probe on this file's throwaway database: reports the role
@@ -98,7 +122,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  for (const spy of outputSpies) spy.mockRestore();
+  stopOutputRecorder();
   egress.stop();
   await removeRestStack(stack);
 });
@@ -206,10 +230,9 @@ describe("local GoTrue", () => {
 
   it("leaks no generated password to test output, container logs or egress", () => {
     expect(passwords.length).toBeGreaterThanOrEqual(4);
-    const output = outputSpies
-      .flatMap((spy) => spy.mock.calls.flat())
-      .map((value) => (typeof value === "string" ? value : String(value)))
-      .join("\n");
+    const printed = output.join("\n");
+    // The recorder works: the probe line from beforeAll was kept.
+    expect(printed).toContain("output recorder probe");
     const logs = [live().authContainer, live().restContainer, live().pg.name]
       .map((name) => {
         const run = spawnSync("docker", ["logs", name], { encoding: "utf8" });
@@ -219,7 +242,7 @@ describe("local GoTrue", () => {
     expect(logs.length).toBeGreaterThan(0);
     for (const password of passwords) {
       // Boolean checks only, so a failure never prints the password itself.
-      expect(output.includes(password)).toBe(false);
+      expect(printed.includes(password)).toBe(false);
       expect(logs.includes(password)).toBe(false);
     }
     egress.assertClean();
