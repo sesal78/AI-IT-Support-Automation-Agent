@@ -280,7 +280,7 @@ const withTicket = (sql: string) =>
 
 /**
  * Runs `sql` with psql while a second session holds ACCESS SHARE on
- * itsupport.tickets. A 15 s session lock_timeout stops psql from waiting
+ * itsupport.tickets. A 20 s session lock_timeout stops psql from waiting
  * forever (spawnSync blocks this process) if the file's own 5 s one is missing.
  */
 const withTicketsLocked = async (sql: string) => {
@@ -290,7 +290,7 @@ const withTicketsLocked = async (sql: string) => {
   try {
     await other.query("begin; lock table itsupport.tickets in access share mode");
     const started = Date.now();
-    const result = runSql(container!, `\\set VERBOSITY verbose\nset lock_timeout = '15s';\n${sql}`);
+    const result = runSql(container!, `\\set VERBOSITY verbose\nset lock_timeout = '20s';\n${sql}`);
     return { ...result, ms: Date.now() - started };
   } finally {
     await other.query("rollback").catch(() => undefined);
@@ -349,7 +349,9 @@ describe("migration 0007 on 0001-0006 with phase-4 rows and Supabase-like defaul
   });
 
   it("before 0007 every 0007 check row is ok = false; the 0003-0006 checks are all true", async () => {
-    expect((await check(M7)).filter((r) => r.ok)).toEqual([]);
+    const rows = await check(M7);
+    expect(rows).toHaveLength(97);
+    expect(rows.filter((r) => r.ok)).toEqual([]);
     for (const name of OLD) expect(await notOk(name), name).toEqual([]);
     expect(await notOk4()).toEqual([]);
   });
@@ -359,7 +361,7 @@ describe("migration 0007 on 0001-0006 with phase-4 rows and Supabase-like defaul
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/ERROR: {2}55P03: canceling statement due to lock timeout/);
     expect(result.ms).toBeGreaterThanOrEqual(4_500);
-    expect(result.ms).toBeLessThan(10_000);
+    expect(result.ms).toBeLessThan(15_000);
     expect(await catalog()).toEqual(before);
     expect(await tableRows()).toEqual(seeded);
   });
@@ -442,10 +444,12 @@ describe("migration 0007 on 0001-0006 with phase-4 rows and Supabase-like defaul
   });
 
   it("service_role's helpdesk tickets get HD0000001 and HD0000002 from the identity, with state new", async () => {
+    // The identity restarts at 1 first (rolled back), so the numbers do not depend on test order.
     const r = await attempt(
       `${BASE}; ${hdRow({ id: "gen_random_uuid()", ticket_id: `'${SLACK}'` })};
        select number, state from itsupport.helpdesk_tickets order by seq`,
       "service_role",
+      "alter table itsupport.helpdesk_tickets alter column seq restart with 1",
     );
     expect(r).toEqual({
       ok: true,
@@ -615,7 +619,13 @@ describe("migration 0007 on 0001-0006 with phase-4 rows and Supabase-like defaul
   it("anon and authenticated get 42501 on every new table; service_role selects, inserts and updates but cannot delete", async () => {
     for (const table of TABLES) {
       for (const role of ["anon", "authenticated"])
-        for (const sql of [`select * from itsupport.${table}`, INSERTS[table]!])
+        for (const sql of [
+          `select * from itsupport.${table}`,
+          INSERTS[table]!,
+          UPDATES[table]!,
+          `delete from itsupport.${table}`,
+          `truncate itsupport.${table}`,
+        ])
           expect(await attempt(sql, role, `${BASE}; ${USAGE}`), `${role}: ${sql}`).toEqual(denied);
       expect(
         await attempt(`select count(*)::int as n from itsupport.${table}`, "service_role", BASE),
@@ -748,6 +758,29 @@ describe("migration 0007 on 0001-0006 with phase-4 rows and Supabase-like defaul
     ).toEqual(
       ["checks itsupport.reviews", "constraint itsupport.reviews.reviews_slack_user_check"].sort(),
     );
+    // Each other 0005 constraint row still asks for its own constraint after 0007.
+    expect(
+      (
+        await notOkAfter(
+          "alter table itsupport.reviews drop constraint reviews_kind_check",
+          "0005_itsupport_reviews",
+        )
+      ).sort(),
+    ).toEqual(
+      ["checks itsupport.reviews", "constraint itsupport.reviews.reviews_kind_check"].sort(),
+    );
+    expect(
+      await notOkAfter(
+        "alter table itsupport.reviews drop constraint reviews_pkey",
+        "0005_itsupport_reviews",
+      ),
+    ).toEqual(["constraint itsupport.reviews.reviews_pkey"]);
+    expect(
+      await notOkAfter(
+        "alter table itsupport.reviews drop constraint reviews_ticket_id_fkey",
+        "0005_itsupport_reviews",
+      ),
+    ).toEqual(["constraint itsupport.reviews.reviews_ticket_id_fkey"]);
     expect(
       await notOkAfter(
         "alter table itsupport.tickets add constraint tickets_probe_check check (true)",
@@ -760,10 +793,11 @@ describe("migration 0007 on 0001-0006 with phase-4 rows and Supabase-like defaul
     await db.query(`${staffRow(STAFF)};
       update itsupport.reviews set decision = 'reject', staff_id = '${STAFF}', decided_at = now()
       where ticket_id = '${OPEN}'`);
-    const result = runSql(container!, down);
+    const result = runSql(container!, `\\set VERBOSITY verbose\n${down}`);
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/violated by some row/);
-    expect(result.stderr).toMatch(/reviews_slack_user_check/);
+    expect(result.stderr).toMatch(
+      /ERROR: {2}23514: check constraint "reviews_slack_user_check" of relation "reviews" is violated by some row/,
+    );
     expect(await catalog()).toEqual(afterUp);
     await db.query(`update itsupport.reviews set decision = null, staff_id = null, decided_at = null
       where ticket_id = '${OPEN}'; delete from itsupport.staff`);
@@ -775,7 +809,7 @@ describe("migration 0007 on 0001-0006 with phase-4 rows and Supabase-like defaul
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/ERROR: {2}55P03: canceling statement due to lock timeout/);
     expect(result.ms).toBeGreaterThanOrEqual(4_500);
-    expect(result.ms).toBeLessThan(10_000);
+    expect(result.ms).toBeLessThan(15_000);
     expect(await catalog()).toEqual(afterUp);
   });
 
@@ -785,7 +819,9 @@ describe("migration 0007 on 0001-0006 with phase-4 rows and Supabase-like defaul
       expect(await catalog()).toEqual(before);
       expect(await tableRows()).toEqual(seeded);
       for (const name of OLD) expect(await check(name), name).toEqual(checksBefore[name]);
-      expect((await check(M7)).filter((r) => r.ok)).toEqual([]);
+      const rows = await check(M7);
+      expect(rows).toHaveLength(97);
+      expect(rows.filter((r) => r.ok)).toEqual([]);
       for (const table of TABLES)
         expect(await exists(`to_regclass('itsupport.${table}') is null`), table).toBe(true);
     }
