@@ -18,6 +18,7 @@ import {
   policyEnvShape,
   reviewEnvShape,
   sensitiveCheckEnvShape,
+  serviceNowEnvShape,
   slackClientEnvShape,
   slackInteractivityEnvShape,
   triggerProjectEnvShape,
@@ -42,6 +43,7 @@ const allEnvShapes = {
   ...slackInteractivityEnvShape,
   ...slackClientEnvShape,
   ...reviewEnvShape,
+  ...serviceNowEnvShape,
   // Every value the bot token rule accepts starts with xoxb-, which the secret
   // check below bans, so its placeholder is empty (the key store fills it). The
   // parse treats it as optional here only; the "empty" test pins that.
