@@ -13,3 +13,4 @@ export {
   type ShadowSkip,
 } from "./types.js";
 export { MAX_NOTE_LENGTH, assertNoteBody, assertTicketId, assertUpdateState } from "./validate.js";
+export * from "./servicenow/index.js";

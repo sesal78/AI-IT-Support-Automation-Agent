@@ -233,6 +233,35 @@ export const liveServiceNowEnvShape = {
 };
 
 /**
+ * ServiceNow connector (services/pipeline, P5-T3a). The URL is https://<name>.service-now.com
+ * with no path, port or credentials. The password is at least 12 characters and
+ * `parseEnv` never echoes it. The default caller is a sys_user sys_id.
+ */
+export const serviceNowEnvShape = {
+  SERVICENOW_INSTANCE_URL: z.string().refine((value) => {
+    try {
+      const url = new URL(value);
+      return (
+        url.origin === value &&
+        url.port === "" &&
+        url.protocol === "https:" &&
+        url.hostname.endsWith(".service-now.com") &&
+        url.hostname.length > ".service-now.com".length
+      );
+    } catch {
+      return false;
+    }
+  }, "must be https://<name>.service-now.com with no path"),
+  SERVICENOW_USERNAME: z
+    .string()
+    .regex(/^[^\s:]{1,100}$/, "must be 1-100 characters with no spaces or colon"),
+  SERVICENOW_PASSWORD: z.string().min(12, "must be at least 12 characters").max(200),
+  SERVICENOW_DEFAULT_CALLER: z
+    .string()
+    .regex(/^[0-9a-f]{32}$/, "must be a sys_id (32 lower-case hex characters)"),
+};
+
+/**
  * Slack Web API client (services/pipeline, packages/slack `createSlackClient`):
  * the bot token, the review channel and an optional alert channel.
  */

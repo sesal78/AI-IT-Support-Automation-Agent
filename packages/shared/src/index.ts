@@ -31,6 +31,7 @@ export {
   slackInteractivityEnvShape,
   slackUserId,
   sensitiveCheckEnvShape,
+  serviceNowEnvShape,
   slackClientEnvShape,
   reviewEnvShape,
   triggerProjectEnvShape,
