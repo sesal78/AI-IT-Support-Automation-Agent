@@ -22,6 +22,7 @@ const GATE_FILES = [
   "apps/web/vitest.config.ts",
   "packages/ai/vitest.config.ts",
   "packages/db/vitest.config.ts",
+  "packages/helpdesk/vitest.config.ts",
   "packages/shared/vitest.config.ts",
   "packages/slack/vitest.config.ts",
   "services/pipeline/vitest.config.ts",
