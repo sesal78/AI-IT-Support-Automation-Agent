@@ -18,7 +18,7 @@ const env = {
 async function verify(
   data: MockSnData,
   source: Record<string, string | undefined> = env,
-  options: { denyRoles?: boolean } = {},
+  options: { denyRoles?: boolean; denyAll?: number } = {},
 ) {
   const mock = mockServiceNow(data, options);
   const out: string[] = [];
@@ -101,12 +101,35 @@ describe("verify:personas", () => {
     ]);
   });
 
-  it("verify reports a refused read as not_checked (exit 2), never as a pass", async () => {
-    const { code, out } = await verify(fullInstance(), env, { denyRoles: true });
+  it("verify reports a refused read as not_checked (exit 2), never as a pass, and stops there", async () => {
+    const { code, out, mock } = await verify(fullInstance(), env, { denyRoles: true });
     expect(code).toBe(2);
-    expect(out.every((l) => l.startsWith("not_checked "))).toBe(true);
-    expect(out).toContain("not_checked svc.itsupport");
-    expect(out.join("\n")).not.toContain("ok:");
+    expect(out).toEqual([
+      "not_checked demo.alice",
+      "stopped: a read was refused, the remaining items were not asked",
+    ]);
+    expect(out.join(" ")).not.toContain("ok:");
+    // userByName worked, userRoles was refused, and nothing was asked after that.
+    expect(mock.requests).toHaveLength(2);
+  });
+
+  it.each([401, 403])(
+    "verify stops after the first %i: one request, not_checked, exit 2",
+    async (status) => {
+      const { code, out, mock } = await verify(fullInstance(), env, { denyAll: status });
+      expect(code).toBe(2);
+      expect(mock.requests).toHaveLength(1);
+      expect(out[0]).toBe("not_checked demo.alice");
+    },
+  );
+
+  it("verify keeps a missing item found before the refusal and exits 1", async () => {
+    const data = fullInstance();
+    data.users = data.users.filter((u) => u["user_name"] !== "demo.alice");
+    const { code, out } = await verify(data, env, { denyRoles: true });
+    expect(code).toBe(1);
+    expect(out[0]).toBe("missing demo.alice: missing");
+    expect(out).toContain("not_checked demo.bob");
   });
 
   it("verify with the variables unset runs nothing and exits 2, naming them", async () => {

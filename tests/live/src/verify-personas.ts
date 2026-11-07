@@ -22,6 +22,13 @@ const isTrue = (value: string | undefined): boolean => value === "true" || value
 interface Outcome {
   readonly missing: string[];
   readonly notChecked: string[];
+  /** True when the run stopped at the first 401 or 403, so the rest was not asked. */
+  readonly stopped: boolean;
+}
+
+/** Raised after the first refused read: more probes with the same credentials could lock the account. */
+class AuthStop extends Error {
+  override readonly name = "AuthStop";
 }
 
 /** Runs every check and returns the missing and unreadable items by name. */
@@ -30,71 +37,78 @@ export async function verifyPersonas(sn: E2eServiceNow): Promise<Outcome> {
   const notChecked: string[] = [];
 
   // A 401/403 is "this account cannot read it": not a pass, and not a miss either.
+  // It also stops the run at once; the rest is never asked with credentials that were refused.
   async function check(item: string, probe: () => Promise<void>): Promise<void> {
     try {
       await probe();
     } catch (error) {
       if (error instanceof ServiceNowApiError && (error.status === 401 || error.status === 403)) {
         notChecked.push(item);
+        throw new AuthStop();
       } else {
         throw error;
       }
     }
   }
 
-  for (const persona of PERSONAS) {
-    await check(persona.name, async () => {
-      const user = await sn.userByName(persona.name);
+  try {
+    for (const persona of PERSONAS) {
+      await check(persona.name, async () => {
+        const user = await sn.userByName(persona.name);
+        const sysId = user?.["sys_id"];
+        if (user === undefined || sysId === undefined) {
+          missing.push(`${persona.name}: missing`);
+          return;
+        }
+        if (isTrue(user["active"]) !== persona.active) {
+          missing.push(`${persona.name}: ${persona.active ? "inactive" : "active"}`);
+        }
+        const roles = await sn.userRoles(sysId);
+        for (const role of persona.roles) {
+          if (!roles.includes(role)) missing.push(`${persona.name}: lacks ${role}`);
+        }
+        for (const role of roles) {
+          if (!(persona.roles as readonly string[]).includes(role)) {
+            missing.push(`${persona.name}: extra role ${role}`);
+          }
+        }
+      });
+    }
+
+    await check("abel.tuter", async () => {
+      if ((await sn.userByName("abel.tuter")) === undefined) missing.push("abel.tuter: missing");
+    });
+
+    await check("categories", async () => {
+      const found = await sn.incidentCategories();
+      for (const category of CATEGORIES) {
+        if (!found.includes(category)) missing.push(`category ${category}: missing`);
+      }
+    });
+
+    for (const group of ASSIGNMENT_GROUPS) {
+      await check(`group ${group}`, async () => {
+        if ((await sn.groupByName(group)) === undefined) missing.push(`group ${group}: missing`);
+      });
+    }
+
+    await check("svc.itsupport", async () => {
+      const user = await sn.userByName("svc.itsupport");
       const sysId = user?.["sys_id"];
       if (user === undefined || sysId === undefined) {
-        missing.push(`${persona.name}: missing`);
+        missing.push("svc.itsupport: missing");
         return;
       }
-      if (isTrue(user["active"]) !== persona.active) {
-        missing.push(`${persona.name}: ${persona.active ? "inactive" : "active"}`);
-      }
       const roles = await sn.userRoles(sysId);
-      for (const role of persona.roles) {
-        if (!roles.includes(role)) missing.push(`${persona.name}: lacks ${role}`);
-      }
-      for (const role of roles) {
-        if (!(persona.roles as readonly string[]).includes(role)) {
-          missing.push(`${persona.name}: extra role ${role}`);
-        }
-      }
+      if (roles.length !== 1 || roles[0] !== "itil")
+        missing.push("svc.itsupport: roles not only itil");
     });
+  } catch (error) {
+    if (!(error instanceof AuthStop)) throw error;
+    return { missing, notChecked, stopped: true };
   }
 
-  await check("abel.tuter", async () => {
-    if ((await sn.userByName("abel.tuter")) === undefined) missing.push("abel.tuter: missing");
-  });
-
-  await check("categories", async () => {
-    const found = await sn.incidentCategories();
-    for (const category of CATEGORIES) {
-      if (!found.includes(category)) missing.push(`category ${category}: missing`);
-    }
-  });
-
-  for (const group of ASSIGNMENT_GROUPS) {
-    await check(`group ${group}`, async () => {
-      if ((await sn.groupByName(group)) === undefined) missing.push(`group ${group}: missing`);
-    });
-  }
-
-  await check("svc.itsupport", async () => {
-    const user = await sn.userByName("svc.itsupport");
-    const sysId = user?.["sys_id"];
-    if (user === undefined || sysId === undefined) {
-      missing.push("svc.itsupport: missing");
-      return;
-    }
-    const roles = await sn.userRoles(sysId);
-    if (roles.length !== 1 || roles[0] !== "itil")
-      missing.push("svc.itsupport: roles not only itil");
-  });
-
-  return { missing, notChecked };
+  return { missing, notChecked, stopped: false };
 }
 
 export interface VerifyOptions {
@@ -123,11 +137,12 @@ export async function runVerifyPersonas(
     return 2;
   }
   try {
-    const { missing, notChecked } = await verifyPersonas(
+    const { missing, notChecked, stopped } = await verifyPersonas(
       createE2eServiceNow(config, options.fetch),
     );
     for (const item of missing) options.stdout(`missing ${item}`);
     for (const item of notChecked) options.stdout(`not_checked ${item}`);
+    if (stopped) options.stdout("stopped: a read was refused, the remaining items were not asked");
     if (missing.length > 0) return 1;
     if (notChecked.length > 0) return 2;
     options.stdout("ok: all personas, categories and groups present");

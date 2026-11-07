@@ -20,7 +20,7 @@ var REPLY_MAILBOX = "";
     { name: "dave", roles: ["snc_internal"], active: true },
     { name: "erin", roles: ["snc_internal"], active: true },
     { name: "frank", roles: ["snc_internal", "itil"], active: true },
-    { name: "gina", roles: ["snc_internal"], active: false },
+    { name: "gina", roles: ["snc_internal"], active: false }
   ];
 
   function flag(value) {
@@ -60,7 +60,7 @@ var REPLY_MAILBOX = "";
       last_name: "Demo",
       email: emailFor(persona),
       active: persona.active,
-      locked_out: false,
+      locked_out: false
     };
   }
 
@@ -87,10 +87,17 @@ var REPLY_MAILBOX = "";
   function syncRoles(user, persona, ids) {
     requireDemo(user.getValue("user_name"));
     var userId = String(user.getUniqueValue());
+    if (userId === "" || userId === "null" || userId === "undefined") {
+      throw new Error("the user has no sys_id; roles were not touched");
+    }
     var held = {};
     var changed = false;
     var rows = query("sys_user_has_role", "user", userId);
     while (rows.next()) {
+      // A row that is not this user's own is never read as ours, let alone deleted.
+      if (String(rows.getValue("user")) !== userId) {
+        throw new Error("a role row of another user came back; nothing more was changed");
+      }
       if (flag(rows.getValue("inherited"))) continue;
       var id = String(rows.getValue("role"));
       var wanted = false;
@@ -118,12 +125,16 @@ var REPLY_MAILBOX = "";
   }
 
   function saveUser(user, persona, isNew, ids) {
-    requireDemo(PREFIX + persona.name);
-    var wanted = wantedFields(persona);
-    var changed = applyFields(user, wanted, isNew);
+    // The record's own user_name is checked before any field is set or written.
+    requireDemo(isNew ? PREFIX + persona.name : user.getValue("user_name"));
+    if (!isNew && String(user.getValue("user_name")) !== PREFIX + persona.name) {
+      throw new Error("the record found is not the persona expected; nothing was changed");
+    }
+    var changed = applyFields(user, wantedFields(persona), isNew);
     if (isNew) {
       user.setValue("user_name", PREFIX + persona.name);
-      user.insert();
+      var newId = user.insert();
+      if (!newId || String(newId) === "null") throw new Error("the new user was not saved");
     } else if (changed) {
       user.update();
     }

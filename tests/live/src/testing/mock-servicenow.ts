@@ -55,11 +55,17 @@ export interface Recorded {
   readonly init: RequestInit;
 }
 
-export function mockServiceNow(data: MockSnData, options: { denyRoles?: boolean } = {}) {
+export function mockServiceNow(
+  data: MockSnData,
+  options: { denyRoles?: boolean; denyAll?: number } = {},
+) {
   const requests: Recorded[] = [];
   const fetchImpl = async (input: URL, init: RequestInit): Promise<Response> => {
     const method = init.method ?? "GET";
     requests.push({ method, url: input, init });
+    if (options.denyAll !== undefined) {
+      return new Response(JSON.stringify({ error: "denied" }), { status: options.denyAll });
+    }
     const json = (body: unknown, status = 200) =>
       new Response(JSON.stringify(body), {
         status,
