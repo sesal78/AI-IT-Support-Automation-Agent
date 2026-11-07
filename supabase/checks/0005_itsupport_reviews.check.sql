@@ -19,6 +19,10 @@
 -- right; service_role holds SELECT, INSERT and UPDATE and nothing else.
 -- `rls` means RLS on, not forced, with no policies. `owner` means the same owner as
 -- itsupport.tickets (whichever role applied the migrations).
+-- After 0007 this check stays all ok = true: the `columns` row also accepts
+-- 0007's reviews.staff_id as the last column, the `checks` row and the
+-- reviews_slack_user_check row also accept 0007's reviews_decided_by_check in
+-- place of reviews_slack_user_check (and only that); the 0007 check verifies both.
 -- 0005 runs on the SHARED Supabase stack; applying it there is human step H15.
 -- The up file is idempotent; the down file is destructive.
 
@@ -43,14 +47,17 @@ select e.object,
       where r.oid = to_regclass('itsupport.' || e.tbl) and r.relrowsecurity and not r.relforcerowsecurity
         and not exists (select 1 from pg_catalog.pg_policy y where y.polrelid = r.oid)
     )
-    when 'columns' then e.def = (
+    -- 0007 adds reviews.staff_id last; the 0007 check verifies it.
+    when 'columns' then (
       select coalesce(string_agg(a.attname, ', ' order by a.attnum), '') from pg_catalog.pg_attribute a
       where a.attrelid = to_regclass('itsupport.' || e.tbl) and a.attnum > 0 and not a.attisdropped
-    )
-    when 'checks' then e.def = (
+    ) in (e.def, e.def || ', staff_id')
+    -- 0007 replaces reviews_slack_user_check with reviews_decided_by_check, only that one.
+    when 'checks' then (
       select coalesce(string_agg(k.conname, ', ' order by k.conname), '') from pg_catalog.pg_constraint k
       where k.conrelid = to_regclass('itsupport.' || e.tbl) and k.contype = 'c'
-    )
+    ) in (e.def, 'reviews_decided_by_check, '
+      || replace(e.def, ', reviews_slack_user_check', ''))
     when 'indexes' then to_regclass('itsupport.' || e.tbl) is not null and not exists (
       select 1 from pg_catalog.pg_index x join pg_catalog.pg_class r on r.oid = x.indexrelid
       where x.indrelid = to_regclass('itsupport.' || e.tbl)
@@ -97,7 +104,12 @@ select e.object,
     ) = (
       select r.relowner from pg_catalog.pg_class r where r.oid = to_regclass('itsupport.' || e.tbl)
     ), false)
-    else exists (
+    -- After 0007, reviews_slack_user_check is ok when 0007's replacement exists
+    -- (the 0007 check verifies its definition; the `checks` row rules out both).
+    when 'constraint' then e.name = 'reviews_slack_user_check' and exists (
+      select 1 from pg_catalog.pg_constraint k
+      where k.conrelid = to_regclass('itsupport.reviews') and k.conname = 'reviews_decided_by_check'
+    ) or exists (
       select 1 from pg_catalog.pg_constraint k
       join pg_catalog.pg_class r on r.oid = k.conrelid
       join pg_catalog.pg_namespace n on n.oid = r.relnamespace
