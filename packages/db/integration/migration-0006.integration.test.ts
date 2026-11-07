@@ -99,6 +99,35 @@ const notOk4 = async () => {
   }
 };
 const exists = async (sql: string) => (await db.query(`select (${sql}) as e`)).rows[0].e as boolean;
+/** Another connection as postgres, with an error listener (a dropped connection must not crash the run). */
+const connect = async (name: string) => {
+  const c = clientFor(container!);
+  c.on("error", (error) => console.error(`migration-0006 ${name} client error:`, error));
+  await c.connect();
+  return c;
+};
+/** Runs `body` while another client holds ACCESS SHARE on itsupport.tickets, as a long select would. */
+const whileLocked = async <T>(body: () => Promise<T> | T): Promise<T> => {
+  const holder = await connect("holder");
+  try {
+    await holder.query("begin; lock table itsupport.tickets in access share mode");
+    return await body();
+  } finally {
+    await holder.query("rollback").catch(() => undefined);
+    await holder.end().catch(() => undefined);
+  }
+};
+const timed = async <T>(body: () => Promise<T> | T) => {
+  const start = Date.now();
+  const result = await body();
+  return { result, ms: Date.now() - start };
+};
+// Only bounds a run whose lock_timeout is missing: it then fails with 57014, not 55P03.
+const GUARD = "set local statement_timeout = '20s';\n";
+/** psql --single-transaction while tickets is locked; VERBOSITY prints the SQLSTATE. */
+const lockedRun = (sql: string) =>
+  whileLocked(() => timed(() => runSql(container!, `\\set VERBOSITY verbose\n${GUARD}${sql}`)));
+const LOCK_TIMEOUT = /ERROR: +55P03: canceling statement due to lock timeout/;
 
 // Fixed ids: the approved ticket's id sorts before the auto one's, the reverse
 // of their insert order, so only an id tie-break numbers them as expected.
@@ -288,6 +317,36 @@ describe("migration 0006 on 0001-0005 with phase-4 rows and Supabase-like defaul
     expect(await notOk4()).toEqual([]);
   });
 
+  it("while another client holds a lock on tickets, up fails with 55P03 within about 5 s and leaves nothing behind", async () => {
+    const psql = await lockedRun(up);
+    expect(psql.result.status).not.toBe(0);
+    expect(psql.result.stderr).toMatch(LOCK_TIMEOUT);
+    // One simple-protocol query without begin, as Supabase Studio sends a script:
+    // Postgres runs it as one implicit transaction, in which `set local` holds.
+    const studio = await connect("studio");
+    try {
+      await studio.query("set statement_timeout = '20s'");
+      const run = await whileLocked(() =>
+        timed(() =>
+          studio.query(up).then(
+            () => ({ code: "none" }),
+            (error: { code?: string }) => ({ code: error.code }),
+          ),
+        ),
+      );
+      expect(run.result).toEqual({ code: "55P03" });
+      for (const ms of [psql.ms, run.ms]) {
+        expect(ms).toBeGreaterThanOrEqual(4_500);
+        expect(ms).toBeLessThan(10_000);
+      }
+    } finally {
+      await studio.end().catch(() => undefined);
+    }
+    expect(await catalog()).toEqual(before);
+    expect(await tableRows()).toEqual(seeded);
+    expect((await check(M6)).filter((r) => r.ok)).toEqual([]);
+  });
+
   it("up numbers the seeded tickets ITS-000001 upwards in created_at, then id order", async () => {
     applied(up);
     expect(await numbers()).toEqual(NUMBERED);
@@ -299,11 +358,13 @@ describe("migration 0006 on 0001-0005 with phase-4 rows and Supabase-like defaul
     applied(up);
     expect(await numbers()).toEqual(NUMBERED);
     expect(await seq()).toEqual({ v: 3, c: true });
+    expect(await tableRows()).toEqual(seeded);
     // Numbers taken by rolled-back inserts leave the sequence ahead of the highest number.
     await withSeq(40, async () => {
       applied(up);
       expect(await seq()).toEqual({ v: 40, c: true });
       expect(await numbers()).toEqual(NUMBERED);
+      expect(await tableRows()).toEqual(seeded);
     });
   });
 
@@ -333,6 +394,15 @@ describe("migration 0006 on 0001-0005 with phase-4 rows and Supabase-like defaul
     expect(await notOk4()).toEqual([]);
     expect(await notOk(M5)).toEqual([]);
     expect(await notOk("0003_itsupport_triage_kb")).toEqual([]);
+  });
+
+  it("while another client holds a lock on tickets, down fails with 55P03 and 0006 stays in place", async () => {
+    const run = await lockedRun(down);
+    expect(run.result.status).not.toBe(0);
+    expect(run.result.stderr).toMatch(LOCK_TIMEOUT);
+    expect(run.ms).toBeLessThan(10_000);
+    expect(await notOk(M6)).toEqual([]);
+    expect(await numbers()).toEqual(NUMBERED);
   });
 
   it("the 0003 tickets checks row accepts the format check only: any other new check turns it false", async () => {
@@ -599,6 +669,66 @@ describe("migration 0006 on 0001-0005 with phase-4 rows and Supabase-like defaul
       ok: true,
       rows: [{ ticket_number: "ITS-000004" }],
     });
+  });
+
+  it("up continues after the highest existing number: one ticket at ITS-000005, the others get ITS-000006 and ITS-000007", async () => {
+    applied(down);
+    expect(await catalog()).toEqual(before);
+    // The column already exists and one ticket holds a number (as after a partial manual run).
+    await db.query(`alter table itsupport.tickets add column ticket_number text;
+      update itsupport.tickets set ticket_number = 'ITS-000005' where id = '${APPROVED}'`);
+    applied(up);
+    expect(await numbers()).toEqual([
+      { key: "web:seed-rejected", n: "ITS-000006" },
+      { key: "email:seed-approved", n: "ITS-000005" },
+      { key: "web:seed-auto", n: "ITS-000007" },
+    ]);
+    expect(await seq()).toEqual({ v: 7, c: true });
+    expect(await tableRows()).toEqual(seeded);
+    expect(await notOk(M6)).toEqual([]);
+  });
+
+  it("an insert that arrives while 0006 runs waits, then gets the next number: no duplicate, set not null succeeds", async () => {
+    applied(down);
+    expect(await catalog()).toEqual(before);
+    const lf = up.replace(/\r\n/g, "\n");
+    // Split right after the first statement that locks tickets (the notifications foreign key).
+    const at = lf.indexOf("-- Row checks and the unique key");
+    expect(at).toBeGreaterThan(lf.indexOf("create table if not exists itsupport.notifications"));
+    const [runner, app] = [await connect("runner"), await connect("app")];
+    try {
+      await runner.query("begin");
+      await runner.query(lf.slice(0, at));
+      const { pid } = (await app.query<{ pid: number }>("select pg_backend_pid() as pid")).rows[0]!;
+      await app.query("set statement_timeout = '20s'; set role service_role");
+      // Sent before the column exists; it waits for the runner's lock on tickets.
+      const inserted = app.query<{ ticket_number: string }>(ticket("web:during-0006")).then(
+        (r) => ({ ok: true, rows: r.rows }),
+        (error: { code?: string }) => ({ ok: false, code: error.code }),
+      );
+      const deadline = Date.now() + 10_000;
+      const waiting = async () =>
+        (await db.query("select wait_event_type as w from pg_stat_activity where pid = $1", [pid]))
+          .rows[0]?.w === "Lock";
+      while (!(await waiting())) {
+        expect(Date.now()).toBeLessThan(deadline);
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      await runner.query(lf.slice(at));
+      await runner.query("commit");
+      expect(await inserted).toEqual({ ok: true, rows: [{ ticket_number: "ITS-000004" }] });
+    } finally {
+      await runner.query("rollback").catch(() => undefined);
+      await Promise.all([runner.end(), app.end()].map((p) => p.catch(() => undefined)));
+    }
+    expect(await numbers()).toEqual(NUMBERED);
+    const dupes = await db.query(
+      "select ticket_number from itsupport.tickets group by 1 having count(*) > 1",
+    );
+    expect(dupes.rows).toEqual([]);
+    expect(await seq()).toEqual({ v: 4, c: true });
+    // Includes the column row (not null, with the default) and no ticket without a number.
+    expect(await notOk(M6)).toEqual([]);
   });
 
   it("0001's down file still removes the whole schema with 0006 applied", async () => {
