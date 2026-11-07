@@ -183,7 +183,11 @@ importers:
         specifier: ^8.23.0
         version: 8.23.0
 
-  packages/helpdesk: {}
+  packages/helpdesk:
+    devDependencies:
+      '@ai-it-support/shared':
+        specifier: workspace:*
+        version: link:../shared
 
   packages/shared:
     dependencies:

@@ -8,6 +8,8 @@ import { z } from "zod";
 export const testOverridesSchema = z.strictObject({
   llmCallCap: z.number().int().min(0).max(100_000).optional(),
   langfuseDown: z.boolean().optional(),
+  // Only `true`: a payload can make a run safer, never less safe (phase 5).
+  shadowMode: z.literal(true).optional(),
   reviewTimeout: z
     .string()
     .regex(/^[1-9][0-9]?m$/)
