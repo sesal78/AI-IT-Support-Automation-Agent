@@ -2,6 +2,7 @@ import {
   internalEnvShape,
   langfuseEnvShape,
   liveEnvShape,
+  liveServiceNowEnvShape,
   liveSlackEnvShape,
   parseEnv,
 } from "@ai-it-support/shared";
@@ -9,6 +10,13 @@ import {
 /** Thrown for a missing or refused variable. The message names variables, never values. */
 export class LiveConfigError extends Error {
   override readonly name = "LiveConfigError";
+}
+
+/** The three live ServiceNow variables, each undefined when unset (P5-T7). */
+export interface ServiceNowConfig {
+  readonly instanceUrl: string | undefined;
+  readonly username: string | undefined;
+  readonly password: string | undefined;
 }
 
 export interface LiveConfig {
@@ -33,6 +41,8 @@ export interface LiveConfig {
     readonly signingSecret: string | undefined;
     readonly reviewerId: string | undefined;
   };
+  /** The e2e ServiceNow variables; each is undefined when unset (scenarios then report not_run). */
+  readonly servicenow: ServiceNowConfig;
   /** Every secret-bearing value read from the environment, for leak checks. */
   readonly secrets: readonly string[];
 }
@@ -44,6 +54,7 @@ const shape = {
   LANGFUSE_SECRET_KEY: langfuseEnvShape.LANGFUSE_SECRET_KEY.optional(),
   LANGFUSE_BASE_URL: langfuseEnvShape.LANGFUSE_BASE_URL.optional(),
   ...liveSlackEnvShape,
+  ...liveServiceNowEnvShape,
 };
 
 // Lower-case, without one trailing dot: `qa.example.com.` is the same host as `qa.example.com`.
@@ -111,6 +122,8 @@ export function loadLiveConfig(env: Record<string, string | undefined>): LiveCon
     parsed.LANGFUSE_SECRET_KEY,
     parsed.E2E_SLACK_BOT_TOKEN,
     parsed.E2E_SLACK_SIGNING_SECRET,
+    parsed.E2E_SERVICENOW_USERNAME,
+    parsed.E2E_SERVICENOW_PASSWORD,
   ].filter((value): value is string => value !== undefined);
 
   return {
@@ -131,7 +144,27 @@ export function loadLiveConfig(env: Record<string, string | undefined>): LiveCon
       signingSecret: parsed.E2E_SLACK_SIGNING_SECRET,
       reviewerId: parsed.E2E_SLACK_REVIEWER_ID,
     },
+    servicenow: {
+      instanceUrl: parsed.E2E_SERVICENOW_INSTANCE_URL,
+      username: parsed.E2E_SERVICENOW_USERNAME,
+      password: parsed.E2E_SERVICENOW_PASSWORD,
+    },
     secrets,
+  };
+}
+
+/** Reads only the ServiceNow variables (for `verify:personas`, which needs no e2e app). */
+export function loadServiceNowConfig(env: Record<string, string | undefined>): ServiceNowConfig {
+  let parsed;
+  try {
+    parsed = parseEnv(liveServiceNowEnvShape, env);
+  } catch (error) {
+    throw new LiveConfigError(error instanceof Error ? error.message : "Invalid environment");
+  }
+  return {
+    instanceUrl: parsed.E2E_SERVICENOW_INSTANCE_URL,
+    username: parsed.E2E_SERVICENOW_USERNAME,
+    password: parsed.E2E_SERVICENOW_PASSWORD,
   };
 }
 
@@ -147,4 +180,20 @@ export type SlackEnvName = keyof typeof SLACK_FIELDS;
 /** The names in `names` whose variable is unset, in the given order. */
 export function missingSlackEnv(config: LiveConfig, names: readonly SlackEnvName[]): string[] {
   return names.filter((name) => config.slack[SLACK_FIELDS[name]] === undefined);
+}
+
+const SERVICENOW_FIELDS = {
+  E2E_SERVICENOW_INSTANCE_URL: "instanceUrl",
+  E2E_SERVICENOW_USERNAME: "username",
+  E2E_SERVICENOW_PASSWORD: "password",
+} as const;
+
+export type ServiceNowEnvName = keyof typeof SERVICENOW_FIELDS;
+
+/** The names in `names` whose variable is unset, in the given order. */
+export function missingServiceNowEnv(
+  config: { readonly servicenow: ServiceNowConfig },
+  names: readonly ServiceNowEnvName[] = Object.keys(SERVICENOW_FIELDS) as ServiceNowEnvName[],
+): string[] {
+  return names.filter((name) => config.servicenow[SERVICENOW_FIELDS[name]] === undefined);
 }

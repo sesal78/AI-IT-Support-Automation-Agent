@@ -13,3 +13,5 @@ coverage/
 .loop-evidence/
 test-results/
 playwright-report/
+# Rhino (ES5) script pasted into ServiceNow: Prettier must not add trailing commas.
+scripts/servicenow/

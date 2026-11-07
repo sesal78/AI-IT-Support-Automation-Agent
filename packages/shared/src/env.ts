@@ -212,6 +212,26 @@ export const liveSlackEnvShape = {
   E2E_SLACK_REVIEWER_ID: slackUserId().optional(),
 };
 
+/** The only ServiceNow instance the live tests ever talk to (phase 5, P5-T7). */
+export const E2E_SERVICENOW_INSTANCE_URL = "https://dev420188.service-now.com";
+
+/**
+ * Live-suite ServiceNow variables (tests/live only, P5-T7). All optional: a
+ * scenario that needs a missing one reports `not_run`. The URL must be exactly
+ * the dev instance; `parseEnv` never echoes the user name or the password.
+ */
+export const liveServiceNowEnvShape = {
+  E2E_SERVICENOW_INSTANCE_URL: z
+    .string()
+    .refine(
+      (value) => value === E2E_SERVICENOW_INSTANCE_URL,
+      `must be ${E2E_SERVICENOW_INSTANCE_URL}`,
+    )
+    .optional(),
+  E2E_SERVICENOW_USERNAME: headerValue.max(100).optional(),
+  E2E_SERVICENOW_PASSWORD: z.string().min(1).max(200).optional(),
+};
+
 /**
  * Slack Web API client (services/pipeline, packages/slack `createSlackClient`):
  * the bot token, the review channel and an optional alert channel.

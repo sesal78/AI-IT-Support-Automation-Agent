@@ -16,6 +16,7 @@ const allowedDirs = new Set([
   ".github",
   "evals",
   "tests",
+  "scripts",
 ]);
 
 // Root-level config files. Anything else at the root must be justified here.

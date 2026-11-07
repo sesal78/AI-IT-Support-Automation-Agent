@@ -12,6 +12,7 @@ export {
 } from "./canaries.js";
 export {
   aiBudgetEnvShape,
+  E2E_SERVICENOW_INSTANCE_URL,
   e2eEnvShape,
   formatEnvIssues,
   groundingEnvShape,
@@ -20,6 +21,7 @@ export {
   internalEnvShape,
   llmEnvShape,
   liveEnvShape,
+  liveServiceNowEnvShape,
   liveSlackEnvShape,
   parseEnv,
   phase1EnvShape,
