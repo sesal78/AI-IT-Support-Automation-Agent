@@ -496,6 +496,7 @@ at §6 phase sign-off of the final phase.
 - 2026-11-06 — Phase 4 decision (Seun, option A): the Approve/Reject resume limit is 15 s, not 5 s, because a real waitpoint resume takes about 7 s (T4.L.02 6 742 ms, T4.L.03 7 251 ms). Fix P4-F1 (#139).
 - 2026-11-06 — Phase 4 decision (Seun, option A): DoD 1 (card within 10 s of `policy_decided`) is judged by p95. T4.L.05 run 2: p95 4 916 ms over 20 tickets. One burst outlier of 70 583 ms (ticket `188e75e2`, review run queued 66 s by Trigger.dev concurrency) is a known limit.
 - 2026-11-06 — Phase 4 verified on e2e (agent): `pnpm test:live --phase 4` 8/9 twice (only T4.S.04, on staging, waits for the release), T4.L.05 20/20 cards, T4.F.01 passed across a deploy and a rollback. Evidence: `docs/evidence/phase-4.md`. T4.R.01 rollback by hand, PII scans and the goal check passed. Open: the J4 threshold 0.7 has no calibration set. Release pending Seun.
+- 2026-11-07 — Ticket numbers ITS-000042, display only (Seun A)
 
 ## 12. Constraints & Risks
 
