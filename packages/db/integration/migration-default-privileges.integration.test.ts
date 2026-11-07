@@ -16,7 +16,8 @@ import {
 // test applies EVERY up file in supabase/migrations, new ones included, with
 // Supabase-like default privileges in place, once as postgres and once as
 // supabase_admin, and expects those roles to hold no right on any of them.
-// The end state covers every table up to 0005 (itsupport.reviews included):
+// The end state covers every object up to 0006 (itsupport.reviews,
+// itsupport.notifications, ticket_number_seq and next_ticket_number() included):
 // the rights come from has_*_privilege over the catalog, not from the SQL text.
 // Then every down file runs in reverse and the schema is gone.
 
@@ -136,8 +137,11 @@ describe.each(OWNERS)(
           ),
           ...["kb_articles", "ai_calls", "security_events"].map((t) => `table itsupport.${t}`),
           "table itsupport.reviews",
+          "table itsupport.notifications",
           "sequence itsupport.ticket_events_id_seq",
           "sequence itsupport.security_events_id_seq",
+          "sequence itsupport.ticket_number_seq",
+          "function itsupport.next_ticket_number()",
           "function itsupport.reject_ticket_event_change()",
           "function itsupport.kb_search(text,integer)",
           "function itsupport.security_event_record(text,text,jsonb)",
@@ -145,16 +149,33 @@ describe.each(OWNERS)(
       );
       expect(objects.filter((o) => o.owner !== owner)).toEqual([]);
 
-      // reviews by name: no table or column right for public, anon or authenticated,
-      // while the defaults still grant every new table to all three.
-      const reviews = await as("postgres").query(
+      // reviews and notifications by name: no table or column right for public, anon or
+      // authenticated, while the defaults still grant every new table to all three.
+      for (const table of ["itsupport.reviews", "itsupport.notifications"]) {
+        const held = await as("postgres").query(
+          `select r from unnest($1::text[]) r
+           where has_table_privilege(r, $2::regclass,
+               'select, insert, update, delete, truncate, references, trigger, maintain')
+             or has_any_column_privilege(r, $2::regclass, 'select, insert, update, references')`,
+          [ROLES, table],
+        );
+        expect(held.rows, table).toEqual([]);
+      }
+      // next_ticket_number() runs for service_role only, and no role (service_role
+      // included) holds a right on any itsupport sequence: 0004's lock holds after 0006.
+      const execute = await as("postgres").query(
         `select r from unnest($1::text[]) r
-         where has_table_privilege(r, 'itsupport.reviews',
-             'select, insert, update, delete, truncate, references, trigger, maintain')
-           or has_any_column_privilege(r, 'itsupport.reviews', 'select, insert, update, references')`,
-        [ROLES],
+         where has_function_privilege(r, 'itsupport.next_ticket_number()', 'execute') order by 1`,
+        [[...ROLES, "service_role"]],
       );
-      expect(reviews.rows).toEqual([]);
+      expect(execute.rows).toEqual([{ r: "service_role" }]);
+      const sequences = await as("postgres").query(
+        `select c.relname, r from pg_catalog.pg_class c, unnest($1::text[]) r
+         where c.relnamespace = 'itsupport'::regnamespace and c.relkind = 'S'
+           and has_sequence_privilege(r, c.oid, 'usage, select, update')`,
+        [[...ROLES, "service_role"]],
+      );
+      expect(sequences.rows).toEqual([]);
       await as(owner).query("begin");
       try {
         await as(owner).query("create table itsupport.probe (id int)");
