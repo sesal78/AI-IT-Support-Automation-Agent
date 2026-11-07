@@ -1,14 +1,21 @@
 -- 0006_itsupport_helpdesk (up)
 --
--- Phase 5 (helpdesk), part 1: the itsupport.notifications table (one row per
--- reply email of a ticket and kind), an index on tickets.servicenow_sys_id,
--- and the display-only ticket number ITS-000001 (tickets.ticket_number, filled
--- by itsupport.next_ticket_number() over itsupport.ticket_number_seq), for
--- the AI IT Support agent on the SHARED Supabase stack. Touches only the
--- `itsupport` schema. Requires 0001 to 0005.
--- Idempotent: safe to run more than once. Reverse with
+-- Phase 5 (helpdesk): the itsupport.notifications table (one row per reply
+-- email of a ticket and kind), an index on tickets.servicenow_sys_id, and the
+-- display-only ticket number ITS-000001 (tickets.ticket_number, filled by
+-- itsupport.next_ticket_number() over itsupport.ticket_number_seq), for the
+-- AI IT Support agent on the SHARED Supabase stack. Existing tickets are
+-- numbered by a backfill in created_at order (ties by id) before the column
+-- becomes not null, and the sequence continues after the highest number.
+-- Touches only the `itsupport` schema. Requires 0001 to 0005.
+-- Written in two parts (P5-T1a: objects; P5-T1b: backfill). Apply only the
+-- complete 0006 (P5-T1a + P5-T1b), in one transaction: without the backfill,
+-- `set not null` fails with 23502 on a stack that holds tickets.
+-- Idempotent: safe to run more than once; a second run numbers nothing and
+-- leaves the sequence where it was. Reverse with
 -- 0006_itsupport_helpdesk.down.sql. Verify with
--- supabase/checks/0006_itsupport_helpdesk.check.sql.
+-- supabase/checks/0006_itsupport_helpdesk.check.sql; after 0006 the 0003,
+-- 0004 and 0005 checks also stay all ok = true.
 -- Applying this to the shared Supabase database is human step H28b.
 -- Apply as ONE transaction: Supabase Studio runs a script as one transaction; with psql use --single-transaction.
 -- The down file is DESTRUCTIVE (it drops every notification row, the index
@@ -85,8 +92,26 @@ grant execute on function itsupport.next_ticket_number() to service_role;
 
 alter table itsupport.tickets add column if not exists ticket_number text;
 
--- P5-T1b: the backfill of existing tickets goes here, before the default and
--- not null are set.
+-- Backfill: number every ticket that has no number, ITS- + 6 digits, in
+-- created_at order (ties by id), after the highest number already given. The
+-- `add column` above holds an ACCESS EXCLUSIVE lock on tickets until commit,
+-- so no insert runs in between. Then the sequence continues after the highest
+-- number. When nothing was numbered (no ticket, or a re-run) the sequence is
+-- left where it is, so a re-run neither renumbers nor moves it.
+with top (n) as (
+  select coalesce(max(substr(ticket_number, 5)::integer), 0) from itsupport.tickets
+),
+todo (id, n) as (
+  select t.id, top.n + row_number() over (order by t.created_at, t.id)
+  from itsupport.tickets t, top
+  where t.ticket_number is null
+),
+done (n) as (
+  update itsupport.tickets t set ticket_number = 'ITS-' || lpad(todo.n::text, 6, '0')
+  from todo where t.id = todo.id
+  returning todo.n
+)
+select setval('itsupport.ticket_number_seq', max(done.n), true) from done having count(*) > 0;
 
 alter table itsupport.tickets
   drop constraint if exists tickets_ticket_number_key,

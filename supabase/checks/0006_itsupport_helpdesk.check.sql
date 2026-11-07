@@ -9,8 +9,10 @@
 -- asks has_table_privilege and has_any_column_privilege: public, anon and
 -- authenticated hold no right; service_role holds SELECT, INSERT and UPDATE
 -- and nothing else. `rls` means RLS on, not forced, with no policies.
--- `function` means security definer, volatile, search_path '' and returns
--- text; `execute` means no role but service_role (and the owner) may run it.
+-- `function` means security definer, volatile, search_path '', returns text,
+-- has exactly the expected body (outer white space and carriage returns
+-- trimmed, so CRLF and LF checkouts agree) and has the same owner as the
+-- sequence and itsupport.tickets; `execute` means no role but service_role (and the owner) may run it.
 -- `grants itsupport.ticket_number_seq` means no role but the owner holds a
 -- right on the sequence (0004's lock), and none of public, anon,
 -- authenticated or service_role has USAGE, SELECT or UPDATE on it.
@@ -135,9 +137,14 @@ from (
   from s
   union all
   select 'function itsupport.next_ticket_number()', exists (
-    select 1 from pg_catalog.pg_proc p, f
+    select 1 from pg_catalog.pg_proc p, f, s
     where p.oid = f.p and p.prosecdef and p.provolatile = 'v' and p.prorettype = 'text'::regtype
       and not p.proretset and p.proconfig = array['search_path=""']
+      and btrim(p.prosrc, E' \t\r\n')
+        = 'select ''ITS-'' || lpad(nextval(''itsupport.ticket_number_seq'')::text, 6, ''0'')'
+      and p.proowner = (select r.relowner from pg_catalog.pg_class r where r.oid = s.q)
+      and p.proowner = (select r.relowner from pg_catalog.pg_class r
+        where r.oid = to_regclass('itsupport.tickets'))
   )
   union all
   select 'execute itsupport.next_ticket_number()', (

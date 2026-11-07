@@ -21,13 +21,15 @@ export const POSTGREST_IMAGE = "postgrest/postgrest:v16.4";
 
 const SCHEMA = "itsupport";
 // Every up file, in order, so each REST-stack test runs on the schema the
-// shared database will have (0004 locks the sequences, 0005 adds reviews).
+// shared database will have (0004 locks the sequences, 0005 adds reviews,
+// 0006 adds notifications and the ticket number).
 export const MIGRATIONS = [
   "0001_itsupport_foundation.sql",
   "0002_itsupport_intake.sql",
   "0003_itsupport_triage_kb.sql",
   "0004_itsupport_lock_sequences.sql",
   "0005_itsupport_reviews.sql",
+  "0006_itsupport_helpdesk.sql",
 ];
 const migrationsDir = resolve(
   dirname(fileURLToPath(import.meta.url)),

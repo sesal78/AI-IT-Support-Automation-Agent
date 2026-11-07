@@ -21,6 +21,8 @@
 -- publication of the table, so anything extra or missing fails; a grant with
 -- grant option ends in `*`. `indexes` means no index other than the listed
 -- ones (each listed one has its own `index` or `constraint` row).
+-- The tickets `checks` row also accepts 0006's tickets_ticket_number_format
+-- (and only it), so this check stays all ok = true after 0006.
 -- `rls` means RLS on, not forced, with no policies. `owner` means the same owner as
 -- itsupport.tickets (whichever role applied the migrations).
 -- 0003 runs on the SHARED Supabase stack; applying it there is human step H13.
@@ -76,6 +78,8 @@ select e.object,
     when 'checks' then e.def = (
       select coalesce(string_agg(k.conname, ', ' order by k.conname), '') from pg_catalog.pg_constraint k
       where k.conrelid = to_regclass('itsupport.' || e.tbl) and k.contype = 'c'
+        -- 0006 adds this one ticket check; the 0006 check verifies its definition.
+        and not (e.tbl = 'tickets' and k.conname = 'tickets_ticket_number_format')
     )
     when 'indexes' then to_regclass('itsupport.' || e.tbl) is not null and not exists (
       select 1 from pg_catalog.pg_index x join pg_catalog.pg_class r on r.oid = x.indexrelid
