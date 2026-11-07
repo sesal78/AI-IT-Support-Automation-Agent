@@ -11,10 +11,18 @@ import {
   type PgContainer,
 } from "./pg-container.js";
 
-// Migration 0006, part 1 (P5-T1a): itsupport.notifications, the index on
-// tickets.servicenow_sys_id and the ticket number. 0001 to 0005 are applied
-// first, with Supabase-like default privileges set before 0001, and no ticket
-// (the backfill of existing tickets is P5-T1b). All data is fake.
+// Migration 0006: itsupport.notifications, the index on
+// tickets.servicenow_sys_id and the ticket number (P5-T1a), and the backfill
+// that numbers existing tickets (P5-T1b). 0001 to 0005 are applied first, with
+// Supabase-like default privileges set before 0001, then phase-4-shaped rows
+// are seeded (SEED: three tickets, triaged with route auto, approved and
+// rejected, two of them with one created_at; their redactions, triage rows and
+// events, one decided review, ai_calls and security_events rows; the approved
+// one has a ServiceNow incident). So 0006 runs on data as H28b will (T5.I.07,
+// T5.I.09): the whole up file, the whole down file and the up file again, with
+// the row count and an md5 of every table's pre-0006 columns compared after
+// each step. All data is fake (the repo is public): example.test addresses,
+// U000TEST Slack user IDs, fixed test UUIDs, waitpoint_test_* tokens.
 
 const dir = resolve(dirname(fileURLToPath(import.meta.url)), "../../../supabase");
 const read = (file: string) => readFileSync(resolve(dir, file), "utf8");
@@ -92,6 +100,89 @@ const notOk4 = async () => {
 };
 const exists = async (sql: string) => (await db.query(`select (${sql}) as e`)).rows[0].e as boolean;
 
+// Fixed ids: the approved ticket's id sorts before the auto one's, the reverse
+// of their insert order, so only an id tie-break numbers them as expected.
+const AUTO = "00000000-0000-4000-8000-000000000602";
+const APPROVED = "00000000-0000-4000-8000-000000000601";
+const REJECTED = "00000000-0000-4000-8000-000000000603";
+const SYS_ID = "0123456789abcdef0123456789abcdef";
+/** Phase-4-shaped rows, written the way intake, triage and the review flow write them. */
+const SEED = `
+  insert into itsupport.tickets (id, source, raw_title, raw_description, requester_email,
+      idempotency_key, status, servicenow_sys_id, servicenow_number, created_at) values
+    ('${AUTO}', 'web', 'VPN down', 'Cannot connect to VPN', 'demo.user@example.test',
+     'web:seed-auto', 'triaged', null, null, timestamptz '2026-10-20 01:00:00+00'),
+    ('${APPROVED}', 'email', 'Printer jam', 'Tray 2 jams', 'demo.other@example.test',
+     'email:seed-approved', 'approved', '${SYS_ID}', 'INC0010001', timestamptz '2026-10-20 01:00:00+00'),
+    ('${REJECTED}', 'web', 'New laptop', 'Please send a laptop', 'demo.third@example.test',
+     'web:seed-rejected', 'rejected', null, null, timestamptz '2026-10-19 23:00:00+00');
+  insert into itsupport.ticket_redactions (ticket_id, redacted_title, redacted_description)
+    select id, raw_title, raw_description from itsupport.tickets;
+  insert into itsupport.triage_results (ticket_id, sensitive, sensitive_flags, checker, category,
+      priority, route, triaged_at)
+    select id, false, '[]'::jsonb, 'keywords+typesafe', 'network', 'P3',
+      case id when '${AUTO}' then 'auto' else 'review' end, created_at + interval '1 minute'
+    from itsupport.tickets;
+  insert into itsupport.ticket_events (ticket_id, type, payload)
+    select t.id, e.type, '{}'::jsonb from itsupport.tickets t,
+      unnest(array['received', 'redacted', 'sensitive_checked', 'triaged']) as e (type)
+    order by t.id;
+  insert into itsupport.reviews (ticket_id, kind, slack_user_id, decision, decided_at, wait_token_id)
+    values ('${APPROVED}', 'triage', 'U000TEST01', 'approve', timestamptz '2026-10-20 02:00:00+00',
+      'waitpoint_test_seed');
+  insert into itsupport.ai_calls (ticket_id, provider, kind, calls, cost_usd, environment, at)
+    select id, 'typesafe', 'triage_judgments', 4, 0.004, 'staging', created_at from itsupport.tickets;
+  insert into itsupport.security_events (source, kind, window_start, count, sample) values
+    ('internal_api', 'bad_token', timestamptz '2026-10-20 00:58:00+00', 3, '{"method": "POST"}');
+`;
+
+type Shape = { name: string; pk: string | null; cols: string };
+/** Every itsupport table with its primary key and columns, taken before 0006. */
+let shapes: Shape[] = [];
+type TableRows = Record<string, { rows: number; md5: string }>;
+/** Row count and an md5 of each table's pre-0006 columns, rows ordered by primary key. */
+const tableRows = async (): Promise<TableRows> => {
+  const out: TableRows = {};
+  for (const { name, pk, cols } of shapes) {
+    if (!pk) throw new Error(`itsupport.${name} has no primary key to order its rows by`);
+    const { rows } = await db.query<{ rows: number; md5: string }>(
+      `select count(*)::int as rows,
+         md5(coalesce(string_agg(row(${cols})::text, E'\\n' order by ${pk}), '')) as md5
+       from itsupport.${name}`,
+    );
+    out[name] = rows[0]!;
+  }
+  return out;
+};
+/** The seeded tickets' numbers, in created_at and id order. */
+const numbers = async () =>
+  (
+    await db.query<{ key: string; n: string }>(
+      `select idempotency_key as key, ticket_number as n from itsupport.tickets
+       where idempotency_key like '%seed-%' order by created_at, id`,
+    )
+  ).rows;
+const NUMBERED = [
+  { key: "web:seed-rejected", n: "ITS-000001" },
+  { key: "email:seed-approved", n: "ITS-000002" },
+  { key: "web:seed-auto", n: "ITS-000003" },
+];
+const seq = async () =>
+  (await db.query("select last_value::int as v, is_called as c from itsupport.ticket_number_seq"))
+    .rows[0] as { v: number; c: boolean };
+/** Sets the sequence for `body`, then puts it back exactly (setval is not rolled back). */
+const withSeq = async (v: number, body: () => Promise<void>) => {
+  const saved = await seq();
+  try {
+    await db.query("select setval('itsupport.ticket_number_seq', $1, true)", [v]);
+    await body();
+  } finally {
+    await db.query("select setval('itsupport.ticket_number_seq', $1, $2)", [saved.v, saved.c]);
+  }
+  expect(await seq()).toEqual(saved);
+};
+let seeded: TableRows = {};
+
 /** A ticket insert; without `number` the default numbers it. */
 const ticket = (key: string, number?: string) =>
   `insert into itsupport.tickets (source, raw_title, raw_description, requester_email, idempotency_key` +
@@ -143,9 +234,28 @@ const OLD = ["0003_itsupport_triage_kb", M4, M5];
 beforeAll(async () => {
   container = await startPgContainer();
   db = clientFor(container);
+  // A dropped connection emits "error"; without a listener it would crash the run.
+  db.on("error", (error) => console.error("migration-0006 db client error:", error));
   await db.connect();
   await db.query(`create schema itsupport; ${DEFAULTS}`);
   for (const name of [...M, M4, M5]) applied(read(`migrations/${name}.sql`));
+  await db.query(SEED);
+  shapes = (
+    await db.query<Shape>(`
+      select c.relname as name,
+        (select string_agg(quote_ident(a.attname), ', ' order by k.ord)
+         from pg_catalog.pg_index i
+         cross join lateral unnest(i.indkey::int2[]) with ordinality as k (attnum, ord)
+         join pg_catalog.pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.attnum
+         where i.indrelid = c.oid and i.indisprimary) as pk,
+        (select string_agg(quote_ident(a.attname), ', ' order by a.attnum)
+         from pg_catalog.pg_attribute a
+         where a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped) as cols
+      from pg_catalog.pg_class c
+      where c.relnamespace = 'itsupport'::regnamespace and c.relkind in ('r', 'p')
+      order by 1`)
+  ).rows;
+  seeded = await tableRows();
   before = await catalog();
   for (const name of OLD) checksBefore[name] = await check(name);
 });
@@ -155,7 +265,22 @@ afterAll(async () => {
   removePgContainer(container);
 });
 
-describe("migration 0006 (part 1) on 0001-0005 with Supabase-like default privileges", () => {
+describe("migration 0006 on 0001-0005 with phase-4 rows and Supabase-like default privileges", () => {
+  it("the seed is phase-4-shaped: every pre-0006 table holds rows", () => {
+    expect(
+      Object.fromEntries(Object.entries(seeded).map(([name, { rows }]) => [name, rows])),
+    ).toEqual({
+      tickets: 3,
+      ticket_redactions: 3,
+      triage_results: 3,
+      ticket_events: 12,
+      reviews: 1,
+      kb_articles: 0,
+      ai_calls: 3,
+      security_events: 1,
+    });
+  });
+
   it("before 0006 every check row is ok = false; the 0003-0005 checks are all true", async () => {
     expect((await check(M6)).filter((r) => r.ok)).toEqual([]);
     for (const name of ["0003_itsupport_triage_kb", M5])
@@ -163,9 +288,26 @@ describe("migration 0006 (part 1) on 0001-0005 with Supabase-like default privil
     expect(await notOk4()).toEqual([]);
   });
 
+  it("up numbers the seeded tickets ITS-000001 upwards in created_at, then id order", async () => {
+    applied(up);
+    expect(await numbers()).toEqual(NUMBERED);
+    expect(await seq()).toEqual({ v: 3, c: true });
+    expect(await tableRows()).toEqual(seeded);
+  });
+
+  it("a second up changes no number and does not move the sequence, even when it is ahead", async () => {
+    applied(up);
+    expect(await numbers()).toEqual(NUMBERED);
+    expect(await seq()).toEqual({ v: 3, c: true });
+    // Numbers taken by rolled-back inserts leave the sequence ahead of the highest number.
+    await withSeq(40, async () => {
+      applied(up);
+      expect(await seq()).toEqual({ v: 40, c: true });
+      expect(await numbers()).toEqual(NUMBERED);
+    });
+  });
+
   it("up (twice) exits 0: 8 columns, the index, every check row true", async () => {
-    applied(up);
-    applied(up);
     const { rows } = await db.query(
       `select column_name, data_type, is_nullable from information_schema.columns
        where table_schema = 'itsupport' and table_name = 'notifications' order by ordinal_position`,
@@ -187,20 +329,30 @@ describe("migration 0006 (part 1) on 0001-0005 with Supabase-like default privil
     ).toBe(true);
     expect(await check(M6)).toHaveLength(26);
     expect(await notOk(M6)).toEqual([]);
-    // 0004's sequence lock holds; 0003's exact list of ticket checks now also has the format check.
+    // After 0001-0006 the 0003, 0004 and 0005 checks stay all ok = true (H28b runs them all).
     expect(await notOk4()).toEqual([]);
     expect(await notOk(M5)).toEqual([]);
-    expect(await notOk("0003_itsupport_triage_kb")).toEqual(["checks itsupport.tickets"]);
+    expect(await notOk("0003_itsupport_triage_kb")).toEqual([]);
   });
 
-  it("service_role tickets get ITS-000001, ITS-000002, ITS-000003 from the default", async () => {
+  it("the 0003 tickets checks row accepts the format check only: any other new check turns it false", async () => {
     const r = await attempt(
-      `${ticket("web:a")}; ${ticket("web:b")}; ${ticket("web:c")}; select ticket_number from itsupport.tickets order by 1`,
+      `alter table itsupport.tickets add constraint tickets_probe_check check (true);
+       select object from (${read("checks/0003_itsupport_triage_kb.check.sql").replace(/;\s*$/, "")}) c
+       where not ok`,
+    );
+    expect(r).toEqual({ ok: true, rows: [{ object: "checks itsupport.tickets" }] });
+  });
+
+  it("the next service_role tickets get ITS-000004, ITS-000005, ITS-000006 from the default", async () => {
+    const r = await attempt(
+      `${ticket("web:a")}; ${ticket("web:b")}; ${ticket("web:c")};
+       select ticket_number from itsupport.tickets where idempotency_key like 'web:_' order by 1`,
       "service_role",
     );
     expect(r).toEqual({
       ok: true,
-      rows: ["ITS-000001", "ITS-000002", "ITS-000003"].map((n) => ({ ticket_number: n })),
+      rows: ["ITS-000004", "ITS-000005", "ITS-000006"].map((n) => ({ ticket_number: n })),
     });
   });
 
@@ -237,24 +389,14 @@ describe("migration 0006 (part 1) on 0001-0005 with Supabase-like default privil
   });
 
   it("at 999999 the last number is ITS-999999 and the next insert fails with 2200H", async () => {
-    const last = (await db.query("select last_value from itsupport.ticket_number_seq")).rows[0]
-      .last_value;
-    try {
-      const r = await attempt(
-        ticket("web:max"),
-        "service_role",
-        "select setval('itsupport.ticket_number_seq', 999998)",
-      );
+    // withSeq restores last_value and is_called exactly, and checks it did.
+    await withSeq(999998, async () => {
+      const r = await attempt(ticket("web:max"), "service_role");
       expect(r).toEqual({ ok: true, rows: [{ ticket_number: "ITS-999999" }] });
       expect(await attempt(ticket("web:over"), "service_role")).toEqual(fails("2200H"));
-      expect(
-        await exists(
-          "select count(*) = 0 from itsupport.tickets where ticket_number > 'ITS-999999'",
-        ),
-      ).toBe(true);
-    } finally {
-      await db.query("select setval('itsupport.ticket_number_seq', $1)", [last]);
-    }
+      // No cycle: the sequence stays at its maximum after the failed insert.
+      expect(await seq()).toEqual({ v: 999999, c: true });
+    });
   });
 
   it("one email per ticket and kind: a second incident_reply fails with 23505, a needs_info inserts", async () => {
@@ -295,9 +437,11 @@ describe("migration 0006 (part 1) on 0001-0005 with Supabase-like default privil
     expect(await attempt(note({ ticket_id: "gen_random_uuid()" }))).toEqual(
       fails("23503", "notifications_ticket_id_fkey"),
     );
-    expect(await attempt(withTicket(`${note()}; delete from itsupport.tickets`))).toEqual(
-      fails("23503", "notifications_ticket_id_fkey"),
-    );
+    expect(
+      await attempt(
+        withTicket(`${note()}; delete from itsupport.tickets where idempotency_key = 'web:n-1'`),
+      ),
+    ).toEqual(fails("23503", "notifications_ticket_id_fkey"));
   });
 
   it("anon and authenticated get 42501 on select and insert; service_role inserts, selects, updates but cannot delete", async () => {
@@ -345,6 +489,24 @@ describe("migration 0006 (part 1) on 0001-0005 with Supabase-like default privil
         "alter function itsupport.next_ticket_number() security invoker",
         ["function itsupport.next_ticket_number()"],
       ],
+      [
+        `create or replace function itsupport.next_ticket_number() returns text language sql
+         volatile security definer set search_path = '' as $$ select 'ITS-000001' $$`,
+        ["function itsupport.next_ticket_number()"],
+      ],
+      [
+        "grant create on schema itsupport to service_role; " +
+          "alter function itsupport.next_ticket_number() owner to service_role",
+        ["execute itsupport.next_ticket_number()", "function itsupport.next_ticket_number()"],
+      ],
+      [
+        "grant select on itsupport.notifications to anon",
+        ["privileges anon itsupport.notifications"],
+      ],
+      [
+        "alter table itsupport.notifications drop constraint notifications_sent_check",
+        ["constraint itsupport.notifications.notifications_sent_check"],
+      ],
     ];
     for (const [sql, wrong] of variants) {
       await db.query("begin");
@@ -363,10 +525,25 @@ describe("migration 0006 (part 1) on 0001-0005 with Supabase-like default privil
     }
   });
 
-  it("down (twice) exits 0 and removes only 0006: every 0001-0005 object and check as before", async () => {
+  it("with notification rows for seeded tickets, the pre-0006 rows are still unchanged", async () => {
+    await db.query(`insert into itsupport.notifications (ticket_id, channel, kind, status, provider_id, reason)
+      values ('${APPROVED}', 'email', 'incident_reply', 'sent', 're_msg_seed', null),
+             ('${REJECTED}', 'email', 'incident_reply', 'skipped', null, 'not_allow_listed')`);
+    expect(await exists("select count(*) = 2 from itsupport.notifications")).toBe(true);
+    expect(await numbers()).toEqual(NUMBERED);
+    expect(await tableRows()).toEqual(seeded);
+  });
+
+  it("down (twice) exits 0 and removes only 0006: every 0001-0005 object, row and check as before", async () => {
     for (const sql of [down, down]) {
       applied(sql);
       expect(await catalog()).toEqual(before);
+      expect(await tableRows()).toEqual(seeded);
+      expect(
+        await exists(
+          "select count(*) = 0 from information_schema.columns where column_name = 'ticket_number'",
+        ),
+      ).toBe(true);
       for (const name of OLD) expect(await check(name), name).toEqual(checksBefore[name]);
       expect((await check(M6)).filter((r) => r.ok)).toEqual([]);
       expect(await exists("to_regclass('itsupport.notifications') is null")).toBe(true);
@@ -379,17 +556,53 @@ describe("migration 0006 (part 1) on 0001-0005 with Supabase-like default privil
     const lf = up.replace(/\r\n/g, "\n");
     const at = lf.lastIndexOf("alter table itsupport.tickets\n  add constraint");
     expect(at).toBeGreaterThan(0);
+    // After the backfill, so the numbering is rolled back with everything else.
+    expect(lf.lastIndexOf("select setval(")).toBeLessThan(at);
     const result = runSql(container!, `${lf.slice(0, at)}select 1 / 0;\n${lf.slice(at)}`);
     expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/division by zero/);
     expect(await catalog()).toEqual(before);
+    expect(await tableRows()).toEqual(seeded);
   });
 
-  it("up after down works: every check row true and the numbering starts at ITS-000001 again", async () => {
+  it("up after down: the same numbers, every check true and the rows unchanged", async () => {
     applied(up);
+    expect(await numbers()).toEqual(NUMBERED);
+    expect(await seq()).toEqual({ v: 3, c: true });
+    expect(await tableRows()).toEqual(seeded);
+    expect(await exists("select count(*) = 0 from itsupport.notifications")).toBe(true);
     expect(await notOk(M6)).toEqual([]);
+    for (const name of ["0003_itsupport_triage_kb", M5])
+      expect(await notOk(name), name).toEqual([]);
+    expect(await notOk4()).toEqual([]);
+  });
+
+  it("after the second up: a second incident_reply fails with 23505 and the sys_id lookup uses the index", async () => {
+    const reply = (id: string) =>
+      `insert into itsupport.notifications (ticket_id, channel, kind, status, provider_id)
+       values ('${APPROVED}', 'email', 'incident_reply', 'sent', '${id}')`;
+    expect(await attempt(`${reply("re_msg_a")}; ${reply("re_msg_b")}`, "service_role")).toEqual(
+      fails("23505", "notifications_ticket_channel_kind_key"),
+    );
+    const r = await attempt(
+      `explain select id from itsupport.tickets where servicenow_sys_id = '${SYS_ID}'`,
+      undefined,
+      "set local enable_seqscan = off",
+    );
+    expect(r.ok && r.rows.map((row) => row["QUERY PLAN"]).join("\n")).toMatch(
+      /Index.* using tickets_servicenow_sys_id_idx/,
+    );
+  });
+
+  it("the next new ticket gets ITS-000004", async () => {
     expect(await attempt(ticket("web:again"), "service_role")).toEqual({
       ok: true,
-      rows: [{ ticket_number: "ITS-000001" }],
+      rows: [{ ticket_number: "ITS-000004" }],
     });
+  });
+
+  it("0001's down file still removes the whole schema with 0006 applied", async () => {
+    applied(read("migrations/0001_itsupport_foundation.down.sql"));
+    expect(await exists("to_regnamespace('itsupport') is null")).toBe(true);
   });
 });
