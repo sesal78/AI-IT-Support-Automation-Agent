@@ -836,6 +836,18 @@ describe("migration 0007 on 0001-0006 with phase-5 rows and Supabase-like defaul
          for each row execute function itsupport.reject_helpdesk_log_change()`,
         ["triggers itsupport.staff"],
       ],
+      ...[
+        ["before update or delete", "for each row when (false)"],
+        ["before update", "for each row"],
+        ["after update or delete", "for each row"],
+        ["before update or delete", "for each statement"],
+      ].map(([events, mode]): [string, string[]] => [
+        `drop trigger helpdesk_notes_append_only_row on itsupport.helpdesk_notes;
+           create trigger helpdesk_notes_append_only_row ${events} on itsupport.helpdesk_notes
+           ${mode} execute function itsupport.reject_helpdesk_log_change();
+           alter table itsupport.helpdesk_notes enable always trigger helpdesk_notes_append_only_row`,
+        ["triggers itsupport.helpdesk_notes"],
+      ]),
       [
         "drop trigger helpdesk_assignments_append_only_row on itsupport.helpdesk_assignments",
         ["triggers itsupport.helpdesk_assignments"],
