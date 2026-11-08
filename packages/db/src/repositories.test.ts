@@ -34,6 +34,7 @@ const ticketRow = {
   servicenow_sys_id: null,
   servicenow_number: null,
   is_test: false,
+  ticket_number: "ITS-000042",
   created_at: now,
 };
 const eventRow = { id: 7, ticket_id: ticketId, type: "received", payload: { a: 1 }, at: now };
@@ -174,6 +175,14 @@ describe("createTicket", () => {
     expect(calls[0]?.method).toBe("POST");
     expect(calls[0]?.url.pathname).toBe("/rest/v1/tickets");
     expect(calls[0]?.body).toEqual(newTicket);
+    // The database default makes the number; the insert never sends it (resolved point 21).
+    expect(calls[0]?.body).not.toHaveProperty("ticket_number");
+    expect(result.ticket.ticket_number).toBe("ITS-000042");
+  });
+
+  it("throws DbError when the stored ticket has no valid number", async () => {
+    respond(ok({ ...ticketRow, ticket_number: "INC0010001" }, 201));
+    await expectDbError(repos.createTicket(newTicket), "createTicket");
   });
 
   it("on a duplicate idempotency key returns the existing row with created: false", async () => {
@@ -695,6 +704,7 @@ describe("getTicketView", () => {
   };
   const viewTicket = {
     id: ticketId,
+    ticket_number: "ITS-000042",
     status: "triaged",
     is_test: false,
     source: "web",
@@ -759,7 +769,9 @@ describe("getTicketView", () => {
       expect(call.url.searchParams.get("select")).not.toBe(null);
     }
     const tickets = calls.find((c) => c.url.pathname.endsWith("/tickets"));
-    expect(tickets?.url.searchParams.get("select")).toBe("id,status,is_test,source,created_at");
+    expect(tickets?.url.searchParams.get("select")).toBe(
+      "id,ticket_number,status,is_test,source,created_at",
+    );
   });
 
   it("maps the rows and drops any column the database returns beyond the ones asked for", async () => {
@@ -767,6 +779,7 @@ describe("getTicketView", () => {
     const view = await repos.getTicketView(ticketId);
     expect(view).toMatchObject({
       id: ticketId,
+      number: "ITS-000042",
       status: "triaged",
       isTest: false,
       redacted: { title: "VPN down", description: "gone" },
@@ -805,6 +818,11 @@ describe("getTicketView", () => {
       aiCallCount: 0,
       events: [],
     });
+  });
+
+  it("throws DbError when the ticket row has no valid number", async () => {
+    database({ ...full(), tickets: ok({ ...viewTicket, ticket_number: "its-42" }) });
+    await expectDbError(repos.getTicketView(ticketId), "getTicketView");
   });
 
   it("returns null for an unknown ticket and reads nothing else", async () => {
@@ -1404,6 +1422,7 @@ describe("reviews", () => {
   describe("getTicketView reviews", () => {
     const viewTicket = {
       id: ticketId,
+      ticket_number: "ITS-000042",
       status: "approved",
       is_test: true,
       source: "web",

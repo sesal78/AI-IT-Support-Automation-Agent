@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TicketForm } from "./ticket-form";
 
 const TICKET_ID = "3f0c9a1e-7b2d-4c55-9e1a-2b8f6d4c1a90";
+const TICKET_NUMBER = "ITS-000042";
 
 type RenderOptions = { callback: (token: string) => void; "expired-callback": () => void };
 let widget: RenderOptions;
@@ -54,19 +55,53 @@ async function fillAndSubmit(overrides: Record<string, string> = {}) {
 }
 
 describe("TicketForm", () => {
-  it("posts the ticket with the Turnstile token and shows the ticket ID", async () => {
-    respond(201, { ticketId: TICKET_ID, queued: true });
+  it("posts the ticket with the Turnstile token and shows the ticket number", async () => {
+    respond(201, { ticketId: TICKET_ID, ticketNumber: TICKET_NUMBER, queued: true });
     render(<TicketForm siteKey="site-key" />);
     await fillAndSubmit();
 
     expect(await screen.findByText("Ticket received")).toBeTruthy();
-    expect(screen.getByText(TICKET_ID)).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain(
+      `Your ticket number is ${TICKET_NUMBER}`,
+    );
+    // The UUID is never printed (resolved point 20).
+    expect(screen.getByRole("status").textContent).not.toContain(TICKET_ID);
+    expect(document.body.textContent).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/i);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/tickets");
     expect(JSON.parse(init.body)).toMatchObject({
       title: "Laptop will not boot",
       turnstileToken: "token-1",
     });
+  });
+
+  it.each(["light", "dark"] as const)(
+    "shows the ticket number, labelled and without the UUID, in the %s theme",
+    async (theme) => {
+      document.documentElement.classList.toggle("dark", theme === "dark");
+      try {
+        respond(201, { ticketId: TICKET_ID, ticketNumber: TICKET_NUMBER, queued: true });
+        render(<TicketForm siteKey="site-key" />);
+        await fillAndSubmit();
+
+        const receipt = await screen.findByRole("status");
+        expect(receipt.textContent).toContain("Ticket received");
+        expect(receipt.textContent).toContain(`Your ticket number is ${TICKET_NUMBER}`);
+        expect(receipt.textContent).not.toContain(TICKET_ID);
+        // The icon is decorative.
+        expect(receipt.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+      } finally {
+        document.documentElement.classList.remove("dark");
+      }
+    },
+  );
+
+  it("shows an error, not a blank confirmation, when the answer has no valid ticket number", async () => {
+    respond(201, { ticketId: TICKET_ID, queued: true });
+    render(<TicketForm siteKey="site-key" />);
+    await fillAndSubmit();
+    expect((await screen.findByRole("alert")).textContent).toContain("could not send");
+    expect(screen.queryByText("Ticket received")).toBeNull();
   });
 
   it("shows a linked field error for an empty title and sends nothing", async () => {

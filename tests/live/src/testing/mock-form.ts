@@ -88,9 +88,9 @@ document.getElementById("ticket").addEventListener("submit", function (event) {
     status.setAttribute("role", "status");
     var heading = document.createElement("h2");
     heading.textContent = "Ticket received";
-    var id = document.createElement("p");
-    id.textContent = json.ticketId;
-    status.append(heading, id);
+    var number = document.createElement("p");
+    number.textContent = "Your ticket number is " + json.ticketNumber;
+    status.append(heading, number);
     app.append(status);
   });
 });

@@ -46,7 +46,7 @@ async function postTicket(values: TicketSubmission): Promise<SubmitOutcome> {
 }
 
 export function TicketForm({ siteKey }: { siteKey: string }) {
-  const [ticketId, setTicketId] = useState<string | undefined>();
+  const [ticketNumber, setTicketNumber] = useState<string | undefined>();
   const [banner, setBanner] = useState<string | undefined>();
   const [resetSignal, setResetSignal] = useState(0);
 
@@ -77,7 +77,7 @@ export function TicketForm({ siteKey }: { siteKey: string }) {
     setBanner(undefined);
     const outcome = await postTicket(values);
     if (outcome.kind === "success") {
-      setTicketId(outcome.ticketId);
+      setTicketNumber(outcome.ticketNumber);
       return;
     }
     // Turnstile tokens are single use: get a fresh one before the next try.
@@ -94,16 +94,16 @@ export function TicketForm({ siteKey }: { siteKey: string }) {
     setBanner(outcome.message);
   });
 
-  if (ticketId) {
+  if (ticketNumber) {
     return (
       <div role="status" className="flex flex-col items-start gap-3 py-2">
         <CircleCheck aria-hidden className="size-8 text-emerald-600 dark:text-emerald-400" />
         <h2 className="text-xl font-semibold tracking-tight">Ticket received</h2>
         <p className="text-sm text-muted-foreground">
-          The IT team has your request. Quote this ticket ID if you contact them about it:
+          The IT team has your request. Quote this ticket number if you contact them about it:
         </p>
-        <p className="w-full rounded-lg border border-dashed bg-muted/50 px-3 py-2 font-mono text-sm break-all">
-          {ticketId}
+        <p className="w-full rounded-lg border border-dashed bg-muted/50 px-3 py-2 text-sm">
+          Your ticket number is <span className="font-mono font-semibold">{ticketNumber}</span>
         </p>
       </div>
     );

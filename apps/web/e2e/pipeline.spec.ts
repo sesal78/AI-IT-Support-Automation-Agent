@@ -82,12 +82,18 @@ async function submitForm(page: Page): Promise<string> {
   for (const [label, value] of Object.entries(FORM)) {
     await page.getByLabel(label, { exact: true }).fill(value);
   }
+  // The page shows the ticket number only; the UUID comes from the form's own answer.
+  const answered = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" && new URL(response.url()).pathname === "/api/tickets",
+  );
   await page.getByRole("button", { name: "Submit ticket" }).click();
   const received = page.getByRole("status");
   await expect(received.getByText("Ticket received")).toBeVisible();
-  const id = received.getByText(/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
-  await expect(id).toBeVisible();
-  return (await id.innerText()).trim();
+  const body = (await (await answered).json()) as { ticketId: string; ticketNumber: string };
+  await expect(received.getByText(`Your ticket number is ${body.ticketNumber}`)).toBeVisible();
+  expect(body.ticketId).toMatch(/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
+  return body.ticketId;
 }
 
 async function getView(request: APIRequestContext, id: string, token: string) {

@@ -43,6 +43,8 @@ export type MockSecurityEvents = "per-minute" | "per-request" | "none";
 /** A ticket the mock created, from the test path or the form path. */
 export interface MockTicketInput {
   readonly id: string;
+  /** The display number, `ITS-` plus 6 digits, counting up from 1 like the database sequence. */
+  readonly number: string;
   readonly path: "test" | "form";
   /** The parsed request body (test support only; never reported). */
   readonly body: Record<string, unknown>;
@@ -236,6 +238,7 @@ function ticketView(ticket: MockTicketInput, outcome: MockTicketOutcome, at: num
   }
   return {
     id: ticket.id,
+    number: ticket.number,
     status,
     isTest: outcome.isTest,
     source: "web",
@@ -308,11 +311,14 @@ function createDefaultRoute(
   /** Every created ticket (test and form path) with its pipeline outcome, by ticket ID. */
   const tickets = new Map<string, { ticket: MockTicketInput; outcome: MockTicketOutcome }>();
   const formKeys = new Map<string, string>();
+  let lastNumber = 0;
+  const nextNumber = () => `ITS-${String(++lastNumber).padStart(6, "0")}`;
 
-  function track(id: string, path: "test" | "form", body: Record<string, unknown>): void {
-    const ticket: MockTicketInput = { id, path, body, createdAt: now() };
+  function track(id: string, path: "test" | "form", body: Record<string, unknown>): string {
+    const ticket: MockTicketInput = { id, number: nextNumber(), path, body, createdAt: now() };
     const defaults = defaultTicketOutcome(ticket);
     tickets.set(id, { ticket, outcome: pipeline ? pipeline(ticket, defaults) : defaults });
+    return ticket.number;
   }
 
   /** The form path dedupes like the app's day key; the description stands in for it. */
@@ -320,12 +326,16 @@ function createDefaultRoute(
     const key = `web:b:${String(body["description"])}`;
     const existing = formKeys.get(key);
     if (existing !== undefined) {
-      return { status: 201, json: { ticketId: existing, queued: true, duplicate: true } };
+      const ticketNumber = tickets.get(existing)!.ticket.number;
+      return {
+        status: 201,
+        json: { ticketId: existing, ticketNumber, queued: true, duplicate: true },
+      };
     }
     const ticketId = randomUUID();
-    track(ticketId, "form", body);
+    const ticketNumber = track(ticketId, "form", body);
     formKeys.set(key, ticketId);
-    return { status: 201, json: { ticketId, queued: true } };
+    return { status: 201, json: { ticketId, ticketNumber, queued: true } };
   }
 
   function createTestTicket(request: MockRequest): MockReply {
@@ -333,13 +343,17 @@ function createDefaultRoute(
     const testId = typeof body.testId === "string" ? body.testId : "";
     const existing = testTickets.get(testId);
     if (existing) {
-      return { status: 201, json: { ticketId: existing.ticketId, queued: true, duplicate: true } };
+      const ticketNumber = tickets.get(existing.ticketId)!.ticket.number;
+      return {
+        status: 201,
+        json: { ticketId: existing.ticketId, ticketNumber, queued: true, duplicate: true },
+      };
     }
     const ticketId = randomUUID();
     testTickets.set(testId, { testId, ticketId, body, reads: 0, finished: false });
-    track(ticketId, "test", body);
+    const ticketNumber = track(ticketId, "test", body);
     onOpen([...testTickets.values()].filter((t) => !t.finished).length);
-    return { status: 201, json: { ticketId, queued: true } };
+    return { status: 201, json: { ticketId, ticketNumber, queued: true } };
   }
 
   function record(kind: string): void {
@@ -444,6 +458,7 @@ function createDefaultRoute(
         status: 200,
         json: {
           id: ticket[1],
+          number: stored?.ticket.number ?? "ITS-000001",
           status: view?.status ?? "new",
           isTest: true,
           source: "web",

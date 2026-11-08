@@ -15,6 +15,7 @@ const MARKER = "m".repeat(20);
 
 const view = {
   id: ID,
+  number: "ITS-000042",
   status: "triaged",
   isTest: false,
   source: "web",

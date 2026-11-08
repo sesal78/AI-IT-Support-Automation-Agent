@@ -36,6 +36,7 @@ const ALL_MARKERS = Object.values(MARK);
 function ticket(status = "triaged", isTest = false): Ticket {
   return {
     id: TICKET,
+    ticket_number: "ITS-000042",
     source: "web",
     raw_title: MARK.title,
     raw_description: MARK.description,

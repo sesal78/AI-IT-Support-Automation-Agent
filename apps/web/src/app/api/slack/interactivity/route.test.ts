@@ -39,7 +39,7 @@ async function load(): Promise<Route> {
   return import("./route");
 }
 
-function signedApprove(): Request {
+function signedApprove(value: string = REVIEW_ID): Request {
   const body = `payload=${encodeURIComponent(
     JSON.stringify({
       type: "block_actions",
@@ -47,7 +47,7 @@ function signedApprove(): Request {
       channel: { id: "C0000000001" },
       container: { message_ts: TS },
       response_url: "https://hooks.slack.com/actions/T0/1/abc",
-      actions: [{ action_id: "review_approve", value: REVIEW_ID }],
+      actions: [{ action_id: "review_approve", value }],
     }),
   )}`;
   const timestamp = String(Math.floor(Date.now() / 1000));

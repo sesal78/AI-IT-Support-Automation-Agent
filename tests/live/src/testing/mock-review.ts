@@ -75,6 +75,7 @@ interface MockReviewRow {
 }
 
 export interface MockReviewTicket {
+  readonly number: string;
   readonly testId: string;
   readonly id: string;
   readonly createdAt: number;
@@ -307,11 +308,20 @@ export function createMockReview(options: MockReviewOptions): MockReview {
     const testId = typeof body.testId === "string" ? body.testId : "";
     const existing = tickets.get(testId);
     if (existing)
-      return { status: 201, json: { ticketId: existing.id, queued: true, duplicate: true } };
+      return {
+        status: 201,
+        json: {
+          ticketId: existing.id,
+          ticketNumber: existing.number,
+          queued: true,
+          duplicate: true,
+        },
+      };
     const overrides = body.testOverrides as { reviewTimeout?: unknown } | undefined;
     const label = typeof overrides?.reviewTimeout === "string" ? overrides.reviewTimeout : "2m";
     const ticket: MockReviewTicket = {
       testId,
+      number: `ITS-${String(tickets.size + 1).padStart(6, "0")}`,
       id: randomUUID(),
       createdAt: now(),
       title: redact(String(body.title)).text,
@@ -329,13 +339,17 @@ export function createMockReview(options: MockReviewOptions): MockReview {
       requestedEventAt: null,
     };
     tickets.set(testId, ticket);
-    return { status: 201, json: { ticketId: ticket.id, queued: true } };
+    return {
+      status: 201,
+      json: { ticketId: ticket.id, ticketNumber: ticket.number, queued: true },
+    };
   }
 
   function view(t: MockReviewTicket) {
     const triaged = t.events.some((e) => e.type === "triaged");
     return {
       id: t.id,
+      number: t.number,
       status: t.status,
       isTest: true,
       source: "web",
