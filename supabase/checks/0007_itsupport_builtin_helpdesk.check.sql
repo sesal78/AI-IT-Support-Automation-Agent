@@ -8,7 +8,8 @@
 -- generation expression) and identity; `constraints` lists every constraint
 -- of the table, and each `constraint` row is ok when it exists and its
 -- definition is exactly the expected one (Postgres 17); `indexes` means no
--- index other than the constraint ones; `triggers` lists every user trigger;
+-- index other than the constraint ones; `triggers` lists every user trigger,
+-- each with its exact definition and enabled ALWAYS (also fires under replica);
 -- `grants` lists every table and column privilege held by a role other than
 -- the owner (service_role INSERT, SELECT and UPDATE only); `privileges <role>`
 -- asks has_table_privilege and has_any_column_privilege directly: public,
@@ -158,11 +159,17 @@ from (
   select 'triggers itsupport.' || t.tbl, r.oid is not null and (
     select coalesce(string_agg(g.tgname, ', ' order by g.tgname), '') from pg_catalog.pg_trigger g
     where g.tgrelid = r.oid and not g.tgisinternal
-      and g.tgfoid = (select f.p from f)
   ) = t.trg and not exists (
-    -- No other user trigger, rewrite rule or publication.
+    -- All user trigger names must match; every guard must use the function in ALWAYS mode.
     select 1 from pg_catalog.pg_trigger g
-    where g.tgrelid = r.oid and not g.tgisinternal and g.tgfoid <> (select f.p from f)
+    where g.tgrelid = r.oid and not g.tgisinternal
+      and (g.tgfoid is distinct from (select f.p from f) or g.tgenabled <> 'A'
+        or pg_get_triggerdef(g.oid) <> format(
+          'CREATE TRIGGER %I %s ON itsupport.%I FOR EACH %s EXECUTE FUNCTION itsupport.reject_helpdesk_log_change()',
+          g.tgname,
+          case when g.tgname = t.tbl || '_append_only_row' then 'BEFORE DELETE OR UPDATE' else 'BEFORE TRUNCATE' end,
+          t.tbl,
+          case when g.tgname = t.tbl || '_append_only_row' then 'ROW' else 'STATEMENT' end))
     union all
     select 1 from pg_catalog.pg_rewrite w where w.ev_class = r.oid
     union all

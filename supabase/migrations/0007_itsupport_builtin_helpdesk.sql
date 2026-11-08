@@ -145,6 +145,14 @@ create trigger helpdesk_assignments_append_only_truncate
   before truncate on itsupport.helpdesk_assignments
   for each statement execute function itsupport.reject_helpdesk_log_change();
 
+-- ALWAYS: the guard also fires with session_replication_role = replica.
+alter table itsupport.helpdesk_notes
+  enable always trigger helpdesk_notes_append_only_row,
+  enable always trigger helpdesk_notes_append_only_truncate;
+alter table itsupport.helpdesk_assignments
+  enable always trigger helpdesk_assignments_append_only_row,
+  enable always trigger helpdesk_assignments_append_only_truncate;
+
 -- The helpdesk a ticket lives in (G2); null until a helpdesk ticket exists.
 alter table itsupport.tickets add column if not exists helpdesk text;
 alter table itsupport.tickets drop constraint if exists tickets_helpdesk_check;

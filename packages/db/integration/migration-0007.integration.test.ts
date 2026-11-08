@@ -616,6 +616,33 @@ describe("migration 0007 on 0001-0006 with phase-4 rows and Supabase-like defaul
       }
   });
 
+  it("the append-only triggers are enabled ALWAYS: they refuse under session_replication_role = replica", async () => {
+    const { rows } = await db.query(
+      `select tgname, tgenabled from pg_catalog.pg_trigger
+       where tgfoid = 'itsupport.reject_helpdesk_log_change()'::regprocedure order by tgname`,
+    );
+    expect(rows).toEqual(
+      [
+        "helpdesk_assignments_append_only_row",
+        "helpdesk_assignments_append_only_truncate",
+        "helpdesk_notes_append_only_row",
+        "helpdesk_notes_append_only_truncate",
+      ].map((tgname) => ({ tgname, tgenabled: "A" })),
+    );
+    const replica = `${BASE}; set local session_replication_role = replica`;
+    for (const table of LOGS) {
+      expect(await attempt(`update itsupport.${table} set id = id`, undefined, replica)).toEqual(
+        appendOnly(table, "UPDATE"),
+      );
+      expect(await attempt(`delete from itsupport.${table}`, undefined, replica)).toEqual(
+        appendOnly(table, "DELETE"),
+      );
+      expect(await attempt(`truncate itsupport.${table}`, undefined, replica)).toEqual(
+        appendOnly(table, "TRUNCATE"),
+      );
+    }
+  });
+
   it("anon and authenticated get 42501 on every new table; service_role selects, inserts and updates but cannot delete", async () => {
     for (const table of TABLES) {
       for (const role of ["anon", "authenticated"])
@@ -682,8 +709,38 @@ describe("migration 0007 on 0001-0006 with phase-4 rows and Supabase-like defaul
         ["rls itsupport.helpdesk_tickets"],
       ],
       [
+        `create trigger unexpected_staff_insert before insert on itsupport.staff
+         for each row execute function itsupport.reject_helpdesk_log_change()`,
+        ["triggers itsupport.staff"],
+      ],
+      ...[
+        ["before update or delete", "for each row when (false)"],
+        ["before update", "for each row"],
+        ["after update or delete", "for each row"],
+        ["before update or delete", "for each statement"],
+      ].map(([events, mode]): [string, string[]] => [
+        `drop trigger helpdesk_notes_append_only_row on itsupport.helpdesk_notes;
+           create trigger helpdesk_notes_append_only_row ${events} on itsupport.helpdesk_notes
+           ${mode} execute function itsupport.reject_helpdesk_log_change();
+           alter table itsupport.helpdesk_notes enable always trigger helpdesk_notes_append_only_row`,
+        ["triggers itsupport.helpdesk_notes"],
+      ]),
+      [
         "drop trigger helpdesk_assignments_append_only_row on itsupport.helpdesk_assignments",
         ["triggers itsupport.helpdesk_assignments"],
+      ],
+      [
+        "alter table itsupport.helpdesk_notes disable trigger helpdesk_notes_append_only_row",
+        ["triggers itsupport.helpdesk_notes"],
+      ],
+      [
+        // ORIGIN (tgenabled 'O'): skipped under session_replication_role = replica.
+        "alter table itsupport.helpdesk_assignments enable trigger helpdesk_assignments_append_only_truncate",
+        ["triggers itsupport.helpdesk_assignments"],
+      ],
+      [
+        "alter table itsupport.helpdesk_notes enable replica trigger helpdesk_notes_append_only_truncate",
+        ["triggers itsupport.helpdesk_notes"],
       ],
       [
         "delete from itsupport.helpdesk_state_transitions where from_state = 'resolved' and to_state = 'closed'",
