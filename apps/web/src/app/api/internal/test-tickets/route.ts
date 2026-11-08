@@ -68,11 +68,25 @@ export async function POST(request: Request) {
     case "store_failed":
       return json({ error: "internal_error" }, 500);
     case "duplicate":
-      return json({ ticketId: result.ticketId, queued: true, duplicate: true }, 201);
+      return json(
+        {
+          ticketId: result.ticketId,
+          ticketNumber: result.ticketNumber,
+          queued: true,
+          duplicate: true,
+        },
+        201,
+      );
     case "queued":
-      return json({ ticketId: result.ticketId, queued: true }, 201);
+      return json(
+        { ticketId: result.ticketId, ticketNumber: result.ticketNumber, queued: true },
+        201,
+      );
     case "enqueue_failed":
-      return json({ ticketId: result.ticketId, queued: false }, 201);
+      return json(
+        { ticketId: result.ticketId, ticketNumber: result.ticketNumber, queued: false },
+        201,
+      );
   }
 }
 

@@ -44,9 +44,10 @@ function stubEnv() {
   vi.stubEnv("TURNSTILE_SITE_KEY", "fake-turnstile-site-key");
 }
 
-function ticketRow(id: string, idempotencyKey: string) {
+function ticketRow(id: string, idempotencyKey: string, ticketNumber = "ITS-000042") {
   return {
     id,
+    ticket_number: ticketNumber,
     source: "web",
     raw_title: valid.title,
     raw_description: valid.description,
@@ -120,7 +121,11 @@ describe("POST /api/tickets", () => {
     const res = await POST(request(valid));
     expect(res.status).toBe(201);
     const json = await res.json();
-    expect(json).toEqual({ ticketId: expect.stringMatching(UUID_RE), queued: true });
+    expect(json).toEqual({
+      ticketId: expect.stringMatching(UUID_RE),
+      ticketNumber: "ITS-000042",
+      queued: true,
+    });
 
     expect(createTicket).toHaveBeenCalledTimes(1);
     expect(createTicket).toHaveBeenCalledWith({
@@ -246,11 +251,22 @@ describe("POST /api/tickets", () => {
     expect((await POST(request(valid, { ip: "198.51.100.99" }))).status).toBe(201);
   });
 
+  it("answers with ids and the number only: no response holds the raw title, description or email", async () => {
+    const POST = await loadPost();
+    const res = await POST(request({ ...valid, title: "RAW-TITLE-MARKER-4402" }));
+    expect(res.status).toBe(201);
+    const text = await res.text();
+    expect(Object.keys(JSON.parse(text)).sort()).toEqual(["queued", "ticketId", "ticketNumber"]);
+    for (const marker of ["RAW-TITLE-MARKER-4402", "RAW-DESCRIPTION-MARKER-7731", valid.email]) {
+      expect(text).not.toContain(marker);
+    }
+  });
+
   it("returns the same ticketId for a repeated Idempotency-Key and does not trigger again", async () => {
     const id = randomUUID();
     createTicket
-      .mockResolvedValueOnce({ ticket: ticketRow(id, "key-1"), created: true })
-      .mockResolvedValueOnce({ ticket: ticketRow(id, "key-1"), created: false });
+      .mockResolvedValueOnce({ ticket: ticketRow(id, "key-1", "ITS-000007"), created: true })
+      .mockResolvedValueOnce({ ticket: ticketRow(id, "key-1", "ITS-000007"), created: false });
     const POST = await loadPost();
     const headers = { "Idempotency-Key": "key-1" };
 
@@ -259,8 +275,14 @@ describe("POST /api/tickets", () => {
 
     expect(first.status).toBe(201);
     expect(second.status).toBe(201);
+    const secondBody = await second.json();
     expect((await first.json()).ticketId).toBe(id);
-    expect((await second.json()).ticketId).toBe(id);
+    expect(secondBody).toEqual({
+      ticketId: id,
+      ticketNumber: "ITS-000007",
+      queued: true,
+      duplicate: true,
+    });
     expect(createTicket).toHaveBeenCalledTimes(2);
     for (const call of createTicket.mock.calls) {
       expect(call[0].idempotency_key).toBe("web:k:key-1");
@@ -338,7 +360,11 @@ describe("POST /api/tickets", () => {
     const res = await POST(request(valid));
     expect(res.status).toBe(201);
     const json = await res.json();
-    expect(json).toEqual({ ticketId: expect.stringMatching(UUID_RE), queued: false });
+    expect(json).toEqual({
+      ticketId: expect.stringMatching(UUID_RE),
+      ticketNumber: "ITS-000042",
+      queued: false,
+    });
     expect(addEvent).toHaveBeenCalledWith(json.ticketId, "received");
     expect(addEvent).toHaveBeenCalledWith(json.ticketId, "enqueue_failed", {
       error: "Error",

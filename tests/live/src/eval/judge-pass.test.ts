@@ -50,6 +50,7 @@ function viewOf(id: string, noFix: boolean) {
   const ticket = byId.get(id)!;
   return {
     id: uuidOf(id),
+    number: `ITS-${id.replace(/\D/g, "").padStart(6, "0")}`,
     status: "triaged",
     isTest: true,
     source: "web",

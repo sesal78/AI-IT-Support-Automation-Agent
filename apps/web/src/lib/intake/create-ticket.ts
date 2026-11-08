@@ -26,9 +26,9 @@ export interface NewIntakeTicket {
 
 export type CreateAndEnqueueResult =
   | { outcome: "store_failed" }
-  | { outcome: "duplicate"; ticketId: string }
-  | { outcome: "queued"; ticketId: string }
-  | { outcome: "enqueue_failed"; ticketId: string };
+  | { outcome: "duplicate"; ticketId: string; ticketNumber: string }
+  | { outcome: "queued"; ticketId: string; ticketNumber: string }
+  | { outcome: "enqueue_failed"; ticketId: string; ticketNumber: string };
 
 // Error class name only: messages and stacks can carry request data.
 const errorName = (error: unknown) => (error instanceof Error ? error.name : "unknown");
@@ -50,6 +50,7 @@ export async function createAndEnqueueTicket(
   }
 
   let ticketId: string;
+  let ticketNumber: string;
   let created: boolean;
   try {
     const result = await db.createTicket({
@@ -63,6 +64,7 @@ export async function createAndEnqueueTicket(
       is_test: input.isTest,
     });
     ticketId = result.ticket.id;
+    ticketNumber = result.ticket.ticket_number;
     created = result.created;
     if (created) await db.addEvent(ticketId, "received");
   } catch (error) {
@@ -71,14 +73,14 @@ export async function createAndEnqueueTicket(
   }
 
   // A repeated idempotency key returns the existing ticket; its task was already triggered.
-  if (!created) return { outcome: "duplicate", ticketId };
+  if (!created) return { outcome: "duplicate", ticketId, ticketNumber };
 
   const payload: IntakeTicketPayload = { ticketId };
   if (overrides) payload.testOverrides = overrides;
 
   try {
     await tasks.trigger<IntakeTicketTask>(INTAKE_TICKET_TASK_ID, payload);
-    return { outcome: "queued", ticketId };
+    return { outcome: "queued", ticketId, ticketNumber };
   } catch (error) {
     console.error(`[api/tickets] enqueue failed for ticket ${ticketId}: ${errorName(error)}`);
     try {
@@ -88,6 +90,6 @@ export async function createAndEnqueueTicket(
         `[api/tickets] recording enqueue_failed failed for ticket ${ticketId}: ${errorName(eventError)}`,
       );
     }
-    return { outcome: "enqueue_failed", ticketId };
+    return { outcome: "enqueue_failed", ticketId, ticketNumber };
   }
 }

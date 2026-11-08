@@ -6,6 +6,7 @@ const AT = "2026-10-01T10:00:00.000Z";
 
 const valid = {
   id: ID,
+  number: "ITS-000042",
   status: "triaged",
   isTest: false,
   source: "web",
@@ -38,6 +39,17 @@ const valid = {
 describe("internalTicketViewSchema", () => {
   it("accepts a triaged ticket", () => {
     expect(internalTicketViewSchema.parse(valid)).toEqual(valid);
+  });
+
+  it("rejects a view without a number, or with a bad one", () => {
+    const withoutNumber: Partial<typeof valid> = { ...valid };
+    delete withoutNumber.number;
+    expect(internalTicketViewSchema.safeParse(withoutNumber).success).toBe(false);
+    for (const number of ["ITS-1", "its-000042", "ITS-0000042", "INC0010001", ID, 42]) {
+      expect(internalTicketViewSchema.safeParse({ ...valid, number }).success, String(number)).toBe(
+        false,
+      );
+    }
   });
 
   it("accepts null redaction and triage", () => {

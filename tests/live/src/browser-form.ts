@@ -1,4 +1,4 @@
-import { CATEGORIES } from "@ai-it-support/shared";
+import { CATEGORIES, TICKET_NUMBER_RE } from "@ai-it-support/shared";
 import { fixSteps, isTriaged, result, waitForTriage } from "./pipeline.ts";
 import { createPlaywrightFormBrowser } from "./playwright-form.ts";
 import type { Scenario } from "./runner.ts";
@@ -24,16 +24,22 @@ export interface FormSubmitOptions {
   readonly beforeSubmit: () => Promise<void>;
 }
 
-/** Fills and submits the ticket form in a browser; returns the ticket ID the page shows. */
+/**
+ * Fills and submits the ticket form in a browser. `ticketId` is the UUID in the
+ * form's own answer (the page does not show it); `ticketNumber` is the number
+ * the page shows.
+ */
 export interface FormBrowser {
-  submit(options: FormSubmitOptions): Promise<{ ticketId: string | null }>;
+  submit(
+    options: FormSubmitOptions,
+  ): Promise<{ ticketId: string | null; ticketNumber: string | null }>;
 }
 
 const TICKET_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
  * T3.L.01: a browser opens E2E_BASE_URL, fills the ticket form and submits it
- * (one paced form-path submit), reads the ticket ID, and the ticket view is
+ * (one paced form-path submit), reads the ticket ID from the form's answer and the number from the page, and the ticket view is
  * `triaged` within the limit of the submit, with a category from the 6 and at
  * least 1 fix step. The limit is shortened in tests.
  */
@@ -46,7 +52,7 @@ export function createBrowserFormScenario(
     id: "T3.L.01",
     async run(context) {
       let submitAt: number | undefined;
-      const { ticketId: shown } = await browser.submit({
+      const { ticketId: shown, ticketNumber: shownNumber } = await browser.submit({
         origin: context.config.origin,
         accessHeaders: {
           "CF-Access-Client-Id": context.config.accessClientId,
@@ -80,6 +86,12 @@ export function createBrowserFormScenario(
       const category = view.triage?.category ?? null;
       const steps = fixSteps(view);
       const failedChecks = [
+        // The number the page showed is the one the ticket view holds.
+        ...(shownNumber !== null &&
+        TICKET_NUMBER_RE.test(shownNumber) &&
+        shownNumber === view.number
+          ? []
+          : ["ticket-number"]),
         ...(triaged ? [] : ["triaged-within-limit"]),
         ...(category !== null && (CATEGORIES as readonly string[]).includes(category)
           ? []
@@ -88,6 +100,7 @@ export function createBrowserFormScenario(
       ];
       return result(failedChecks, {
         ticketId,
+        ticketNumber: view.number,
         status: view.status,
         msToTriaged,
         limitMs,

@@ -4,6 +4,7 @@ import {
   internalTicketViewSchema,
   internalUsageSchema,
   judgeTextOutputSchema,
+  ticketNumberSchema,
   type HealthConfig,
   type InternalSecurityEvents,
   type InternalTicketView,
@@ -93,6 +94,7 @@ export type JudgmentState =
 const healthSchema = z.strictObject({ status: z.literal("ok"), version: z.string() });
 const testTicketCreatedSchema = z.strictObject({
   ticketId: z.uuid(),
+  ticketNumber: ticketNumberSchema,
   queued: z.boolean(),
   duplicate: z.literal(true).optional(),
 });

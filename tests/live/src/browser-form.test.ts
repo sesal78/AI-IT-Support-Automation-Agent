@@ -25,7 +25,7 @@ afterEach(async () => {
 });
 
 /** Submits like the form page: the Access headers on the E2E origin, a Turnstile token. */
-function fakeBrowser(options: { showId?: boolean } = {}) {
+function fakeBrowser(options: { showId?: boolean; number?: string | null } = {}) {
   const calls: FormSubmitOptions[] = [];
   const browser: FormBrowser = {
     async submit(submit) {
@@ -44,8 +44,14 @@ function fakeBrowser(options: { showId?: boolean } = {}) {
           turnstileToken: TURNSTILE_TEST_TOKEN,
         }),
       });
-      const { ticketId } = (await response.json()) as { ticketId: string };
-      return { ticketId: options.showId === false ? null : ticketId };
+      const { ticketId, ticketNumber } = (await response.json()) as {
+        ticketId: string;
+        ticketNumber: string;
+      };
+      return {
+        ticketId: options.showId === false ? null : ticketId,
+        ticketNumber: options.number === undefined ? ticketNumber : options.number,
+      };
     },
   };
   return { browser, calls };
@@ -53,7 +59,7 @@ function fakeBrowser(options: { showId?: boolean } = {}) {
 
 async function setup(
   pipeline?: MockE2eOptions["pipeline"],
-  scenarioOptions: { triageLimitMs?: number; showId?: boolean } = {},
+  scenarioOptions: { triageLimitMs?: number; showId?: boolean; number?: string | null } = {},
 ) {
   const dir = join(mkdtempSync(join(tmpdir(), "live-form-")), ".loop-evidence");
   cleanup.push(() => rmSync(dirname(dir), { recursive: true, force: true }));
@@ -68,7 +74,7 @@ async function setup(
     pipeline,
   });
   cleanup.push(() => mock.close());
-  const fake = fakeBrowser({ showId: scenarioOptions.showId });
+  const fake = fakeBrowser({ showId: scenarioOptions.showId, number: scenarioOptions.number });
   const scenario = createBrowserFormScenario({
     browser: fake.browser,
     triageLimitMs: scenarioOptions.triageLimitMs,
@@ -150,6 +156,16 @@ describe("T3.L.01 (browser stand-in)", () => {
     });
     expect(entry.evidence["ticketId"]).toMatch(/^[0-9a-f-]{36}$/);
   });
+
+  it.each([null, "ITS-1", "ITS-999999"])(
+    "fails for a missing, invalid or wrong shown number: %s",
+    async (number) => {
+      const h = await setup(undefined, { number });
+      const { code, entry } = await h.run();
+      expect(code).toBe(1);
+      expect(entry.evidence["failedChecks"]).toContain("ticket-number");
+    },
+  );
 
   it("fails when the ticket never reaches triaged", async () => {
     const h = await setup((_, d) => ({ ...d, triagedAfterMs: null }));

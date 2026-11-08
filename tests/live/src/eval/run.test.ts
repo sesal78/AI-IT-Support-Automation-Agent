@@ -354,7 +354,11 @@ describe("runEval against the mock", () => {
         if (r.body.includes('"r6:E002"')) {
           return {
             status: 201,
-            json: { ticketId: "00000000-0000-4000-8000-000000000009", queued: false },
+            json: {
+              ticketId: "00000000-0000-4000-8000-000000000009",
+              ticketNumber: "ITS-000009",
+              queued: false,
+            },
           };
         }
         return undefined;

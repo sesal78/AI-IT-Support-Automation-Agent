@@ -1,6 +1,7 @@
 import {
   assertTransition,
   slackUserId as slackUserIdRule,
+  ticketNumberSchema,
   triageResultSchema,
   type AiUsage,
   type InternalTicketView,
@@ -27,6 +28,8 @@ export const ticketSchema = z.object({
   servicenow_number: z.string().nullable(),
   idempotency_key: z.string(),
   is_test: z.boolean(),
+  // Filled by the database default (0006); intake reads it back and never sends it.
+  ticket_number: ticketNumberSchema,
   created_at: timestamp,
 });
 
@@ -142,7 +145,7 @@ export type SensitiveCheck = z.infer<typeof sensitiveCheckSchema>;
 
 // Named columns for the internal ticket view. The raw title, raw description,
 // requester name, requester email and department are never in these lists.
-const VIEW_TICKET_COLUMNS = "id,status,is_test,source,created_at";
+const VIEW_TICKET_COLUMNS = "id,ticket_number,status,is_test,source,created_at";
 const VIEW_REDACTION_COLUMNS = "redacted_title,redacted_description";
 const VIEW_TRIAGE_COLUMNS =
   "sensitive,sensitive_flags,category,subcategory,priority,urgency,assignment_group,route," +
@@ -162,6 +165,7 @@ const MAX_SECURITY_EVENTS = 500;
 
 const viewTicketSchema = z.object({
   id: z.uuid(),
+  ticket_number: ticketNumberSchema,
   status: z.string(),
   is_test: z.boolean(),
   source: z.string(),
@@ -603,6 +607,7 @@ export function createRepositories(client: DbClient) {
       // columns are guarded by check constraints in the database.
       return {
         id: ticket.id,
+        number: ticket.ticket_number,
         status: ticket.status as InternalTicketView["status"],
         isTest: ticket.is_test,
         source: ticket.source as InternalTicketView["source"],

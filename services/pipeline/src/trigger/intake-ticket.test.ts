@@ -39,6 +39,7 @@ const now = "2026-09-30T10:00:00.000000+00:00";
 function ticket(title: string, description: string): Ticket {
   return {
     id: ticketId,
+    ticket_number: "ITS-000042",
     source: "web",
     raw_title: title,
     raw_description: description,

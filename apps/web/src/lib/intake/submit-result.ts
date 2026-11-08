@@ -1,6 +1,8 @@
+import { ticketNumberSchema } from "@ai-it-support/shared";
+
 /** What the ticket form shows after `POST /api/tickets` answers. */
 export type SubmitOutcome =
-  | { kind: "success"; ticketId: string }
+  | { kind: "success"; ticketId: string; ticketNumber: string }
   | { kind: "invalid"; fieldErrors: Record<string, string>; message: string }
   | { kind: "retry"; message: string }
   | { kind: "error"; message: string };
@@ -15,7 +17,11 @@ export function interpretSubmitResponse(status: number, body: unknown): SubmitOu
   const data = isRecord(body) ? body : {};
 
   if (status === 201 && typeof data.ticketId === "string" && data.ticketId !== "") {
-    return { kind: "success", ticketId: data.ticketId };
+    // The form shows the number; an answer without a valid one is an error, not a blank confirmation.
+    const ticketNumber = ticketNumberSchema.safeParse(data.ticketNumber);
+    if (ticketNumber.success) {
+      return { kind: "success", ticketId: data.ticketId, ticketNumber: ticketNumber.data };
+    }
   }
   if (status === 400) {
     const fieldErrors: Record<string, string> = {};
