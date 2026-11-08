@@ -69,17 +69,7 @@ async function insertStaffRow(
   const db = clientFor(stack.pg);
   await db.connect();
   try {
-    // TODO(P5-B2): `itsupport.staff` comes with migration 0007, which is not in
-    // MIGRATIONS yet. Until it is, a staff user cannot be made and this throws;
-    // drop the check once 0007 is in the list. Columns as in plan §6.3.1.
-    const { rows } = await db.query<{ present: boolean }>(
-      "select to_regclass('itsupport.staff') is not null as present",
-    );
-    if (!rows[0]?.present) {
-      throw new Error(
-        "createTestStaffUser: itsupport.staff does not exist on this stack; it comes with migration 0007 (P5-B2)",
-      );
-    }
+    // `itsupport.staff` comes with migration 0007 (in MIGRATIONS).
     const inserted = await db.query<{ id: string }>(
       `insert into itsupport.staff (auth_user_id, email, display_name, role, active)
        values ($1, $2, $3, $4, $5) returning id`,

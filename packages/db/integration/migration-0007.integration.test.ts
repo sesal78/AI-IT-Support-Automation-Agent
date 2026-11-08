@@ -16,11 +16,13 @@ import {
 // columns tickets.helpdesk and reviews.staff_id, and the reviews decider check
 // that replaces 0005's reviews_slack_user_check (P5-T10a). 0001 to 0006 are
 // applied first, with Supabase-like default privileges set before 0001, then
-// phase-4-shaped rows are seeded (SEED: four tickets with a triage review
-// each, approved and rejected in Slack, timed out and still open; their
-// redactions, events and one notification). So the reviews check swap runs on
-// a populated table, as at H28b, and the row count and an md5 of every
-// table's pre-0007 columns are compared after each step. All data is fake
+// phase-5-shaped rows are seeded (SEED, P5-T10b: four tickets with a triage
+// review each, approved and rejected in Slack, timed out and still open
+// (review_pending), plus one incident_created ticket routed auto; their
+// redactions, triage results, events and two notifications). So the reviews
+// check swap runs on a populated table, as at H28b, and the row count and an
+// md5 of every table's pre-0007 columns are compared after each step. Before
+// down, the 0007 tables hold rows too (FILLED). All data is fake
 // (the repo is public): example.test addresses, U000TEST Slack user IDs,
 // fixed test UUIDs, waitpoint_test_* tokens.
 
@@ -133,23 +135,34 @@ const SLACK = "00000000-0000-4000-8000-000000000701";
 const REJECTED = "00000000-0000-4000-8000-000000000702";
 const TIMEOUT = "00000000-0000-4000-8000-000000000703";
 const OPEN = "00000000-0000-4000-8000-000000000704";
-/** Phase-4-shaped rows, written the way intake, triage and the review flow write them. */
+const INCIDENT = "00000000-0000-4000-8000-000000000705";
+/** Phase-5-shaped rows, written the way intake, triage, the review flow and the helpdesk write them. */
 const SEED = `
   insert into itsupport.tickets (id, source, raw_title, raw_description, requester_email,
-      idempotency_key, status, created_at) values
+      idempotency_key, status, servicenow_sys_id, servicenow_number, created_at) values
     ('${SLACK}', 'web', 'VPN down', 'Cannot connect', 'demo.user@example.test', 'web:seed-1',
-     'approved', timestamptz '2026-10-20 01:00:00+00'),
+     'approved', null, null, timestamptz '2026-10-20 01:00:00+00'),
     ('${REJECTED}', 'email', 'New laptop', 'Send one', 'demo.other@example.test', 'email:seed-2',
-     'rejected', timestamptz '2026-10-20 01:05:00+00'),
+     'rejected', null, null, timestamptz '2026-10-20 01:05:00+00'),
     ('${TIMEOUT}', 'web', 'Payroll', 'Wrong amount', 'demo.third@example.test', 'web:seed-3',
-     'escalated_manual', timestamptz '2026-10-20 01:10:00+00'),
+     'escalated_manual', null, null, timestamptz '2026-10-20 01:10:00+00'),
     ('${OPEN}', 'web', 'Access', 'HR folder', 'demo.fourth@example.test', 'web:seed-4',
-     'review_pending', timestamptz '2026-10-20 01:15:00+00');
+     'review_pending', null, null, timestamptz '2026-10-20 01:15:00+00'),
+    ('${INCIDENT}', 'email', 'Printer jam', 'Tray 2 jams', 'demo.fifth@example.test', 'email:seed-5',
+     'incident_created', '0000000000000000000000000000test', 'INC0010001',
+     timestamptz '2026-10-20 01:20:00+00');
   insert into itsupport.ticket_redactions (ticket_id, redacted_title, redacted_description)
     select id, raw_title, raw_description from itsupport.tickets;
+  insert into itsupport.triage_results (ticket_id, sensitive, sensitive_flags, checker, category,
+      priority, route, triaged_at)
+    select id, false, '[]'::jsonb, 'keywords+typesafe', 'network', 'P3',
+      case id when '${INCIDENT}' then 'auto' else 'review' end, created_at + interval '1 minute'
+    from itsupport.tickets;
   insert into itsupport.ticket_events (ticket_id, type, payload)
     select t.id, e.type, '{}'::jsonb from itsupport.tickets t,
-      unnest(array['received', 'redacted', 'triaged', 'review_requested']) as e (type)
+      unnest(case t.id when '${INCIDENT}'
+        then array['received', 'redacted', 'triaged', 'incident_created']
+        else array['received', 'redacted', 'triaged', 'review_requested'] end) as e (type)
     order by t.id;
   insert into itsupport.reviews (ticket_id, kind, slack_user_id, decision, decided_at, wait_token_id) values
     ('${SLACK}', 'triage', 'U000TEST01', 'approve', timestamptz '2026-10-20 02:00:00+00', 'waitpoint_test_1'),
@@ -157,7 +170,8 @@ const SEED = `
     ('${TIMEOUT}', 'triage', null, 'timeout', timestamptz '2026-10-20 02:10:00+00', 'waitpoint_test_3'),
     ('${OPEN}', 'triage', null, null, null, 'waitpoint_test_4');
   insert into itsupport.notifications (ticket_id, channel, kind, status, provider_id)
-    values ('${SLACK}', 'email', 'incident_reply', 'sent', 're_msg_seed');
+    values ('${SLACK}', 'email', 'incident_reply', 'sent', 're_msg_seed'),
+      ('${INCIDENT}', 'email', 'incident_reply', 'sent', 're_msg_seed_2');
 `;
 
 type Shape = { name: string; pk: string | null; cols: string };
@@ -298,6 +312,11 @@ const withTicketsLocked = async (sql: string) => {
   }
 };
 
+/** Phase-5 rows in the 0007 tables and columns, for down to remove (BASE plus both helpdesk values). */
+const FILLED = `${BASE}; ${hdRow({ id: "gen_random_uuid()", ticket_id: `'${SLACK}'` })};
+  update itsupport.tickets set helpdesk = 'builtin' where id in ('${OPEN}', '${SLACK}');
+  update itsupport.tickets set helpdesk = 'servicenow' where id = '${INCIDENT}'`;
+
 /**
  * Runs `sql` one statement at a time, each committing on its own, and stops at
  * the first error: what psql does without --single-transaction but with
@@ -402,11 +421,14 @@ afterAll(async () => {
   removePgContainer(container);
 });
 
-describe("migration 0007 on 0001-0006 with phase-4 rows and Supabase-like default privileges", () => {
-  it("the seed is phase-4-shaped: reviews decided in Slack, timed out and open", async () => {
+describe("migration 0007 on 0001-0006 with phase-5 rows and Supabase-like default privileges", () => {
+  it("the seed is phase-5-shaped: reviews decided in Slack, timed out and open; an incident_created ticket", async () => {
     expect(seeded.reviews?.rows).toBe(4);
-    expect(seeded.notifications?.rows).toBe(1);
-    expect(seeded.tickets?.rows).toBe(4);
+    expect(seeded.notifications?.rows).toBe(2);
+    expect(seeded.tickets?.rows).toBe(5);
+    expect(seeded.ticket_redactions?.rows).toBe(5);
+    expect(seeded.triage_results?.rows).toBe(5);
+    expect(seeded.ticket_events?.rows).toBe(20);
     const { rows } = await db.query(
       "select decision, slack_user_id is not null as slack from itsupport.reviews order by wait_token_id",
     );
@@ -415,6 +437,15 @@ describe("migration 0007 on 0001-0006 with phase-4 rows and Supabase-like defaul
       { decision: "reject", slack: true },
       { decision: "timeout", slack: false },
       { decision: null, slack: false },
+    ]);
+    const statuses = await db.query(
+      `select status, ticket_number from itsupport.tickets
+       where status in ('incident_created', 'review_pending', 'rejected') order by ticket_number`,
+    );
+    expect(statuses.rows).toEqual([
+      { status: "rejected", ticket_number: "ITS-000002" },
+      { status: "review_pending", ticket_number: "ITS-000004" },
+      { status: "incident_created", ticket_number: "ITS-000005" },
     ]);
   });
 
@@ -966,7 +997,19 @@ describe("migration 0007 on 0001-0006 with phase-4 rows and Supabase-like defaul
     expect(await catalog()).toEqual(afterUp);
   });
 
-  it("down (twice) exits 0 and removes only 0007: every 0001-0006 object, row and check as before", async () => {
+  it("down (twice) exits 0 on filled 0007 tables and removes only 0007: every 0001-0006 object, row and check as before", async () => {
+    await db.query(FILLED);
+    const { rows: filled } = await db.query(
+      `select (select count(*)::int from itsupport.staff) as staff,
+         (select count(*)::int from itsupport.helpdesk_tickets) as tickets,
+         (select count(*)::int from itsupport.helpdesk_notes) as notes,
+         (select count(*)::int from itsupport.helpdesk_assignments) as assignments,
+         (select string_agg(helpdesk, ',' order by helpdesk) from itsupport.tickets) as helpdesk`,
+    );
+    expect(filled).toEqual([
+      { staff: 2, tickets: 2, notes: 1, assignments: 1, helpdesk: "builtin,builtin,servicenow" },
+    ]);
+    expect(await notOk(M7)).toEqual([]);
     for (const sql of [down, down]) {
       applied(sql);
       expect(await catalog()).toEqual(before);

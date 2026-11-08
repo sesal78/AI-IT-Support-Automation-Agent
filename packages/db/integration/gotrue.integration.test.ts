@@ -198,20 +198,10 @@ describe("local GoTrue", () => {
     expect(user.password.length).toBeGreaterThanOrEqual(32);
   });
 
-  it("adds a staff row for a role once itsupport.staff exists (migration 0007, P5-B2)", async () => {
+  it("adds a staff row for a role (itsupport.staff, migration 0007)", async () => {
     const db = clientFor(live().pg);
     await db.connect();
     try {
-      const { rows } = await db.query<{ present: boolean }>(
-        "select to_regclass('itsupport.staff') is not null as present",
-      );
-      if (!rows[0]?.present) {
-        // TODO(P5-B2): once 0007 is in MIGRATIONS only the branch below runs.
-        await expect(createTestStaffUser(live(), { role: "agent" })).rejects.toThrow(
-          /itsupport\.staff does not exist.*0007 \(P5-B2\)/,
-        );
-        return;
-      }
       for (const [role, active] of [
         ["agent", true],
         ["admin", false],
