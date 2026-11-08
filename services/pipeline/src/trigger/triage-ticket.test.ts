@@ -57,6 +57,7 @@ const REDACTED = {
 function ticket(status = "redacted", isTest = false): Ticket {
   return {
     id: ticketId,
+    ticket_number: "ITS-000042",
     source: "web",
     raw_title: `${MARKERS.title} VPN drops`,
     raw_description: `${MARKERS.description} call 0491 570 156`,
