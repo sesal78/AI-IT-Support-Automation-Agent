@@ -159,11 +159,11 @@ from (
   select 'triggers itsupport.' || t.tbl, r.oid is not null and (
     select coalesce(string_agg(g.tgname, ', ' order by g.tgname), '') from pg_catalog.pg_trigger g
     where g.tgrelid = r.oid and not g.tgisinternal
-      and g.tgfoid = (select f.p from f) and g.tgenabled = 'A'
   ) = t.trg and not exists (
-    -- No other user trigger, rewrite rule or publication.
+    -- All user trigger names must match; every guard must use the function in ALWAYS mode.
     select 1 from pg_catalog.pg_trigger g
-    where g.tgrelid = r.oid and not g.tgisinternal and g.tgfoid <> (select f.p from f)
+    where g.tgrelid = r.oid and not g.tgisinternal
+      and (g.tgfoid is distinct from (select f.p from f) or g.tgenabled <> 'A')
     union all
     select 1 from pg_catalog.pg_rewrite w where w.ev_class = r.oid
     union all
