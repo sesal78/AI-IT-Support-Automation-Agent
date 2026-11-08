@@ -801,6 +801,11 @@ describe("migration 0007 on 0001-0006 with phase-4 rows and Supabase-like defaul
         ["rls itsupport.helpdesk_tickets"],
       ],
       [
+        `create trigger unexpected_staff_insert before insert on itsupport.staff
+         for each row execute function itsupport.reject_helpdesk_log_change()`,
+        ["triggers itsupport.staff"],
+      ],
+      [
         "drop trigger helpdesk_assignments_append_only_row on itsupport.helpdesk_assignments",
         ["triggers itsupport.helpdesk_assignments"],
       ],
