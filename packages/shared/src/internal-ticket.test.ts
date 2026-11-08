@@ -42,7 +42,8 @@ describe("internalTicketViewSchema", () => {
   });
 
   it("rejects a view without a number, or with a bad one", () => {
-    const { number: _number, ...withoutNumber } = valid;
+    const withoutNumber: Partial<typeof valid> = { ...valid };
+    delete withoutNumber.number;
     expect(internalTicketViewSchema.safeParse(withoutNumber).success).toBe(false);
     for (const number of ["ITS-1", "its-000042", "ITS-0000042", "INC0010001", ID, 42]) {
       expect(internalTicketViewSchema.safeParse({ ...valid, number }).success, String(number)).toBe(
