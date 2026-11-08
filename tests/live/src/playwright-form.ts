@@ -1,8 +1,8 @@
 import type { FormBrowser } from "./browser-form.ts";
 
-/** How long the page may take to show the ticket ID after the click. */
+/** How long the page may take to show the receipt after the click. */
 const RECEIPT_TIMEOUT_MS = 30_000;
-const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+const TICKET_NUMBER = /ITS-[0-9]{6}/;
 
 /**
  * The extra headers for one browser request: the Access headers when its URL
@@ -72,10 +72,23 @@ export function createPlaywrightFormBrowser(
           await page.getByLabel(label, { exact: true }).fill(value);
         }
         await beforeSubmit();
+        // The page no longer shows the UUID (P5-T1c): read it from the form's own answer.
+        const answered = page.waitForResponse(
+          (response) =>
+            response.request().method() === "POST" &&
+            new URL(response.url()).pathname === "/api/tickets",
+          { timeout: RECEIPT_TIMEOUT_MS },
+        );
         await page.getByRole("button", { name: "Submit ticket" }).click();
         const receipt = page.getByRole("status").filter({ hasText: "Ticket received" });
         await receipt.waitFor({ timeout: RECEIPT_TIMEOUT_MS });
-        return { ticketId: UUID.exec(await receipt.innerText())?.[0]?.toLowerCase() ?? null };
+        const answer = (await (await answered).json().catch(() => null)) as {
+          ticketId?: unknown;
+        } | null;
+        return {
+          ticketId: typeof answer?.ticketId === "string" ? answer.ticketId.toLowerCase() : null,
+          ticketNumber: TICKET_NUMBER.exec(await receipt.innerText())?.[0] ?? null,
+        };
       } finally {
         await browser.close();
       }

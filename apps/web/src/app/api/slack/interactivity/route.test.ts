@@ -39,7 +39,7 @@ async function load(): Promise<Route> {
   return import("./route");
 }
 
-function signedApprove(): Request {
+function signedApprove(value: string = REVIEW_ID): Request {
   const body = `payload=${encodeURIComponent(
     JSON.stringify({
       type: "block_actions",
@@ -47,7 +47,7 @@ function signedApprove(): Request {
       channel: { id: "C0000000001" },
       container: { message_ts: TS },
       response_url: "https://hooks.slack.com/actions/T0/1/abc",
-      actions: [{ action_id: "review_approve", value: REVIEW_ID }],
+      actions: [{ action_id: "review_approve", value }],
     }),
   )}`;
   const timestamp = String(Math.floor(Date.now() / 1000));
@@ -95,6 +95,22 @@ describe("POST /api/slack/interactivity", () => {
       reviewId: REVIEW_ID,
       decision: "approve",
     });
+  });
+
+  // T5.S.07: a ticket number where a UUID is expected is refused like any other non-UUID.
+  it("refuses a ticket number as the button value like any other non-UUID, and reads nothing", async () => {
+    const { POST } = await load();
+    const other = await POST(signedApprove("not-a-uuid"));
+    expect(other.status).toBeGreaterThanOrEqual(400);
+    const otherBody = await other.text();
+    for (const fake of Object.values(fakes)) fake.mockClear();
+
+    const res = await POST(signedApprove("ITS-000001"));
+    expect(res.status).toBe(other.status);
+    expect(await res.text()).toBe(otherBody);
+    for (const name of ["getReview", "getTicket", "decideReview", "completeToken"] as const) {
+      expect(fakes[name], name).not.toHaveBeenCalled();
+    }
   });
 
   it("records a refusal as a slack security event", async () => {

@@ -2,14 +2,27 @@ import { describe, expect, it } from "vitest";
 import { interpretSubmitResponse } from "./submit-result";
 
 const TICKET_ID = "3f0c9a1e-7b2d-4c55-9e1a-2b8f6d4c1a90";
+const TICKET_NUMBER = "ITS-000042";
 
 describe("interpretSubmitResponse", () => {
-  it("returns the ticket id on 201", () => {
-    expect(interpretSubmitResponse(201, { ticketId: TICKET_ID, queued: true })).toEqual({
-      kind: "success",
-      ticketId: TICKET_ID,
-    });
+  it("returns the ticket id and number on 201", () => {
+    expect(
+      interpretSubmitResponse(201, {
+        ticketId: TICKET_ID,
+        ticketNumber: TICKET_NUMBER,
+        queued: true,
+      }),
+    ).toEqual({ kind: "success", ticketId: TICKET_ID, ticketNumber: TICKET_NUMBER });
   });
+
+  it.each([undefined, "", "ITS-1", "its-000042", "INC0010001", 42])(
+    "treats a 201 with ticket number %j as an error",
+    (ticketNumber) => {
+      expect(
+        interpretSubmitResponse(201, { ticketId: TICKET_ID, ticketNumber, queued: true }),
+      ).toMatchObject({ kind: "error" });
+    },
+  );
 
   it("treats a 201 without a ticket id as an error", () => {
     expect(interpretSubmitResponse(201, {})).toMatchObject({ kind: "error" });

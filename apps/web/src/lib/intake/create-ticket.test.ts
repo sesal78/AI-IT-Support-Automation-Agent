@@ -6,6 +6,7 @@ vi.mock("@trigger.dev/sdk", () => ({ tasks: { trigger } }));
 import { createAndEnqueueTicket } from "./create-ticket";
 
 const TICKET_ID = "11111111-1111-4111-8111-111111111111";
+const TICKET_NUMBER = "ITS-000042";
 const input = {
   name: "Jo Tester",
   email: "jo@example.test",
@@ -22,7 +23,9 @@ const db = { createTicket, addEvent } as never;
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.spyOn(console, "error").mockImplementation(() => {});
-  createTicket.mockReset().mockResolvedValue({ ticket: { id: TICKET_ID }, created: true });
+  createTicket
+    .mockReset()
+    .mockResolvedValue({ ticket: { id: TICKET_ID, ticket_number: TICKET_NUMBER }, created: true });
   addEvent.mockReset().mockResolvedValue({});
   trigger.mockReset().mockResolvedValue({ id: "run_1" });
 });
@@ -34,7 +37,7 @@ describe("createAndEnqueueTicket", () => {
       isTest: true,
       testOverrides: { llmCallCap: 0 },
     });
-    expect(result).toEqual({ outcome: "queued", ticketId: TICKET_ID });
+    expect(result).toEqual({ outcome: "queued", ticketId: TICKET_ID, ticketNumber: TICKET_NUMBER });
     expect(createTicket).toHaveBeenCalledWith(expect.objectContaining({ is_test: true }));
     expect(trigger).toHaveBeenCalledWith("intake-ticket", {
       ticketId: TICKET_ID,
@@ -53,9 +56,16 @@ describe("createAndEnqueueTicket", () => {
   });
 
   it("returns duplicate and does not trigger on a repeated idempotency key", async () => {
-    createTicket.mockResolvedValue({ ticket: { id: TICKET_ID }, created: false });
+    createTicket.mockResolvedValue({
+      ticket: { id: TICKET_ID, ticket_number: TICKET_NUMBER },
+      created: false,
+    });
     const result = await createAndEnqueueTicket(db, { ...input, isTest: false });
-    expect(result).toEqual({ outcome: "duplicate", ticketId: TICKET_ID });
+    expect(result).toEqual({
+      outcome: "duplicate",
+      ticketId: TICKET_ID,
+      ticketNumber: TICKET_NUMBER,
+    });
     expect(trigger).not.toHaveBeenCalled();
     expect(addEvent).not.toHaveBeenCalled();
   });
@@ -63,7 +73,11 @@ describe("createAndEnqueueTicket", () => {
   it("records enqueue_failed when the trigger fails", async () => {
     trigger.mockRejectedValue(new Error("down"));
     const result = await createAndEnqueueTicket(db, { ...input, isTest: false });
-    expect(result).toEqual({ outcome: "enqueue_failed", ticketId: TICKET_ID });
+    expect(result).toEqual({
+      outcome: "enqueue_failed",
+      ticketId: TICKET_ID,
+      ticketNumber: TICKET_NUMBER,
+    });
     expect(addEvent).toHaveBeenCalledWith(TICKET_ID, "enqueue_failed", { error: "Error" });
   });
 

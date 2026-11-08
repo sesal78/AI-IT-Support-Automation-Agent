@@ -63,7 +63,7 @@ beforeEach(() => {
     const existing = ids.get(input.idempotency_key);
     const id = existing ?? crypto.randomUUID();
     ids.set(input.idempotency_key, id);
-    return { ticket: { id }, created: existing === undefined };
+    return { ticket: { id, ticket_number: "ITS-000042" }, created: existing === undefined };
   });
 });
 afterEach(() => {
@@ -88,8 +88,9 @@ describe("POST /api/internal/test-tickets with E2E_MODE=true", () => {
       expect(res.status).toBe(201);
     }
     const res = await route.POST(post(valid));
-    const body = (await res.json()) as { ticketId: string };
+    const body = (await res.json()) as { ticketId: string; ticketNumber: string };
     expect(body.ticketId).toMatch(UUID_RE);
+    expect(body.ticketNumber).toBe("ITS-000042");
     expect(repo.createTicket).toHaveBeenLastCalledWith(
       expect.objectContaining({
         source: "web",
@@ -110,11 +111,30 @@ describe("POST /api/internal/test-tickets with E2E_MODE=true", () => {
     });
   });
 
+  // T5.S.07: a ticket number in an ID field is refused like any other non-UUID. Nothing is stored.
+  it.each(["ticketId", "id", "ticket_id"])(
+    "refuses a ticket number in %s like a non-UUID, and stores nothing",
+    async (field) => {
+      const other = await route.POST(post({ ...valid, [field]: "not-a-uuid" }));
+      const res = await route.POST(post({ ...valid, [field]: "ITS-000001" }));
+      expect(res.status).toBe(other.status);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual(await other.json());
+      expect(repo.createTicket).not.toHaveBeenCalled();
+      expect(trigger).not.toHaveBeenCalled();
+    },
+  );
+
   it("returns the same ticket with duplicate: true and triggers once", async () => {
     const first = await (await route.POST(post(valid))).json();
     const res = await route.POST(post(valid));
     expect(res.status).toBe(201);
-    expect(await res.json()).toEqual({ ticketId: first.ticketId, queued: true, duplicate: true });
+    expect(await res.json()).toEqual({
+      ticketId: first.ticketId,
+      ticketNumber: "ITS-000042",
+      queued: true,
+      duplicate: true,
+    });
     expect(trigger).toHaveBeenCalledTimes(1);
   });
 

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ASSIGNMENT_GROUPS, CATEGORIES, PRIORITIES, ROUTES, URGENCIES } from "./triage.js";
 import { TICKET_STATUSES } from "./status.js";
+import { ticketNumberSchema } from "./ticket.js";
 
 const timestamp = z.iso.datetime({ offset: true });
 const nullable = <T extends z.ZodType>(schema: T) => schema.nullable();
@@ -27,6 +28,8 @@ export const internalReviewSchema = z.strictObject({
  */
 export const internalTicketViewSchema = z.strictObject({
   id: z.uuid(),
+  // Display only (P5-T1c): the UUID above stays the only key to open or act on a ticket.
+  number: ticketNumberSchema,
   status: z.enum(TICKET_STATUSES),
   isTest: z.boolean(),
   source: z.enum(["web", "email"]),

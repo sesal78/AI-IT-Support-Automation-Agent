@@ -15,6 +15,7 @@ const MARKER = "m".repeat(20);
 
 const view = {
   id: ID,
+  number: "ITS-000042",
   status: "triaged",
   isTest: false,
   source: "web",
@@ -130,6 +131,28 @@ describe("GET /api/internal/tickets/:id", () => {
     const res = await call(id);
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "invalid_id" });
+    expect(getTicketView).not.toHaveBeenCalled();
+  });
+
+  it("returns the ticket number as number, next to the UUID", async () => {
+    const body = await (await call(ID)).json();
+    expect(body).toMatchObject({ id: ID, number: "ITS-000042" });
+  });
+
+  it("fails with 500 and no value when the repository returns a view with a bad number", async () => {
+    getTicketView.mockResolvedValue({ ...view, number: MARKER });
+    const res = await call(ID);
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toContain(MARKER);
+  });
+
+  // T5.S.07: the number is display only. It opens nothing.
+  it("answers a ticket number as the ID like any other non-UUID, without a database call", async () => {
+    const other = await call("not-a-uuid");
+    const res = await call("ITS-000001");
+    expect(res.status).toBe(other.status);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(await other.json());
     expect(getTicketView).not.toHaveBeenCalled();
   });
 
