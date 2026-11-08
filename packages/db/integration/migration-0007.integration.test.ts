@@ -298,6 +298,76 @@ const withTicketsLocked = async (sql: string) => {
   }
 };
 
+/**
+ * Runs `sql` one statement at a time, each committing on its own, and stops at
+ * the first error: what psql does without --single-transaction but with
+ * ON_ERROR_STOP=1. (`set local` only warns there.)
+ */
+const statementByStatement = async (sql: string): Promise<Attempt> => {
+  for (const statement of sql.replace(/\r\n/g, "\n").split(/;\n/)) {
+    if (!statement.replace(/--.*$/gm, "").trim()) continue;
+    try {
+      await db.query(statement);
+    } catch (error) {
+      const { code, constraint, message } = error as Record<string, string | undefined>;
+      return { ok: false, code, constraint, message };
+    }
+  }
+  return { ok: true, rows: [] };
+};
+
+const settle = (promise: Promise<pg.QueryResult | pg.QueryResult[]>): Promise<Attempt> =>
+  promise.then(
+    (result) => ({ ok: true, rows: (Array.isArray(result) ? result.at(-1)! : result).rows }),
+    (error: Record<string, string | undefined>) => ({ ok: false, code: error.code }),
+  );
+
+/**
+ * A phase 4 reviews insert, step by step, racing `sql`: session B takes the
+ * insert's first lock (ROW EXCLUSIVE on reviews), session A runs `sql` in an
+ * open transaction until it waits, then B inserts an open auto-fix review (its
+ * foreign key check locks tickets) and rolls back. Returns what A waited on,
+ * the tickets locks A held while waiting, B's insert and A's run; A is rolled back.
+ */
+const raceReviewsInsert = async (sql: string) => {
+  const b = clientFor(container!);
+  const a = clientFor(container!);
+  for (const client of [a, b]) {
+    client.on("error", () => undefined);
+    await client.connect();
+  }
+  try {
+    await b.query("begin; lock table itsupport.reviews in row exclusive mode");
+    const pid = (await a.query<{ pid: number }>("select pg_backend_pid() as pid")).rows[0]!.pid;
+    const run = settle(a.query(`begin; ${sql}`));
+    let waitedOn: string | undefined;
+    for (const deadline = Date.now() + 4_000; !waitedOn && Date.now() < deadline; ) {
+      const { rows } = await db.query<{ rel: string }>(
+        "select relation::regclass::text as rel from pg_catalog.pg_locks where pid = $1 and not granted",
+        [pid],
+      );
+      waitedOn = rows[0]?.rel;
+      if (!waitedOn) await new Promise((done) => setTimeout(done, 25));
+    }
+    const { rows: heldOnTickets } = await db.query<{ mode: string }>(
+      `select mode from pg_catalog.pg_locks
+       where pid = $1 and granted and relation = 'itsupport.tickets'::regclass`,
+      [pid],
+    );
+    const insert = await settle(
+      b.query(`insert into itsupport.reviews (ticket_id, kind, proposal_id, wait_token_id)
+        values ('${OPEN}', 'autofix', gen_random_uuid(), 'waitpoint_test_race') returning kind`),
+    );
+    await b.query("rollback").catch(() => undefined);
+    const result = await run;
+    return { waitedOn, heldOnTickets: heldOnTickets.map((r) => r.mode), insert, result };
+  } finally {
+    await a.query("rollback").catch(() => undefined);
+    await b.query("rollback").catch(() => undefined);
+    await Promise.all([a.end().catch(() => undefined), b.end().catch(() => undefined)]);
+  }
+};
+
 beforeAll(async () => {
   container = await startPgContainer();
   db = clientFor(container);
@@ -346,6 +416,18 @@ describe("migration 0007 on 0001-0006 with phase-4 rows and Supabase-like defaul
       { decision: "timeout", slack: false },
       { decision: null, slack: false },
     ]);
+  });
+
+  it("up locks reviews, then tickets, before anything else: a racing reviews insert ends without 40P01", async () => {
+    const race = await raceReviewsInsert(up);
+    // Up waits at its first lock and holds nothing on tickets meanwhile.
+    expect(race.waitedOn).toBe("itsupport.reviews");
+    expect(race.heldOnTickets).toEqual([]);
+    expect(race.insert).toEqual({ ok: true, rows: [{ kind: "autofix" }] });
+    expect(race.result).toEqual(passes);
+    // Both sides were rolled back.
+    expect(await catalog()).toEqual(before);
+    expect(await tableRows()).toEqual(seeded);
   });
 
   it("before 0007 every 0007 check row is ok = false; the 0003-0006 checks are all true", async () => {
@@ -643,6 +725,14 @@ describe("migration 0007 on 0001-0006 with phase-4 rows and Supabase-like defaul
     }
   });
 
+  it("up swaps the reviews decider checks in one ALTER statement", () => {
+    const statements = up.replace(/\r\n/g, "\n").split(/;\n/);
+    const swap = statements.filter((s) => s.includes("drop constraint if exists reviews_slack_user_check"));
+    expect(swap).toHaveLength(1);
+    expect(swap[0]).toContain("add constraint reviews_decided_by_check");
+    expect(swap[0]).toContain("drop constraint if exists reviews_decided_by_check");
+  });
+
   it("anon and authenticated get 42501 on every new table; service_role selects, inserts and updates but cannot delete", async () => {
     for (const table of TABLES) {
       for (const role of ["anon", "authenticated"])
@@ -838,6 +928,10 @@ describe("migration 0007 on 0001-0006 with phase-4 rows and Supabase-like defaul
     expect(result.stderr).toMatch(
       /ERROR: {2}23514: check constraint "reviews_slack_user_check" of relation "reviews" is violated by some row/,
     );
+    expect(await catalog()).toEqual(afterUp);
+    // Run statement by statement, the refusal still comes first: the check is
+    // restored before staff_id or anything else is dropped.
+    expect(await statementByStatement(down)).toEqual(fails("23514", "reviews_slack_user_check"));
     expect(await catalog()).toEqual(afterUp);
     await db.query(`update itsupport.reviews set decision = null, staff_id = null, decided_at = null
       where ticket_id = '${OPEN}'; delete from itsupport.staff`);
