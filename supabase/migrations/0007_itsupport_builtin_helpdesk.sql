@@ -19,14 +19,21 @@
 -- 0003 to 0006 checks also stay all ok = true.
 -- Applying this to the shared Supabase database is human step H28b.
 -- Apply as ONE transaction: Supabase Studio runs a script as one transaction; with psql use --single-transaction.
--- Locks wait at most 5 s. Error 55P03 (lock_not_available) means another
--- session held a table: wait and re-run; nothing was applied.
+-- Locks wait at most 5 s. H28b: on error 55P03 (lock_not_available, another
+-- session held a table) or 40P01 (deadlock_detected), nothing was applied:
+-- wait and re-run.
 -- The down file is DESTRUCTIVE for the new tables only (every staff row,
 -- helpdesk ticket, note and assignment, the transitions, tickets.helpdesk and
 -- reviews.staff_id); it needs human approval.
 -- The one identity sequence (helpdesk_tickets.seq) is locked as in 0004.
+-- For 0008 and its parity test: service_role may insert and update
+-- helpdesk_state_transitions (the grant below); guard that table there.
 
 set local lock_timeout = '5s';
+-- Both existing tables first, in the order a phase 4 reviews insert takes them
+-- (reviews, then tickets for its foreign key), so 0007 never holds tickets
+-- while it waits for reviews (that would be a 40P01 deadlock).
+lock table itsupport.reviews, itsupport.tickets in access exclusive mode;
 
 -- New tables carry their named constraints inline: `if not exists` skips a
 -- re-run, which leaves the first run's definitions (the check query compares them).
@@ -144,7 +151,6 @@ drop trigger if exists helpdesk_assignments_append_only_truncate on itsupport.he
 create trigger helpdesk_assignments_append_only_truncate
   before truncate on itsupport.helpdesk_assignments
   for each statement execute function itsupport.reject_helpdesk_log_change();
-
 -- ALWAYS: the guard also fires with session_replication_role = replica.
 alter table itsupport.helpdesk_notes
   enable always trigger helpdesk_notes_append_only_row,
@@ -154,21 +160,22 @@ alter table itsupport.helpdesk_assignments
   enable always trigger helpdesk_assignments_append_only_truncate;
 
 -- The helpdesk a ticket lives in (G2); null until a helpdesk ticket exists.
+-- For P5-T14: a null helpdesk means the ticket has no helpdesk yet.
 alter table itsupport.tickets add column if not exists helpdesk text;
 alter table itsupport.tickets drop constraint if exists tickets_helpdesk_check;
 alter table itsupport.tickets
   add constraint tickets_helpdesk_check check (helpdesk in ('servicenow', 'builtin'));
 
 -- An admin may decide a review from the helpdesk (G9). The old check is
--- swapped for the new one under this transaction's ACCESS EXCLUSIVE lock on
--- reviews, so no row is written in between. Adding the check validates every
--- existing row: a phase 4 row has staff_id null, so it passes as before.
+-- swapped for the new one in ONE statement, under this transaction's ACCESS
+-- EXCLUSIVE lock on reviews, so reviews is never without a decider check.
+-- Adding the check validates every existing row: a phase 4 row has staff_id
+-- null, so it passes as before.
 alter table itsupport.reviews add column if not exists staff_id uuid;
 alter table itsupport.reviews
   drop constraint if exists reviews_staff_id_fkey,
   drop constraint if exists reviews_slack_user_check,
-  drop constraint if exists reviews_decided_by_check;
-alter table itsupport.reviews
+  drop constraint if exists reviews_decided_by_check,
   add constraint reviews_staff_id_fkey foreign key (staff_id)
     references itsupport.staff (id) on delete restrict,
   -- approve and reject name exactly one decider; timeout and an open row name

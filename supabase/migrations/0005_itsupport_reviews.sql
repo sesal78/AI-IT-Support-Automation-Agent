@@ -5,7 +5,10 @@
 -- ticket: a triage review, or an auto-fix review of one proposal. Internal
 -- data (docs/PROJECT.md §5); slack_user_id holds a Slack user ID, not a name.
 -- Touches only the `itsupport` schema. Requires 0001 to 0004.
--- Idempotent: safe to run more than once. Reverse with
+-- Idempotent before 0007 only: do NOT re-run this file once 0007 is applied.
+-- It would re-add reviews_slack_user_check beside 0007's
+-- reviews_decided_by_check, and a review decided from the helpdesk (staff_id,
+-- no Slack user) could then no longer be written. Reverse with
 -- 0005_itsupport_reviews.down.sql. Verify with
 -- supabase/checks/0005_itsupport_reviews.check.sql.
 -- Applying this to the shared Supabase database is human step H15.
