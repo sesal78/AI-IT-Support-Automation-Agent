@@ -8,7 +8,8 @@
 -- generation expression) and identity; `constraints` lists every constraint
 -- of the table, and each `constraint` row is ok when it exists and its
 -- definition is exactly the expected one (Postgres 17); `indexes` means no
--- index other than the constraint ones; `triggers` lists every user trigger;
+-- index other than the constraint ones; `triggers` lists every user trigger,
+-- each enabled ALWAYS (tgenabled = 'A', so it fires under replica too);
 -- `grants` lists every table and column privilege held by a role other than
 -- the owner (service_role INSERT, SELECT and UPDATE only); `privileges <role>`
 -- asks has_table_privilege and has_any_column_privilege directly: public,
@@ -158,7 +159,7 @@ from (
   select 'triggers itsupport.' || t.tbl, r.oid is not null and (
     select coalesce(string_agg(g.tgname, ', ' order by g.tgname), '') from pg_catalog.pg_trigger g
     where g.tgrelid = r.oid and not g.tgisinternal
-      and g.tgfoid = (select f.p from f)
+      and g.tgfoid = (select f.p from f) and g.tgenabled = 'A'
   ) = t.trg and not exists (
     -- No other user trigger, rewrite rule or publication.
     select 1 from pg_catalog.pg_trigger g
