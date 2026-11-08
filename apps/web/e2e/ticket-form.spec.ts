@@ -4,6 +4,7 @@ import { expect, test, type Page } from "@playwright/test";
 // TURNSTILE_SITE_KEY for the web server in playwright.config.ts.
 const TEST_SITE_KEY = `1x${"0".repeat(20)}AA`;
 const TICKET_ID = "3f0c9a1e-7b2d-4c55-9e1a-2b8f6d4c1a90";
+const TICKET_NUMBER = "ITS-000042";
 const STUB_TOKEN = "e2e-turnstile-token";
 
 // Stands in for challenges.cloudflare.com so the tests never use the network:
@@ -66,11 +67,14 @@ test("the Turnstile container uses the test site key", async ({ page }) => {
   expect(consoleErrors).toEqual([]);
 });
 
-test("a successful submit shows Ticket received and the ticket ID", async ({ page }) => {
+test("a successful submit shows Ticket received and the ticket number", async ({ page }) => {
   let sent: Record<string, unknown> | undefined;
   await page.route("**/api/tickets", async (route) => {
     sent = route.request().postDataJSON();
-    await route.fulfill({ status: 201, json: { ticketId: TICKET_ID, queued: true } });
+    await route.fulfill({
+      status: 201,
+      json: { ticketId: TICKET_ID, ticketNumber: TICKET_NUMBER, queued: true },
+    });
   });
   await page.goto("/");
   await waitForToken(page);
@@ -78,7 +82,8 @@ test("a successful submit shows Ticket received and the ticket ID", async ({ pag
   await page.getByRole("button", { name: "Submit ticket" }).click();
 
   await expect(page.getByText("Ticket received")).toBeVisible();
-  await expect(page.getByText(TICKET_ID)).toBeVisible();
+  await expect(page.getByText(`Your ticket number is ${TICKET_NUMBER}`)).toBeVisible();
+  await expect(page.getByText(TICKET_ID)).toHaveCount(0);
   expect(sent).toMatchObject({
     name: "Jo Tester",
     email: "jo@example.com",
@@ -93,7 +98,10 @@ test("an empty title shows a field error under Title and sends no request", asyn
   let requests = 0;
   await page.route("**/api/tickets", async (route) => {
     requests += 1;
-    await route.fulfill({ status: 201, json: { ticketId: TICKET_ID, queued: true } });
+    await route.fulfill({
+      status: 201,
+      json: { ticketId: TICKET_ID, ticketNumber: TICKET_NUMBER, queued: true },
+    });
   });
   await page.goto("/");
   await waitForToken(page);
@@ -166,6 +174,15 @@ for (const colorScheme of ["light", "dark"] as const) {
     }, background);
     if (colorScheme === "light") expect(lightness).toBeGreaterThan(200);
     else expect(lightness).toBeLessThan(60);
+    await page.route("**/api/tickets", (route) =>
+      route.fulfill({
+        status: 201,
+        json: { ticketId: TICKET_ID, ticketNumber: TICKET_NUMBER, queued: true },
+      }),
+    );
+    await fillAll(page);
+    await page.getByRole("button", { name: "Submit ticket" }).click();
+    await expect(page.getByText(`Your ticket number is ${TICKET_NUMBER}`)).toBeVisible();
     expect(consoleErrors).toEqual([]);
   });
 }

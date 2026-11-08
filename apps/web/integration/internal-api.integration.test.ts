@@ -49,6 +49,7 @@ const stack = (): RestStack => {
 };
 
 type Handlers = {
+  form: typeof import("../src/app/api/tickets/route");
   ticket: typeof import("../src/app/api/internal/tickets/[id]/route");
   testTickets: typeof import("../src/app/api/internal/test-tickets/route");
   usage: typeof import("../src/app/api/internal/usage/route");
@@ -78,6 +79,7 @@ async function load(target: RestStack, e2eMode: boolean): Promise<Handlers> {
   vi.stubEnv("SLACK_CHANNEL_ID", "C0000000000");
   vi.stubEnv("E2E_MODE", e2eMode ? "true" : "false");
   return {
+    form: await import("../src/app/api/tickets/route"),
     ticket: await import("../src/app/api/internal/tickets/[id]/route"),
     testTickets: await import("../src/app/api/internal/test-tickets/route"),
     usage: await import("../src/app/api/internal/usage/route"),
@@ -360,6 +362,130 @@ describe("privacy boundary with E2E_MODE=true", () => {
 
     for (const text of [viewText, await usage.text(), await events.text()]) {
       for (const value of forbidden) expect(text).not.toContain(value);
+    }
+  });
+});
+
+describe("ticket number (P5-T1c)", () => {
+  const NUMBER_RE = /^ITS-[0-9]{6}$/;
+  const SITEVERIFY = "challenges.cloudflare.com";
+  const formBody = (n: number) => ({
+    name: "Jo Tester",
+    email: "jo.tester@example.test",
+    department: "Finance",
+    title: `Number test ${n}`,
+    description: `Number test description ${n}`,
+    turnstileToken: "fake-token",
+  });
+  const formPost = (body: unknown, key: string) =>
+    new Request(`${BASE}/tickets`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": "203.0.113.9",
+        "idempotency-key": key,
+      },
+      body: JSON.stringify(body),
+    });
+
+  /** Answers Turnstile; passes every other request to the REST stack and records the ticket inserts. */
+  function spyOnFetch() {
+    const realFetch = globalThis.fetch;
+    const inserts: unknown[] = [];
+    const urls: string[] = [];
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      urls.push(url.toString());
+      if (url.hostname === SITEVERIFY) return Response.json({ success: true });
+      if (
+        init?.method === "POST" &&
+        url.pathname.endsWith("/rest/v1/tickets") &&
+        typeof init.body === "string"
+      ) {
+        inserts.push(JSON.parse(init.body));
+      }
+      return realFetch(input, init);
+    });
+    return { inserts, urls, restore: () => spy.mockRestore() };
+  }
+
+  const numeric = (ticketNumber: string) => Number(ticketNumber.slice(4));
+
+  it("answers a form submit with a number, the next submit with the next number, a duplicate with the first", async () => {
+    const app = await load(stack(), false);
+    trigger.mockResolvedValue({ id: "run_1" });
+    const spy = spyOnFetch();
+    try {
+      const first = await app.form.POST(formPost(formBody(1), "number-key-1"));
+      expect(first.status).toBe(201);
+      const one = (await first.json()) as { ticketId: string; ticketNumber: string };
+      expect(one.ticketNumber).toMatch(NUMBER_RE);
+
+      const next = await app.form.POST(formPost(formBody(2), "number-key-2"));
+      expect(next.status).toBe(201);
+      const two = (await next.json()) as { ticketId: string; ticketNumber: string };
+      expect(numeric(two.ticketNumber)).toBe(numeric(one.ticketNumber) + 1);
+
+      const again = await app.form.POST(formPost(formBody(1), "number-key-1"));
+      expect(again.status).toBe(201);
+      expect(await again.json()).toEqual({
+        ticketId: one.ticketId,
+        ticketNumber: one.ticketNumber,
+        queued: true,
+        duplicate: true,
+      });
+
+      // The insert never sends the number: the database default makes it.
+      expect(spy.inserts).toHaveLength(3);
+      for (const body of spy.inserts) expect(body).not.toHaveProperty("ticket_number");
+
+      // The internal view carries the same number next to the UUID.
+      const view = await app.ticket.GET(
+        get(`/internal/tickets/${one.ticketId}`, authed),
+        idContext(one.ticketId),
+      );
+      expect(view.status).toBe(200);
+      expect(await view.json()).toMatchObject({ id: one.ticketId, number: one.ticketNumber });
+    } finally {
+      spy.restore();
+    }
+  });
+
+  it("answers a test ticket with a number too, and a repeated testId with the first one", async () => {
+    const app = await load(stack(), true);
+    trigger.mockResolvedValue({ id: "run_1" });
+    const body = { ...formBody(3), testId: "number-test-1" } as Record<string, unknown>;
+    delete body["turnstileToken"];
+    const created = (await (
+      await app.testTickets.POST(post("/internal/test-tickets", body))
+    ).json()) as {
+      ticketId: string;
+      ticketNumber: string;
+    };
+    expect(created.ticketNumber).toMatch(NUMBER_RE);
+    const repeated = await app.testTickets.POST(post("/internal/test-tickets", body));
+    expect(await repeated.json()).toEqual({ ...created, queued: true, duplicate: true });
+  });
+
+  // T5.S.07: the number is display only. It opens nothing and reads nothing.
+  it("refuses a ticket number as the ID like any non-UUID, without reading the database", async () => {
+    const app = await load(stack(), false);
+    const spy = spyOnFetch();
+    try {
+      const other = await app.ticket.GET(
+        get("/internal/tickets/not-a-uuid", authed),
+        idContext("not-a-uuid"),
+      );
+      const res = await app.ticket.GET(
+        get("/internal/tickets/ITS-000001", authed),
+        idContext("ITS-000001"),
+      );
+      expect(res.status).toBe(other.status);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual(await other.json());
+      expect(spy.urls.filter((url) => url.includes("/rest/v1/"))).toEqual([]);
+    } finally {
+      spy.restore();
     }
   });
 });
