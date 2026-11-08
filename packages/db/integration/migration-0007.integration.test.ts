@@ -341,7 +341,7 @@ const raceReviewsInsert = async (sql: string) => {
     const pid = (await a.query<{ pid: number }>("select pg_backend_pid() as pid")).rows[0]!.pid;
     const run = settle(a.query(`begin; ${sql}`));
     let waitedOn: string | undefined;
-    for (const deadline = Date.now() + 4_000; !waitedOn && Date.now() < deadline; ) {
+    for (const deadline = Date.now() + 4_000; !waitedOn && Date.now() < deadline;) {
       const { rows } = await db.query<{ rel: string }>(
         "select relation::regclass::text as rel from pg_catalog.pg_locks where pid = $1 and not granted",
         [pid],
@@ -727,7 +727,9 @@ describe("migration 0007 on 0001-0006 with phase-4 rows and Supabase-like defaul
 
   it("up swaps the reviews decider checks in one ALTER statement", () => {
     const statements = up.replace(/\r\n/g, "\n").split(/;\n/);
-    const swap = statements.filter((s) => s.includes("drop constraint if exists reviews_slack_user_check"));
+    const swap = statements.filter((s) =>
+      s.includes("drop constraint if exists reviews_slack_user_check"),
+    );
     expect(swap).toHaveLength(1);
     expect(swap[0]).toContain("add constraint reviews_decided_by_check");
     expect(swap[0]).toContain("drop constraint if exists reviews_decided_by_check");
