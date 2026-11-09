@@ -22,15 +22,17 @@ export interface ContractCase {
 
 const RAW_MARKER = "MARKER-RAW-DESCRIPTION-7f3a";
 const NAME_MARKER = "MARKER-REQUESTER-NAME-9c1d";
+let counter = 0;
 
 function input(isTest: boolean, extra: object = {}): CreateHelpdeskTicketInput {
   return {
     ticketId: randomUUID(),
+    ticketNumber: `ITS-${String(++counter).padStart(6, "0")}`,
     isTest,
-    redactedTitle: "[E2E] Printer offline",
+    redactedTitle: "Printer offline",
     redactedDescription: "The printer on level 2 is offline.",
     category: "hardware",
-    priority: "medium",
+    priority: "P3",
     assignmentGroup: null,
     requesterEmail: null,
     ...extra,

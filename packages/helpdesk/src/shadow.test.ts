@@ -16,6 +16,7 @@ const MARKER_DESC = "MARKER-DESC-93ab";
 const MARKER_NOTE = "MARKER-NOTE-5e2f";
 const input: CreateHelpdeskTicketInput = {
   ticketId: TICKET_ID,
+  ticketNumber: "ITS-000001",
   isTest: true,
   redactedTitle: MARKER_TITLE,
   redactedDescription: MARKER_DESC,

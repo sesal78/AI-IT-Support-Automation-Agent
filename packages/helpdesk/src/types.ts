@@ -19,6 +19,8 @@ export interface HelpdeskTicketRef {
 /** Redacted fields only: there is no field for raw text or a requester name. */
 export interface CreateHelpdeskTicketInput {
   ticketId: string;
+  /** The display number (`ITS-000042`); never a key. */
+  ticketNumber: string;
   isTest: boolean;
   redactedTitle: string;
   redactedDescription: string;
