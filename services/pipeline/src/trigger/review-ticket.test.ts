@@ -339,6 +339,48 @@ describe("runReviewTicket", () => {
     expect(JSON.stringify(h.slack.postMessage.mock.calls[0])).toContain("VPN [redacted] down");
   });
 
+  describe("ticket number on the cards (P5-T1d)", () => {
+    const withNumber = (number: string, status = "triaged"): Ticket => ({
+      ...ticket(status),
+      ticket_number: number,
+    });
+    const contextOf = (blocks: unknown[] | undefined, id: string): string =>
+      JSON.stringify(
+        (blocks as Array<{ block_id?: string }> | undefined)?.find((b) => b.block_id === id),
+      );
+
+    it("passes the stored number to the review card, not the UUID prefix", async () => {
+      const h = harness({ found: withNumber("ITS-000777") });
+      await run(h);
+      const context = contextOf(h.slack.postMessage.mock.calls[0]?.[0].blocks, "review_context");
+      expect(context).toContain("Ticket ITS-000777 · staging · decide within 24h, then it goes");
+      expect(context).not.toContain(TICKET.slice(0, 8));
+    });
+
+    it.each([
+      ["approve", "approve"],
+      ["timeout", "timeout"],
+    ] as const)("ends the %s card summary with the stored number", async (_name, decision) => {
+      const h = harness({
+        found: withNumber("ITS-000777"),
+        ...(decision === "timeout" ? { decision: null, tokenOk: false } : { decision }),
+      });
+      await run(h);
+      const summary = contextOf(h.slack.updateMessage.mock.calls[0]?.[0].blocks, "review_summary");
+      expect(summary).toContain(" · ticket ITS-000777");
+      expect(summary).not.toContain(TICKET.slice(0, 8));
+    });
+
+    it("posts nothing when the stored number is malformed, and names the field only", async () => {
+      const h = harness({ found: withNumber("ITS-42") });
+      const error = await run(h).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(TypeError);
+      expect((error as Error).message).toBe("review card: ticketNumber must be a ticket number");
+      expect(h.slack.postMessage).not.toHaveBeenCalled();
+      expect(h.repos.setReviewSlackTs).not.toHaveBeenCalled();
+    });
+  });
+
   it("posts the full steps as a thread reply to the card", async () => {
     const h = harness({ triage: triage("review", 5) });
     await run(h);

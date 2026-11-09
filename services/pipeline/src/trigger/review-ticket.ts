@@ -314,6 +314,7 @@ async function cardInput(
   return {
     reviewId: review.id,
     ticketId,
+    ticketNumber: ticket.ticket_number,
     environment: deps.environment,
     timeout,
     redactedTitle: redaction.redacted_title,

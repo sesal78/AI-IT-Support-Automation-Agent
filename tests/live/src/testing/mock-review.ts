@@ -143,7 +143,7 @@ function reviewCard(ticket: MockReviewTicket, reviewId: string): MockCard {
         type: "context",
         elements: [
           plain(
-            `Ticket ${ticket.id.slice(0, 8)} · e2e · decide within ${ticket.timeoutLabel}, then it goes to the manual queue`,
+            `Ticket ${ticket.number} · e2e · decide within ${ticket.timeoutLabel}, then it goes to the manual queue`,
           ),
         ],
       },
