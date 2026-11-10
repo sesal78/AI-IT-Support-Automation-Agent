@@ -1,11 +1,16 @@
 import {
   assertTransition,
+  CATEGORIES,
+  HELPDESK_STATES,
+  PRIORITIES,
   slackUserId as slackUserIdRule,
   ticketNumberSchema,
   triageResultSchema,
   type AiUsage,
+  type Category,
   type InternalTicketView,
   type KbArticle,
+  type Priority,
   type TicketStatus,
   type TriageResult,
 } from "@ai-it-support/shared";
@@ -114,6 +119,30 @@ export const reviewSchema = z.object({
   created_at: timestamp,
 });
 
+// The built-in helpdesk rows (migration 0007). Strict: a column the database
+// returns beyond the named ones is a DbError, not silently dropped.
+export const helpdeskTicketSchema = z.strictObject({
+  id: z.uuid(),
+  ticket_id: z.uuid(),
+  seq: z.number().int(),
+  number: z.string().regex(/^HD[0-9]{7}$/),
+  state: z.enum(HELPDESK_STATES),
+  priority: z.enum(PRIORITIES),
+  category: z.enum(CATEGORIES),
+  assignee_id: z.uuid().nullable(),
+  created_at: timestamp,
+  updated_at: timestamp,
+});
+
+export const helpdeskNoteSchema = z.strictObject({
+  id: z.uuid(),
+  helpdesk_ticket_id: z.uuid(),
+  author_kind: z.enum(["system", "staff"]),
+  author_staff_id: z.uuid().nullable(),
+  body: z.string(),
+  created_at: timestamp,
+});
+
 const kbTitleSchema = kbArticleRowSchema.pick({ id: true, slug: true, title: true });
 
 export const aiReservationSchema = z.object({
@@ -130,6 +159,10 @@ export type Triage = z.infer<typeof triageSchema>;
 export type Review = z.infer<typeof reviewSchema>;
 export type ReviewDecision = NonNullable<Review["decision"]>;
 export type KbArticleTitle = z.infer<typeof kbTitleSchema>;
+
+export type HelpdeskTicket = z.infer<typeof helpdeskTicketSchema>;
+export type HelpdeskNote = z.infer<typeof helpdeskNoteSchema>;
+export type NewHelpdeskTicket = { ticketId: string; priority: Priority; category: Category };
 
 export type KbSearchResult = z.infer<typeof kbSearchResultSchema>;
 export type KbArticleRow = z.infer<typeof kbArticleRowSchema>;
@@ -158,6 +191,10 @@ const VIEW_REVIEW_LIMIT = 100;
 // The full row for the review functions (the decision handler needs wait_token_id).
 const REVIEW_COLUMNS =
   "id,ticket_id,kind,proposal_id,slack_user_id,decision,decided_at,wait_token_id,slack_ts,created_at";
+const HELPDESK_TICKET_COLUMNS =
+  "id,ticket_id,seq,number,state,priority,category,assignee_id,created_at,updated_at";
+const HELPDESK_NOTE_COLUMNS = "id,helpdesk_ticket_id,author_kind,author_staff_id,body,created_at";
+const HELPDESK_NOTE_MAX_CHARS = 5000;
 const KB_TITLE_COLUMNS = "id,slug,title";
 const KB_ARTICLE_COLUMNS = "id,slug,title,content,category,assignment_group";
 const SECURITY_EVENT_COLUMNS = "source,kind,window_start,count";
@@ -755,6 +792,72 @@ export function createRepositories(client: DbClient) {
       const stored = parseRow(op, reviewSchema.nullable(), read);
       if (!stored) throw new DbError(op, "no reviews row with this id");
       return { changed: false, review: stored };
+    },
+
+    /**
+     * Inserts the ticket's built-in helpdesk ticket. A ticket has at most one
+     * (unique key on ticket_id): on a duplicate the existing row is returned
+     * unchanged with created: false, so a retry gets the same row and number.
+     * A non-UUID id, priority or category is a TypeError before any request.
+     */
+    async createHelpdeskTicket(
+      input: NewHelpdeskTicket,
+    ): Promise<{ helpdeskTicket: HelpdeskTicket; created: boolean }> {
+      const op = "createHelpdeskTicket";
+      assertUuid(op, "ticketId", input.ticketId);
+      if (!(PRIORITIES as readonly unknown[]).includes(input.priority)) {
+        throw new TypeError(`${op}: unknown priority`);
+      }
+      if (!(CATEGORIES as readonly unknown[]).includes(input.category)) {
+        throw new TypeError(`${op}: unknown category`);
+      }
+      const inserted = await client
+        .from("helpdesk_tickets")
+        .insert({ ticket_id: input.ticketId, priority: input.priority, category: input.category })
+        .select(HELPDESK_TICKET_COLUMNS)
+        .single();
+      if (inserted.error?.code !== UNIQUE_VIOLATION) {
+        return { helpdeskTicket: parseRow(op, helpdeskTicketSchema, inserted), created: true };
+      }
+      const existing = await client
+        .from("helpdesk_tickets")
+        .select(HELPDESK_TICKET_COLUMNS)
+        .eq("ticket_id", input.ticketId)
+        .single();
+      return { helpdeskTicket: parseRow(op, helpdeskTicketSchema, existing), created: false };
+    },
+
+    /** Returns the ticket's helpdesk ticket, or null when it has none. Non-UUID: TypeError. */
+    async getHelpdeskTicketByTicketId(ticketId: string): Promise<HelpdeskTicket | null> {
+      const op = "getHelpdeskTicketByTicketId";
+      assertUuid(op, "ticketId", ticketId);
+      const result = await client
+        .from("helpdesk_tickets")
+        .select(HELPDESK_TICKET_COLUMNS)
+        .eq("ticket_id", ticketId)
+        .maybeSingle();
+      return parseRow(op, helpdeskTicketSchema.nullable(), result);
+    },
+
+    /**
+     * Appends a note written by the system (author_kind `system`, no staff).
+     * `body` is 1 to 5000 characters, counted as the database counts them;
+     * a blank body is a TypeError and a longer one a RangeError, both before
+     * any request. The body is never echoed in an error.
+     */
+    async addSystemNote(helpdeskTicketId: string, body: string): Promise<HelpdeskNote> {
+      const op = "addSystemNote";
+      assertUuid(op, "helpdeskTicketId", helpdeskTicketId);
+      assertText(op, "body", body);
+      if ([...body].length > HELPDESK_NOTE_MAX_CHARS) {
+        throw new RangeError(`${op}: body must be at most ${HELPDESK_NOTE_MAX_CHARS} characters`);
+      }
+      const result = await client
+        .from("helpdesk_notes")
+        .insert({ helpdesk_ticket_id: helpdeskTicketId, author_kind: "system", body })
+        .select(HELPDESK_NOTE_COLUMNS)
+        .single();
+      return parseRow(op, helpdeskNoteSchema, result);
     },
 
     /**
