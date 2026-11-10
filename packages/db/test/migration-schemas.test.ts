@@ -50,7 +50,8 @@ describe("supabase migrations", () => {
 
   it.each(migrationFiles)("%s only touches the itsupport and extensions schemas", (file) => {
     const sql = readFileSync(join(migrationsDir, file), "utf8");
-    const schemas = referencedSchemas(sql);
+    // auth.uid() is the one allowed use of Supabase's auth schema: a read (0008, G6).
+    const schemas = referencedSchemas(sql.replace(/\bauth\.uid\(\)/g, "null"));
 
     expect(schemas).toContain("itsupport");
     expect(schemas.filter((schema) => !allowedSchemas.includes(schema))).toEqual([]);
