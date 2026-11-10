@@ -21,14 +21,14 @@ grant usage on schema itsupport to authenticated;
 -- The caller's active staff ID; null with no JWT, no staff row or an inactive one.
 create or replace function itsupport.current_staff() returns uuid
   language sql stable security definer set search_path = ''
-as $$ select s.id from itsupport.staff s where s.auth_user_id = auth.uid() and s.active $$;
+as $$ select id from itsupport.staff where auth_user_id = auth.uid() and active $$;
 create or replace function itsupport.is_staff() returns boolean
   language sql stable security definer set search_path = ''
 as $$ select itsupport.current_staff() is not null $$;
 create or replace function itsupport.is_admin() returns boolean
   language sql stable security definer set search_path = ''
-as $$ select exists (select 1 from itsupport.staff s
-  where s.auth_user_id = auth.uid() and s.active and s.role = 'admin') $$;
+as $$ select exists (select 1 from itsupport.staff
+  where auth_user_id = auth.uid() and active and role = 'admin') $$;
 revoke all on function itsupport.current_staff(), itsupport.is_staff(), itsupport.is_admin()
   from public, anon, authenticated, service_role;
 grant execute on function itsupport.current_staff(), itsupport.is_staff(), itsupport.is_admin()
