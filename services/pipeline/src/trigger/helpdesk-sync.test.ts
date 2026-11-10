@@ -4,9 +4,11 @@ import {
   type CreateHelpdeskTicketInput,
   type CreatedHelpdeskTicket,
   type HelpdeskConnector,
+  type HelpdeskErrorCode,
   type HelpdeskTicketRef,
 } from "@ai-it-support/helpdesk";
 import { assertTransition, type TicketStatus } from "@ai-it-support/shared";
+import { AbortTaskRunError } from "@trigger.dev/sdk";
 import { describe, expect, it, vi } from "vitest";
 import { helpdeskSyncPayload, runHelpdeskSync, type HelpdeskSyncDeps } from "./helpdesk-sync.js";
 
@@ -223,6 +225,13 @@ const eventTypes = (h: Harness) => h.events.map((event) => event.type);
 const payloadOf = (h: Harness, type: string) =>
   h.events.find((event) => event.type === type)?.payload;
 
+/** Everything that left the task except the connector's own create input. */
+function outbound(h: Harness): string {
+  const repoCalls = Object.values(h.repos).map((fn) => fn.mock.calls as unknown[]);
+  const logs = Object.values(h.logger).flatMap((fn) => fn.mock.calls);
+  return JSON.stringify([repoCalls, logs, h.alert.mock.calls, h.sent.notes]);
+}
+
 describe("helpdeskSyncPayload", () => {
   it("accepts a ticket id and test overrides and rejects a non-UUID or an unknown switch", () => {
     expect(helpdeskSyncPayload.safeParse({ ticketId: TICKET }).success).toBe(true);
@@ -373,5 +382,207 @@ describe("runHelpdeskSync: the incident is created", () => {
     expect(h.events).toHaveLength(3);
     expect(h.connector.addNote).not.toHaveBeenCalled();
     expect(h.statusWrites).toEqual(["incident_created"]);
+  });
+});
+
+describe("runHelpdeskSync: the guard", () => {
+  it.each([
+    "rejected",
+    "escalated_manual",
+    "review_pending",
+    "triaged",
+    "failed",
+    "new",
+    "redacted",
+  ])(
+    "T5.I.05: a forged trigger for a %s ticket is refused, loudly, with no connector",
+    async (status) => {
+      const h = harness({ found: ticket(status) });
+      await expect(run(h)).resolves.toEqual({ ticketId: TICKET, refused: true });
+      expect(h.events).toEqual([{ type: "sync_refused", payload: { status } }]);
+      expect(h.alert).toHaveBeenCalledWith("sync_refused", { ticketId: TICKET });
+      expect(h.createConnector).not.toHaveBeenCalled();
+      expect(h.repos.setTicketStatus).not.toHaveBeenCalled();
+      expect(h.status.value).toBe(status);
+    },
+  );
+
+  it.each(["incident_created", "incident_skipped_shadow"])(
+    "a %s ticket is skipped without a write",
+    async (status) => {
+      const h = harness({ found: ticket(status) });
+      await expect(run(h)).resolves.toEqual({ ticketId: TICKET, skipped: true });
+      expect(h.events).toEqual([]);
+      expect(h.alert).not.toHaveBeenCalled();
+      expect(h.createConnector).not.toHaveBeenCalled();
+      expect(h.repos.setTicketStatus).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["no ticket", { found: null }],
+    ["no triage row", { triage: null }],
+    ["a triage row without a category", { triage: triage({ category: null }) }],
+    ["a triage row without a priority", { triage: triage({ priority: null }) }],
+    ["no redaction", { redaction: null }],
+  ] as Array<[string, Options]>)(
+    "aborts the run for %s, before any write",
+    async (_name, options) => {
+      const h = harness(options);
+      await expect(run(h)).rejects.toBeInstanceOf(AbortTaskRunError);
+      expect(h.repos.setTicketStatus).not.toHaveBeenCalled();
+      expect(h.repos.addEvent).not.toHaveBeenCalled();
+      expect(h.createConnector).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe("runHelpdeskSync: shadow mode", () => {
+  const expectShadow = (h: Harness) => {
+    expect(eventTypes(h)).toEqual(["helpdesk_sync_started", "shadow_skipped"]);
+    expect(payloadOf(h, "shadow_skipped")).toEqual({ operation: "create" });
+    expect(h.status.value).toBe("incident_skipped_shadow");
+    expect(h.connector.createTicket).not.toHaveBeenCalled();
+    expect(h.connector.addNote).not.toHaveBeenCalled();
+    expect(h.repos.setTicketIncident).not.toHaveBeenCalled();
+  };
+
+  it("SHADOW_MODE=true: incident_skipped_shadow, shadow_skipped { operation: create }, no write call", async () => {
+    const h = harness({ shadowMode: true });
+    await expect(run(h)).resolves.toEqual({ ticketId: TICKET, shadow: true });
+    expectShadow(h);
+    expect(h.logger.info).toHaveBeenCalledWith(
+      "helpdesk-sync: shadow_skipped",
+      expect.objectContaining({ operation: "create", ticketId: TICKET }),
+    );
+  });
+
+  it("the shadowMode switch on an e2e test ticket turns shadow mode on", async () => {
+    const h = harness({ e2eMode: true, found: ticket("auto", true) });
+    await run(h, { shadowMode: true });
+    expectShadow(h);
+  });
+
+  it.each([
+    ["a ticket that is not a test ticket", { e2eMode: true, found: ticket("auto", false) }],
+    ["E2E_MODE=false", { e2eMode: false, found: ticket("auto", true) }],
+  ] as Array<[string, Options]>)(
+    "the shadowMode switch has no effect with %s",
+    async (_name, options) => {
+      const h = harness(options);
+      await run(h, { shadowMode: true });
+      expect(h.status.value).toBe("incident_created");
+      expect(h.connector.createTicket).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("an incident that exists already is stored, but its note is skipped and not recorded", async () => {
+    const h = harness({ shadowMode: true, incidentExists: true });
+    await run(h);
+    expect(eventTypes(h)).toEqual(["helpdesk_sync_started", "incident_created"]);
+    expect(h.connector.addNote).not.toHaveBeenCalled();
+    expect(h.status.value).toBe("incident_created");
+  });
+
+  it("writes shadow_skipped once across retries", async () => {
+    const h = harness({
+      shadowMode: true,
+      events: ["helpdesk_sync_started", "shadow_skipped"],
+      found: ticket("helpdesk_pending"),
+    });
+    await run(h);
+    expect(eventTypes(h)).toEqual(["helpdesk_sync_started", "shadow_skipped"]);
+    expect(h.status.value).toBe("incident_skipped_shadow");
+  });
+});
+
+describe("runHelpdeskSync: errors", () => {
+  const failing = (code: HelpdeskErrorCode) =>
+    harness({ failures: { findByExternalRef: [new HelpdeskError(code, "findByExternalRef")] } });
+
+  it.each([
+    ["auth", "helpdesk_auth_failed"],
+    ["config", "helpdesk_config"],
+    ["bad_request", "helpdesk_config"],
+    ["not_found", "helpdesk_sync_failed"],
+    ["bad_response", "helpdesk_sync_failed"],
+    ["duplicate_external_ref", "helpdesk_sync_failed"],
+  ] as const)(
+    "%s: failed with helpdesk_sync_failed, alert %s, no retry",
+    async (code, alertKind) => {
+      const h = failing(code);
+      await expect(run(h)).resolves.toEqual({ ticketId: TICKET, failed: true, error: code });
+      expect(h.events.at(-1)).toEqual({ type: "helpdesk_sync_failed", payload: { error: code } });
+      expect(h.status.value).toBe("failed");
+      expect(h.alert).toHaveBeenCalledTimes(1);
+      expect(h.alert).toHaveBeenCalledWith(alertKind, { ticketId: TICKET });
+    },
+  );
+
+  it.each(["unavailable", "rate_limited"] as const)(
+    "%s: the run throws so the task retries",
+    async (code) => {
+      const h = failing(code);
+      await expect(run(h)).rejects.toMatchObject({ name: "HelpdeskError", code });
+      expect(h.status.value).toBe("helpdesk_pending");
+      expect(eventTypes(h)).toEqual(["helpdesk_sync_started"]);
+      expect(h.alert).not.toHaveBeenCalled();
+    },
+  );
+
+  it("an error that is not a HelpdeskError is thrown as it is", async () => {
+    const h = harness({ failures: { findByExternalRef: [new TypeError("boom")] } });
+    await expect(run(h)).rejects.toThrow(TypeError);
+    expect(h.status.value).toBe("helpdesk_pending");
+  });
+
+  it("a connector that cannot be built (config) fails the ticket as a config error", async () => {
+    const h = harness({ connectorFactoryError: new HelpdeskError("config", "create client") });
+    await expect(run(h)).resolves.toMatchObject({ failed: true, error: "config" });
+    expect(h.alert).toHaveBeenCalledWith("helpdesk_config", { ticketId: TICKET });
+  });
+
+  it("a different stored sys_id fails the ticket as a conflict", async () => {
+    const h = harness({ incidentConflict: true });
+    await expect(run(h)).resolves.toMatchObject({ failed: true, error: "conflict" });
+    expect(h.alert).toHaveBeenCalledWith("helpdesk_sync_failed", { ticketId: TICKET });
+    expect(h.status.value).toBe("failed");
+  });
+
+  it("writes helpdesk_sync_failed once and keeps the failed status on a repeated run", async () => {
+    const h = failing("auth");
+    await run(h);
+    const again = await run(h);
+    expect(again).toEqual({ ticketId: TICKET, refused: true });
+    expect(eventTypes(h).filter((type) => type === "helpdesk_sync_failed")).toHaveLength(1);
+  });
+});
+
+describe("runHelpdeskSync: privacy", () => {
+  it("no event, log, alert or note holds the raw title, raw description, requester name or email", async () => {
+    for (const options of [
+      {},
+      { callerDefaulted: true },
+      { shadowMode: true },
+      { failures: { findByExternalRef: [new HelpdeskError("auth", "x")] } },
+      { found: ticket("rejected") },
+    ] as Options[]) {
+      const h = harness(options);
+      await run(h);
+      const text = outbound(h);
+      for (const marker of Object.values(MARK)) {
+        // The requester email is allowed in one place: the create call's input.
+        const inRepos = text.includes(marker);
+        expect(inRepos).toBe(false);
+      }
+    }
+  });
+
+  it("passes the requester email only in the connector's create input", async () => {
+    const h = harness();
+    await run(h);
+    expect(JSON.stringify(h.sent.creates)).toContain(MARK.email);
+    expect(JSON.stringify(h.sent.creates)).not.toContain(MARK.title);
+    expect(JSON.stringify(h.sent.creates)).not.toContain(MARK.name);
   });
 });
