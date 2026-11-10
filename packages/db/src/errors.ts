@@ -26,3 +26,14 @@ export class StatusConflictError extends DbError {
     this.name = "StatusConflictError";
   }
 }
+
+/**
+ * Thrown by setTicketHelpdesk when the ticket already lives in a different
+ * helpdesk (plan §6.3.1 G2). The message names no helpdesk.
+ */
+export class HelpdeskConflictError extends DbError {
+  constructor(operation: string) {
+    super(operation, "ticket already lives in another helpdesk");
+    this.name = "HelpdeskConflictError";
+  }
+}
