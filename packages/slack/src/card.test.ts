@@ -11,12 +11,14 @@ import { assertNoLiveMarkup } from "./markup.js";
 
 const REVIEW_ID = "0b6f3c1e-9d2a-4f7b-8c11-2a3b4c5d6e7f";
 const TICKET_ID = "5e8a1f20-7c3d-4b9e-a012-3456789abcde";
+const TICKET_NUMBER = "ITS-000042";
 const REVIEWER = "U00000000AB";
 const DECIDED_AT = new Date("2026-10-25T03:04:05.678Z");
 
 const base = (): ReviewCardInput => ({
   reviewId: REVIEW_ID,
   ticketId: TICKET_ID,
+  ticketNumber: TICKET_NUMBER,
   environment: "e2e",
   timeout: "24h",
   redactedTitle: "Complaint about a colleague",
@@ -153,7 +155,7 @@ describe("buildReviewCard layout", () => {
     expect(context.elements).toEqual([
       {
         type: "plain_text",
-        text: "Ticket 5e8a1f20 · staging · decide within 24h, then it goes to the manual queue",
+        text: "Ticket ITS-000042 · staging · decide within 24h, then it goes to the manual queue",
         emoji: false,
       },
     ]);
@@ -477,6 +479,16 @@ describe("buildReviewCard input checks", () => {
     ["ticketId", "1234"],
     ["ticketId", `x${TICKET_ID}`],
     ["ticketId", undefined],
+    ["ticketNumber", "ITS-42"],
+    ["ticketNumber", "its-000042"],
+    ["ticketNumber", "ITS-0000420"],
+    ["ticketNumber", "ITS-000042\n"],
+    ["ticketNumber", "ITS-000042<!channel>"],
+    ["ticketNumber", "<@U00000000> ITS-000042"],
+    ["ticketNumber", ""],
+    ["ticketNumber", 42],
+    ["ticketNumber", undefined],
+    ["ticketNumber", null],
     ["environment", "production"],
     ["timeout", "forever"],
     ["timeout", "24h<!here>"],
@@ -507,6 +519,103 @@ describe("buildReviewCard input checks", () => {
 
   it("accepts an upper-case review UUID", () => {
     expect(() => buildReviewCard({ ...base(), reviewId: REVIEW_ID.toUpperCase() })).not.toThrow();
+  });
+});
+
+describe("ticket number on the cards (T5.U.05)", () => {
+  const opts = { decision: "approve", slackUserId: REVIEWER, decidedAt: DECIDED_AT } as const;
+  const cards = (input: ReviewCardInput) => ({
+    review: buildReviewCard(input),
+    decided: buildDecidedCard(input, opts),
+    timedOut: buildTimedOutCard(input),
+  });
+
+  it("puts the number in the review context line", () => {
+    expect(blockOf(buildReviewCard(base()), "review_context").elements).toEqual([
+      {
+        type: "plain_text",
+        text: "Ticket ITS-000042 · e2e · decide within 24h, then it goes to the manual queue",
+        emoji: false,
+      },
+    ]);
+  });
+
+  it("ends the decided and timed-out summary lines with the number", () => {
+    const { decided, timedOut } = cards(base());
+    for (const card of [decided, timedOut]) {
+      expect(blockOf(card, "review_summary").elements[0]!.text).toMatch(/ · ticket ITS-000042$/);
+    }
+  });
+
+  it("holds no part of the ticket UUID on any card", () => {
+    const { review, decided, timedOut } = cards(base());
+    for (const card of [review, decided, timedOut]) {
+      const json = JSON.stringify(card);
+      expect(json).not.toContain(TICKET_ID.slice(0, 8));
+      expect(json).not.toContain(TICKET_ID);
+    }
+  });
+
+  it("takes the number from the input, not a fixed value", () => {
+    const { review, decided, timedOut } = cards({ ...base(), ticketNumber: "ITS-123456" });
+    expect(JSON.stringify(blockOf(review, "review_context").elements)).toContain("ITS-123456");
+    for (const card of [decided, timedOut]) {
+      expect(blockOf(card, "review_summary").elements[0]!.text).toMatch(/ · ticket ITS-123456$/);
+    }
+  });
+
+  it("keeps both buttons carrying the review UUID", () => {
+    const actions = blockOf(buildReviewCard(base()), "review_actions");
+    expect(actions.elements.map((e) => e.value)).toEqual([REVIEW_ID, REVIEW_ID]);
+  });
+
+  it("passes both validators with the number, at maximum input too", () => {
+    for (const input of [base(), maxInput("😀")]) {
+      const { review, timedOut, decided } = cards(input);
+      expectValid(review);
+      expectValid(timedOut);
+      expect(validateMessage(decided)).toEqual([]);
+    }
+  });
+
+  it("leaves the thread steps and the timeout note unchanged", () => {
+    const input = { ...base(), fixSteps: { steps: ["a", "b", "c", "d"], caveats: ["x"] } };
+    const thread = buildReviewCard(input).threadSteps!;
+    expect(thread.text).toBe("All suggested fix steps");
+    expect(JSON.stringify(thread)).not.toContain("ITS-");
+    expect(buildTimeoutNote({ timeout: "24h" }).text).not.toContain("ITS-");
+  });
+
+  it.each([
+    ["review card", (i: ReviewCardInput) => buildReviewCard(i)],
+    ["decided card", (i: ReviewCardInput) => buildDecidedCard(i, opts)],
+    ["timed-out card", (i: ReviewCardInput) => buildTimedOutCard(i)],
+  ])("throws a TypeError naming ticketNumber from the %s builder", (_name, build) => {
+    const rest: Partial<ReviewCardInput> = base();
+    delete rest.ticketNumber;
+    for (const input of [{ ...base(), ticketNumber: "ITS-42" }, rest]) {
+      let error: unknown;
+      try {
+        build(input as unknown as ReviewCardInput);
+      } catch (e) {
+        error = e;
+      }
+      expect(error).toBeInstanceOf(TypeError);
+      expect((error as Error).message).toBe("review card: ticketNumber must be a ticket number");
+    }
+  });
+
+  it("does not echo a bad number that holds markup", () => {
+    const evil = "ITS-000042 <!channel> <https://evil.example|x>";
+    let error: unknown;
+    try {
+      buildReviewCard({ ...base(), ticketNumber: evil });
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(TypeError);
+    expect((error as Error).message).not.toContain("channel");
+    expect((error as Error).message).not.toContain("evil");
   });
 });
 
@@ -554,7 +663,7 @@ describe("buildDecidedCard", () => {
     expect(blockOf(decided(), "review_summary").elements).toEqual([
       {
         type: "plain_text",
-        text: "Category inquiry · P3 · Service Desk · ticket 5e8a1f20",
+        text: "Category inquiry · P3 · Service Desk · ticket ITS-000042",
         emoji: false,
       },
     ]);
@@ -563,7 +672,7 @@ describe("buildDecidedCard", () => {
       { decision: "approve", slackUserId: REVIEWER, decidedAt: DECIDED_AT },
     );
     expect(blockOf(nulls, "review_summary").elements[0]!.text).toBe(
-      "Category not judged · priority not judged · group not judged · ticket 5e8a1f20",
+      "Category not judged · priority not judged · group not judged · ticket ITS-000042",
     );
   });
 

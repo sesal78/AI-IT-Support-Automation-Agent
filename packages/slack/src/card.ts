@@ -1,4 +1,4 @@
-import { slackUserId } from "@ai-it-support/shared";
+import { slackUserId, ticketNumberSchema } from "@ai-it-support/shared";
 import { LIMITS, type SlackBlock } from "./limits.js";
 import { escapeMrkdwn, truncate } from "./text.js";
 
@@ -24,6 +24,8 @@ export interface FixStepsDraft {
 export interface ReviewCardInput {
   reviewId: string;
   ticketId: string;
+  /** The reference people quote, such as `ITS-000042`. It replaces the UUID on the cards. */
+  ticketNumber: string;
   environment: ReviewEnvironment;
   /** How long the reviewer has, such as `24h`: 1–4 digits and s, m, h or d. */
   timeout: string;
@@ -109,6 +111,10 @@ function readInput(input: ReviewCardInput) {
   if (!UUID.test(reviewId)) throw bad("reviewId", "must be a UUID");
   const ticketId = str(input.ticketId, "ticketId");
   if (!UUID.test(ticketId)) throw bad("ticketId", "must be a UUID");
+  const ticketNumber = input.ticketNumber;
+  if (!ticketNumberSchema.safeParse(ticketNumber).success) {
+    throw bad("ticketNumber", "must be a ticket number");
+  }
   const environment = str(input.environment, "environment");
   if (!ENVIRONMENTS.includes(environment)) throw bad("environment", "must be e2e or staging");
   if (!Array.isArray(input.kbArticles)) throw bad("kbArticles", "must be a list");
@@ -124,6 +130,7 @@ function readInput(input: ReviewCardInput) {
   return {
     reviewId,
     ticketId,
+    ticketNumber,
     environment,
     timeout: timeout(input.timeout),
     title: str(input.redactedTitle, "redactedTitle"),
@@ -230,7 +237,7 @@ function threadSteps(fix: Card["fixSteps"]): CardMessage | null {
 function summaryBlock(card: Card): SlackBlock {
   const line =
     `Category ${card.category ?? "not judged"} · ${card.priority ?? "priority not judged"}` +
-    ` · ${card.group ?? "group not judged"} · ticket ${card.ticketId.slice(0, 8)}`;
+    ` · ${card.group ?? "group not judged"} · ticket ${card.ticketNumber}`;
   return context("review_summary", plain(truncate(line, LIMITS.sectionText)));
 }
 
@@ -274,7 +281,7 @@ export function buildReviewCard(input: ReviewCardInput): ReviewCard {
       context(
         "review_context",
         plain(
-          `Ticket ${card.ticketId.slice(0, 8)} · ${card.environment} · decide within ${card.timeout}, then it goes to the manual queue`,
+          `Ticket ${card.ticketNumber} · ${card.environment} · decide within ${card.timeout}, then it goes to the manual queue`,
         ),
       ),
     ],

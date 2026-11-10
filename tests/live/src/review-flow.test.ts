@@ -102,6 +102,16 @@ describe("review flow scenarios against the mocks", () => {
     expect(message).toContain("Approve");
   });
 
+  it("T4.L.01 judges a card whose context line names the ticket number (P5-T1d)", async () => {
+    const h = await harness();
+    await h.run(["--only", "T4.L.01"]);
+    const { message } = (h.judgeBodies[0] as { state: { message: string } }).state;
+    const ticket = [...h.review.tickets.values()][0]!;
+    expect(ticket.number).toBe("ITS-000001");
+    expect(message).toContain("Ticket ITS-000001 · e2e · decide within ");
+    expect(message).not.toContain(`Ticket ${ticket.id.slice(0, 8)}`);
+  });
+
   it("T4.L.01 judges the text as the reviewer sees it, with Slack's entities decoded", async () => {
     const h = await harness({
       faults: {
