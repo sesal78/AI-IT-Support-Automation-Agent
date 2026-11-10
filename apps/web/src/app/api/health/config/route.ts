@@ -1,6 +1,7 @@
 import { createDbClient, createRepositories, type Repositories } from "@ai-it-support/db";
 import { env } from "@/env";
 import { createHealthConfigProvider } from "@/lib/health/config";
+import { getHelpdeskHealth } from "@/lib/health/helpdesk";
 
 // Never prerendered: the body reflects the live database and env.
 export const dynamic = "force-dynamic";
@@ -21,6 +22,7 @@ let provider: ReturnType<typeof createHealthConfigProvider> | undefined;
 function health() {
   provider ??= createHealthConfigProvider({
     probe: () => repos().probeSchema(),
+    helpdesk: getHelpdeskHealth,
     flags: {
       version: env.APP_VERSION,
       pipelineTrigger: Boolean(env.TRIGGER_SECRET_KEY),
@@ -37,7 +39,7 @@ function health() {
 
 const HEADERS = { "Cache-Control": "no-store" };
 
-/** Public, no token: the body is a version string and booleans only. */
+/** Public, no token: the body is a version string and booleans only (helpdesk flags come from the Trigger.dev SDK, never from ServiceNow). */
 export async function GET() {
   return Response.json(await health().get(), { headers: HEADERS });
 }

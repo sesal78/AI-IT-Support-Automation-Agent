@@ -7,6 +7,31 @@ vi.mock("@ai-it-support/db", () => ({
   createRepositories: () => ({ probeSchema }),
 }));
 
+const runs = vi.hoisted(() => ({ list: vi.fn(), retrieve: vi.fn() }));
+vi.mock("@trigger.dev/sdk", () => ({ runs }));
+
+const MIN = 60_000;
+type Said = "ok" | "asleep" | "down";
+/** The latest completed helpdesk-health run: finished `ageMs` before the clock reads now. */
+function latestRun(status: Said, ageMs = 10 * MIN) {
+  runs.list.mockImplementation(async () => ({
+    data: [
+      {
+        id: "run_abc123",
+        createdAt: new Date(Date.now() - ageMs - 5_000),
+        finishedAt: new Date(Date.now() - ageMs),
+      },
+    ],
+  }));
+  runs.retrieve.mockResolvedValue({
+    output: {
+      connector: "servicenow",
+      status,
+      checkedAt: new Date(Date.now() - ageMs).toISOString(),
+    },
+  });
+}
+
 const INTERNAL_TOKEN = "i".repeat(32);
 
 function stubEnv(overrides: Record<string, string | undefined> = {}) {
@@ -38,6 +63,9 @@ beforeEach(() => {
   vi.resetModules();
   probeSchema.mockReset();
   probeSchema.mockResolvedValue({ database: true, migration0003: true, migration0005: true });
+  runs.list.mockReset();
+  runs.retrieve.mockReset();
+  latestRun("ok");
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -62,6 +90,8 @@ describe("GET /api/health/config", () => {
         internalApi: true,
         e2eMode: false,
         slackInteractivity: true,
+        helpdeskReachable: true,
+        helpdeskAsleep: false,
       },
     });
   });
@@ -107,6 +137,8 @@ describe("GET /api/health/config", () => {
       internalApi: true,
       e2eMode: false,
       slackInteractivity: true,
+      helpdeskReachable: true,
+      helpdeskAsleep: false,
     });
   });
 
@@ -172,6 +204,100 @@ describe("GET /api/health/config", () => {
     vi.advanceTimersByTime(61_000);
     await GET();
     expect(probeSchema).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports helpdeskReachable true for a fresh ok run and asleep false", async () => {
+    const { GET } = await load();
+    const body = await (await GET()).json();
+    expect(body.features).toMatchObject({ helpdeskReachable: true, helpdeskAsleep: false });
+  });
+
+  it("reports helpdeskAsleep true and helpdeskReachable false for a fresh asleep run", async () => {
+    latestRun("asleep");
+    const { GET } = await load();
+    const body = await (await GET()).json();
+    expect(healthConfigSchema.safeParse(body).success).toBe(true);
+    expect(body.features).toMatchObject({ helpdeskReachable: false, helpdeskAsleep: true });
+  });
+
+  it("reports both false for a 46 minute old ok run and for a down run", async () => {
+    latestRun("ok", 46 * MIN);
+    const old = await (await (await load()).GET()).json();
+    expect(old.features).toMatchObject({ helpdeskReachable: false, helpdeskAsleep: false });
+    vi.resetModules();
+    latestRun("down", 1 * MIN);
+    const down = await (await (await load()).GET()).json();
+    expect(down.features).toMatchObject({ helpdeskReachable: false, helpdeskAsleep: false });
+  });
+
+  it("reports both false when no helpdesk-health run has completed", async () => {
+    runs.list.mockResolvedValue({ data: [] });
+    const { GET } = await load();
+    const res = await GET();
+    expect(res.status).toBe(200);
+    expect((await res.json()).features).toMatchObject({
+      helpdeskReachable: false,
+      helpdeskAsleep: false,
+    });
+    expect(runs.retrieve).not.toHaveBeenCalled();
+  });
+
+  it("answers 200 with both false and no error text when the Trigger.dev SDK throws", async () => {
+    const note = "MARKER-sdk-error dev420188.service-now.com INC0010001";
+    runs.list.mockRejectedValue(new Error(note));
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { GET } = await load();
+    const res = await GET();
+    const text = await res.text();
+    expect(res.status).toBe(200);
+    for (const secret of ["MARKER-sdk-error", "service-now.com", "INC0010001"]) {
+      expect(text).not.toContain(secret);
+      expect(JSON.stringify([...res.headers])).not.toContain(secret);
+      expect(JSON.stringify(spy.mock.calls)).not.toContain(secret);
+    }
+    expect(JSON.stringify(spy.mock.calls)).toContain("Error");
+    const body = JSON.parse(text);
+    expect(healthConfigSchema.safeParse(body).success).toBe(true);
+    expect(body.features).toMatchObject({ helpdeskReachable: false, helpdeskAsleep: false });
+    expect(body.features.database).toBe(true);
+  });
+
+  it("puts nothing from the run output into the body: booleans only (T3.S.03)", async () => {
+    runs.list.mockResolvedValue({ data: [{ id: "run_abc123", createdAt: new Date() }] });
+    runs.retrieve.mockResolvedValue({
+      output: {
+        connector: "servicenow",
+        status: "ok",
+        checkedAt: new Date().toISOString(),
+        host: "dev420188.service-now.com",
+        number: "INC0010001",
+        error: "MARKER-run-error",
+      },
+    });
+    const { GET } = await load();
+    const res = await GET();
+    const text = await res.text();
+    for (const secret of ["dev420188", "service-now", "INC0010001", "MARKER-run-error"]) {
+      expect(text).not.toContain(secret);
+    }
+    const body = JSON.parse(text);
+    expect(healthConfigSchema.safeParse(body).success).toBe(true);
+    for (const value of Object.values(body.features)) expect(typeof value).toBe("boolean");
+  });
+
+  it("makes one SDK request for ten requests inside 60 seconds, another after 61", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-10T10:00:00Z"));
+    latestRun("ok");
+    const { GET } = await load();
+    for (let i = 0; i < 10; i++) {
+      await GET();
+      vi.advanceTimersByTime(5_000);
+    }
+    expect(runs.list).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(61_000);
+    await GET();
+    expect(runs.list).toHaveBeenCalledTimes(2);
   });
 
   it("takes no request, so a query string cannot influence the body", async () => {

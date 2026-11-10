@@ -16,6 +16,8 @@ const valid = {
     internalApi: true,
     e2eMode: false,
     slackInteractivity: true,
+    helpdeskReachable: true,
+    helpdeskAsleep: false,
   },
 };
 
@@ -42,6 +44,19 @@ describe("healthConfigSchema", () => {
   it.each(["true", 1, null, "marker-value"])("rejects a non-boolean feature value %j", (value) => {
     const body = { ...valid, features: { ...valid.features, database: value } };
     expect(healthConfigSchema.safeParse(body).success).toBe(false);
+  });
+
+  it.each(["helpdeskReachable", "helpdeskAsleep"] as const)("rejects a missing %s", (name) => {
+    const features: Partial<typeof valid.features> = { ...valid.features };
+    delete features[name];
+    expect(healthConfigSchema.safeParse({ ...valid, features }).success).toBe(false);
+  });
+
+  it.each(["helpdeskReachable", "helpdeskAsleep"] as const)("rejects a non-boolean %s", (name) => {
+    for (const value of ["true", 1, null, "INC0010001", { host: "x.service-now.com" }]) {
+      const body = { ...valid, features: { ...valid.features, [name]: value } };
+      expect(healthConfigSchema.safeParse(body).success).toBe(false);
+    }
   });
 
   it("rejects a non-string version", () => {
