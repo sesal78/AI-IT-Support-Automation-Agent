@@ -34,6 +34,7 @@ export type Fault =
 
 export interface ServiceNowMock {
   incidents: Row[];
+  notes: string[];
   users: Row[];
   groups: Row[];
   /** Faults for requests of one kind, used in order, one per request. */
@@ -49,6 +50,7 @@ export function mockServiceNow(recorder: EgressRecorder): ServiceNowMock {
   let asleep = false;
   const mock: ServiceNowMock = {
     incidents: [],
+    notes: [],
     users: [],
     groups: [],
     fail(kind, ...next) {
@@ -59,6 +61,7 @@ export function mockServiceNow(recorder: EgressRecorder): ServiceNowMock {
     },
     reset() {
       mock.incidents.length = 0;
+      mock.notes.length = 0;
       mock.users.length = 0;
       mock.groups.length = 0;
       faults.clear();
@@ -90,7 +93,12 @@ export function mockServiceNow(recorder: EgressRecorder): ServiceNowMock {
     }
     if (request.method === "PATCH") {
       const row = mock.incidents.find((r) => r.sys_id === sysId);
-      return row ? json(Object.assign(row, await request.json())) : json({}, 404);
+      if (!row) return json({}, 404);
+      const body = (await request.json()) as Row;
+      if (body.work_notes) mock.notes.push(body.work_notes);
+      Object.assign(row, body);
+      if (fault === "lose-response") await delay("infinite");
+      return json(row);
     }
     if (table === "sys_user")
       return json(mock.users.filter((u) => u.email === params.get("email")));

@@ -216,6 +216,24 @@ async function eventPayloads(ticketId: string, type: string): Promise<unknown[]>
 // ---- Tests -------------------------------------------------------------------------
 
 describe("helpdesk-sync on the local REST stack", () => {
+  it("does not resend a saved note after its PATCH reply is lost", async () => {
+    const { ticketId } = await seed();
+    const { deps } = harness();
+    snow.fail("PATCH incident", "lose-response");
+    await expect(sync(ticketId, deps)).rejects.toMatchObject({ code: "unavailable" });
+    await sync(ticketId, deps, 2);
+    await sync(ticketId, deps, 3);
+    expect(snow.notes).toHaveLength(1);
+    expect(writes().filter((r) => r.method === "PATCH")).toHaveLength(1);
+    expect(await eventPayloads(ticketId, "helpdesk_note_unconfirmed")).toEqual([
+      { externalId: "1".padStart(32, "0") },
+    ]);
+    expect(await eventPayloads(ticketId, "helpdesk_note_added")).toEqual([]);
+    expect(await alertRows("helpdesk_note_unconfirmed")).toEqual([
+      { source: "pipeline", kind: "alert:helpdesk_note_unconfirmed", count: 1 },
+    ]);
+    expect(await ticketStatus(ticketId)).toBe("incident_created");
+  });
   it.each(["auto", "approved"] as const)(
     "T5.I.01: an %s ticket ends incident_created; one incident POST, one work-note PATCH",
     async (status) => {
@@ -234,6 +252,7 @@ describe("helpdesk-sync on the local REST stack", () => {
       expect(await eventTypes(ticketId)).toEqual([
         "helpdesk_sync_started",
         "incident_created",
+        "helpdesk_note_attempted",
         "helpdesk_note_added",
       ]);
       expect(writes().map((r) => r.method)).toEqual(["POST", "PATCH"]);
@@ -286,6 +305,7 @@ describe("helpdesk-sync on the local REST stack", () => {
       "helpdesk_sync_started",
       "caller_defaulted",
       "incident_created",
+      "helpdesk_note_attempted",
       "helpdesk_note_added",
     ]);
     expect(snow.incidents[0]?.caller_id).toBe(DEFAULT_CALLER);
@@ -310,6 +330,7 @@ describe("helpdesk-sync on the local REST stack", () => {
     expect(await eventTypes(ticketId)).toEqual([
       "helpdesk_sync_started",
       "incident_created",
+      "helpdesk_note_attempted",
       "helpdesk_note_added",
     ]);
   });

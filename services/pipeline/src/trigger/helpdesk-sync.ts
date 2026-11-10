@@ -86,6 +86,8 @@ const ONCE_EVENTS = [
   "caller_defaulted",
   "incident_created",
   "helpdesk_note_added",
+  "helpdesk_note_attempted",
+  "helpdesk_note_unconfirmed",
   "shadow_skipped",
   "helpdesk_sync_failed",
 ];
@@ -233,8 +235,20 @@ export async function runHelpdeskSync(
     if (callerDefaulted) await once("caller_defaulted");
     await once("incident_created", { externalId: ref.externalId, number: ref.number });
     if (!written.has("helpdesk_note_added")) {
-      const skipped = await connector.addNote(ref, await note());
-      if (skipped === undefined) await once("helpdesk_note_added", { externalId: ref.externalId });
+      if (written.has("helpdesk_note_attempted")) {
+        // A lost reply cannot tell us whether the remote write succeeded.
+        // Never repeat it; make the uncertain delivery visible for manual recovery.
+        await once("helpdesk_note_unconfirmed", { externalId: ref.externalId });
+        await deps.alert("helpdesk_note_unconfirmed", { ticketId });
+      } else {
+        const body = await note();
+        if (!shadowEnabled({ env: { SHADOW_MODE: deps.shadowMode }, overrides })) {
+          await once("helpdesk_note_attempted", { externalId: ref.externalId });
+        }
+        const skipped = await connector.addNote(ref, body);
+        if (skipped === undefined)
+          await once("helpdesk_note_added", { externalId: ref.externalId });
+      }
     }
     await repos.setTicketStatus(ticketId, "incident_created");
     log.info("helpdesk-sync: incident created", { ticketId, attempt });

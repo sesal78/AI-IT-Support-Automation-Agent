@@ -267,6 +267,44 @@ describe("helpdeskSyncPayload", () => {
 });
 
 describe("runHelpdeskSync: the incident is created", () => {
+  it("does not send a note if its attempt cannot be stored", async () => {
+    const h = harness({
+      found: ticket("helpdesk_pending"),
+      incidentExists: true,
+      events: ["helpdesk_sync_started", "incident_created"],
+    });
+    const error = new Error("database unavailable");
+    h.repos.addEvent.mockRejectedValueOnce(error);
+    await expect(run(h)).rejects.toBe(error);
+    expect(h.connector.addNote).not.toHaveBeenCalled();
+    await run(h);
+    expect(h.sent.notes).toHaveLength(1);
+  });
+  it.each([true, false])(
+    "does not resend an unconfirmed note (delivered=%s)",
+    async (delivered) => {
+      const h = harness();
+      h.connector.addNote = vi
+        .fn()
+        .mockImplementationOnce(async (_ref, body) => {
+          if (delivered) h.sent.notes.push(body);
+          throw new HelpdeskError("unavailable", "addNote");
+        })
+        .mockImplementation(async (_ref, body) => {
+          h.sent.notes.push(body);
+        });
+      await expect(run(h)).rejects.toMatchObject({ code: "unavailable" });
+      await run(h);
+      await run(h);
+      expect(h.connector.addNote).toHaveBeenCalledTimes(1);
+      expect(h.sent.notes).toHaveLength(delivered ? 1 : 0);
+      expect(eventTypes(h).filter((type) => type === "helpdesk_note_unconfirmed")).toHaveLength(1);
+      expect(h.alert).toHaveBeenCalledExactlyOnceWith("helpdesk_note_unconfirmed", {
+        ticketId: TICKET,
+      });
+      expect(h.status.value).toBe("incident_created");
+    },
+  );
   it.each(["auto", "approved"])(
     "an %s ticket ends incident_created with its events",
     async (from) => {
@@ -278,6 +316,7 @@ describe("runHelpdeskSync: the incident is created", () => {
       expect(eventTypes(h)).toEqual([
         "helpdesk_sync_started",
         "incident_created",
+        "helpdesk_note_attempted",
         "helpdesk_note_added",
       ]);
       expect(payloadOf(h, "incident_created")).toEqual({ externalId: SYS_ID, number: INC });
@@ -297,6 +336,7 @@ describe("runHelpdeskSync: the incident is created", () => {
       "createTicket",
       "setTicketIncident",
       "event:incident_created",
+      "event:helpdesk_note_attempted",
       "addNote",
       "event:helpdesk_note_added",
       "status:incident_created",
@@ -342,6 +382,7 @@ describe("runHelpdeskSync: the incident is created", () => {
       "helpdesk_sync_started",
       "caller_defaulted",
       "incident_created",
+      "helpdesk_note_attempted",
       "helpdesk_note_added",
     ]);
   });
@@ -353,6 +394,7 @@ describe("runHelpdeskSync: the incident is created", () => {
     expect(eventTypes(h)).toEqual([
       "helpdesk_sync_started",
       "incident_created",
+      "helpdesk_note_attempted",
       "helpdesk_note_added",
     ]);
     expect(h.stored.incident).toEqual({ sysId: SYS_ID, number: INC });
@@ -379,17 +421,23 @@ describe("runHelpdeskSync: the incident is created", () => {
     expect(h.status.value).toBe("incident_created");
   });
 
-  it("on a retry after the note failed: no second incident_created, the note is sent again, once", async () => {
+  it("on a retry after the note failed: preserve the incident and flag the note for recovery", async () => {
     const h = harness({ failures: { addNote: [new HelpdeskError("unavailable", "addNote")] } });
     await expect(run(h, undefined, 1)).rejects.toMatchObject({ code: "unavailable" });
-    expect(eventTypes(h)).toEqual(["helpdesk_sync_started", "incident_created"]);
+    expect(eventTypes(h)).toEqual([
+      "helpdesk_sync_started",
+      "incident_created",
+      "helpdesk_note_attempted",
+    ]);
     await run(h, undefined, 2);
     expect(eventTypes(h)).toEqual([
       "helpdesk_sync_started",
       "incident_created",
-      "helpdesk_note_added",
+      "helpdesk_note_attempted",
+      "helpdesk_note_unconfirmed",
     ]);
-    expect(h.sent.notes).toHaveLength(1);
+    expect(h.sent.notes).toHaveLength(0);
+    expect(h.alert).toHaveBeenCalledWith("helpdesk_note_unconfirmed", { ticketId: TICKET });
   });
 
   it("on a retry from helpdesk_pending with every event written: only the status moves", async () => {
@@ -640,6 +688,7 @@ describe("runHelpdeskSync: the instance is asleep", () => {
       "helpdesk_asleep",
       "helpdesk_asleep",
       "incident_created",
+      "helpdesk_note_attempted",
       "helpdesk_note_added",
     ]);
     expect(h.alert).not.toHaveBeenCalled();
@@ -650,7 +699,8 @@ describe("runHelpdeskSync: the instance is asleep", () => {
     await run(h);
     expect(h.waits).toEqual([1]);
     expect(h.connector.createTicket).toHaveBeenCalledTimes(1);
-    expect(h.sent.notes).toHaveLength(1);
+    expect(h.sent.notes).toHaveLength(0);
+    expect(h.alert).toHaveBeenCalledWith("helpdesk_note_unconfirmed", { ticketId: TICKET });
     expect(eventTypes(h).filter((type) => type === "incident_created")).toHaveLength(1);
   });
 

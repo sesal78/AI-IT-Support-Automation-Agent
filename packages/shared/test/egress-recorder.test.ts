@@ -95,6 +95,17 @@ describe("egress recorder: allowInQuery", () => {
   const lookup = (email = EMAIL, url = `${ORIGIN}${LOOKUP}`) =>
     fetch(`${url}?${new URLSearchParams({ email, active: "true" }).toString()}`);
 
+  it.each([false, true])(
+    "catches a forbidden phrase with spaces (exemption=%s)",
+    async (allowed) => {
+      recorder.forbid("Private Client Name");
+      if (allowed) recorder.allowInQuery(ORIGIN, LOOKUP, EMAIL);
+      const email = allowed ? `&email=${encodeURIComponent(EMAIL)}` : "";
+      await fetch(`${ORIGIN}${LOOKUP}?q=Private%20Client%20Name${email}`);
+      expect(leakMessage()).toContain("query:");
+    },
+  );
+
   it.each([
     ["GET", { email: EMAIL, sysparm_query: `email=${EMAIL}` }],
     ["POST", { email: EMAIL }],
