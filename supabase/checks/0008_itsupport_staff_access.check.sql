@@ -12,12 +12,14 @@ with t(name, cols) as (values
 select 'schema usage: authenticated' as object,
   has_schema_privilege('authenticated', 'itsupport', 'usage') as ok
 union all
-select 'function ' || f, coalesce((select p.prosecdef and p.provolatile = 's'
+select 'function ' || f, coalesce((select p.prosecdef
+    and p.provolatile = case when f like 'staff\_%' then 'v' else 's' end
     and p.proconfig = array['search_path=""'] and has_function_privilege('authenticated', p.oid, 'execute')
     and not has_function_privilege('anon', p.oid, 'execute')
     and not has_function_privilege('service_role', p.oid, 'execute')
-  from pg_proc p where p.oid = to_regprocedure('itsupport.' || f || '()')), false)
-from unnest(array['current_staff', 'is_staff', 'is_admin']) f
+  from pg_proc p where p.oid = to_regprocedure('itsupport.' || f)), false)
+from unnest(array['current_staff()', 'is_staff()', 'is_admin()',
+  'staff_add_note(uuid,text)']) f
 union all
 select 'table ' || t.name, coalesce(c.relrowsecurity
   and exists (select 1 from pg_policies p where p.schemaname = 'itsupport' and p.tablename = t.name

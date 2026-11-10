@@ -2,8 +2,9 @@
 --
 -- Removes only what 0008 added: the 11 `_staff_select` policies, every
 -- `authenticated` right on those tables (0001 to 0007 grant it none), the
--- functions current_staff(), is_staff() and is_admin(), and schema usage for
--- `authenticated` (0001 revokes it). No row is touched. Safe to run more than once.
+-- functions current_staff(), is_staff(), is_admin() and the staff_* actions,
+-- and schema usage for `authenticated` (0001 revokes it). No row is touched.
+-- Safe to run more than once.
 -- Apply as ONE transaction: Supabase Studio runs a script as one transaction; with psql use --single-transaction.
 
 set local lock_timeout = '5s';
@@ -18,5 +19,6 @@ begin
     execute format('revoke all on table itsupport.%I from authenticated', t);
   end loop;
 end $$;
+drop function if exists itsupport.staff_add_note(uuid, text);
 drop function if exists itsupport.is_admin(), itsupport.is_staff(), itsupport.current_staff();
 revoke usage on schema itsupport from authenticated;
