@@ -59,3 +59,15 @@ export interface ReviewTicketPayload {
   /** Test switches; they take effect only in E2E mode on a test ticket. */
   testOverrides?: TestOverrides;
 }
+
+/**
+ * Trigger.dev id of the helpdesk sync task (services/pipeline, P5-T5a), triggered
+ * by string id with `HelpdeskSyncPayload` for an `auto` or `approved` ticket.
+ */
+export const HELPDESK_SYNC_TASK_ID = "helpdesk-sync";
+
+export interface HelpdeskSyncPayload {
+  ticketId: string;
+  /** Test switches; they take effect only in E2E mode on a test ticket. */
+  testOverrides?: TestOverrides;
+}

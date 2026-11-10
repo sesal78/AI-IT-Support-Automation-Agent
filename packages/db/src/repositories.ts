@@ -18,7 +18,12 @@ import {
 } from "@ai-it-support/shared";
 import { z } from "zod";
 import type { DbClient } from "./client.js";
-import { DbError, HelpdeskConflictError, StatusConflictError } from "./errors.js";
+import {
+  DbError,
+  HelpdeskConflictError,
+  IncidentConflictError,
+  StatusConflictError,
+} from "./errors.js";
 
 const timestamp = z.iso.datetime({ offset: true });
 
@@ -337,6 +342,9 @@ function parseRow<T>(operation: string, schema: z.ZodType<T>, result: SupabaseRe
   }
   return parsed.data;
 }
+
+const SYS_ID = /^[0-9a-f]{32}$/;
+const INCIDENT_NUMBER = /^[A-Za-z0-9]{1,40}$/;
 
 function assertUuid(operation: string, name: string, value: unknown): asserts value is string {
   if (!uuidSchema.safeParse(value).success)
@@ -934,6 +942,53 @@ export function createRepositories(client: DbClient) {
       // The update matched nothing, so a null here is not a state a caller can act on.
       if (stored.helpdesk === null) throw new DbError(op, "unexpected response shape at helpdesk");
       if (stored.helpdesk !== kind) throw new HelpdeskConflictError(op);
+      return { changed: false };
+    },
+
+    /**
+     * Stores the helpdesk incident of a ticket (P5-T5a), only while no sys_id is
+     * set (one conditional UPDATE). `changed: false` when the ticket already
+     * holds the same sys_id. A different stored sys_id throws
+     * IncidentConflictError and an unknown ticket DbError; nothing is overwritten.
+     */
+    async setTicketIncident(
+      ticketId: string,
+      incident: { sysId: string; number: string },
+    ): Promise<{ changed: boolean }> {
+      const op = "setTicketIncident";
+      assertUuid(op, "ticketId", ticketId);
+      if (!SYS_ID.test(String(incident?.sysId))) {
+        throw new TypeError(`${op}: sysId must be a sys_id`);
+      }
+      if (!INCIDENT_NUMBER.test(String(incident.number))) {
+        throw new TypeError(`${op}: number must be an incident number`);
+      }
+      const result = await client
+        .from("tickets")
+        .update({ servicenow_sys_id: incident.sysId, servicenow_number: incident.number })
+        .eq("id", ticketId)
+        .is("servicenow_sys_id", null)
+        .select("id");
+      const rows = parseRow(op, z.array(z.object({ id: z.uuid() })), result);
+      if (rows.length > 1) throw new DbError(op, "unexpected response shape at (rows)");
+      if (rows.length === 1) return { changed: true };
+
+      const read = await client
+        .from("tickets")
+        .select("servicenow_sys_id,servicenow_number")
+        .eq("id", ticketId)
+        .maybeSingle();
+      const stored = parseRow(
+        op,
+        z.object({ servicenow_sys_id: z.string().nullable() }).nullable(),
+        read,
+      );
+      if (!stored) throw new DbError(op, "no ticket with this id");
+      // The update matched nothing, so a null here is not a state a caller can act on.
+      if (stored.servicenow_sys_id === null) {
+        throw new DbError(op, "unexpected response shape at servicenow_sys_id");
+      }
+      if (stored.servicenow_sys_id !== incident.sysId) throw new IncidentConflictError(op);
       return { changed: false };
     },
 

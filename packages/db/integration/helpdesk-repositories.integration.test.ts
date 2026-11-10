@@ -3,7 +3,7 @@ import { CATEGORIES, PRIORITIES } from "@ai-it-support/shared";
 import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDbClient } from "../src/client.js";
-import { DbError, HelpdeskConflictError } from "../src/errors.js";
+import { DbError, HelpdeskConflictError, IncidentConflictError } from "../src/errors.js";
 import { createRepositories, type Repositories } from "../src/repositories.js";
 import { clientFor } from "./pg-container.js";
 import { removeRestStack, startRestStack, type RestStack } from "./rest-stack.js";
@@ -181,6 +181,49 @@ describe("setHelpdeskState", () => {
     await expect(repos.setHelpdeskState(randomUUID(), "new", "closed")).rejects.toBeInstanceOf(
       DbError,
     );
+  });
+});
+
+describe("setTicketIncident", () => {
+  const incident = { sysId: "a".repeat(32), number: "INC0010001" };
+  const stored = async (ticketId: string) =>
+    (
+      await sql().query(
+        "select servicenow_sys_id, servicenow_number from itsupport.tickets where id = $1",
+        [ticketId],
+      )
+    ).rows;
+
+  it("stores the incident once, accepts the same sys_id again and refuses another", async () => {
+    const ticketId = await newTicketId();
+    expect(await repos.setTicketIncident(ticketId, incident)).toEqual({ changed: true });
+    expect(await repos.setTicketIncident(ticketId, incident)).toEqual({ changed: false });
+    await expect(
+      repos.setTicketIncident(ticketId, { sysId: "b".repeat(32), number: "INC0010002" }),
+    ).rejects.toBeInstanceOf(IncidentConflictError);
+    expect(await stored(ticketId)).toEqual([
+      { servicenow_sys_id: incident.sysId, servicenow_number: incident.number },
+    ]);
+  });
+
+  it("throws DbError for an unknown ticket", async () => {
+    await expect(repos.setTicketIncident(randomUUID(), incident)).rejects.toMatchObject({
+      name: "DbError",
+      operation: "setTicketIncident",
+    });
+  });
+
+  it("lets exactly one of two parallel callers with different sys_ids win", async () => {
+    const ticketId = await newTicketId();
+    const results = await Promise.allSettled([
+      repos.setTicketIncident(ticketId, incident),
+      repos.setTicketIncident(ticketId, { sysId: "c".repeat(32), number: "INC0010003" }),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.filter((result) => result.status === "rejected");
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(IncidentConflictError);
+    expect(await stored(ticketId)).toHaveLength(1);
   });
 });
 

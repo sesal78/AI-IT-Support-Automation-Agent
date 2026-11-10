@@ -37,3 +37,14 @@ export class HelpdeskConflictError extends DbError {
     this.name = "HelpdeskConflictError";
   }
 }
+
+/**
+ * Thrown by setTicketIncident when the ticket already holds a different
+ * incident sys_id (P5-T5a). The message names no sys_id or number.
+ */
+export class IncidentConflictError extends DbError {
+  constructor(operation: string) {
+    super(operation, "ticket already holds another incident");
+    this.name = "IncidentConflictError";
+  }
+}

@@ -1,4 +1,4 @@
-/** Alert kinds raised by phases 3 and 4. */
+/** Alert kinds raised by phases 3 to 5. */
 export type AlertKind =
   | "slack_update_failed"
   | "llm_cap_80"
@@ -8,7 +8,12 @@ export type AlertKind =
   | "triage_failed"
   | "triage_enqueue_failed"
   | "review_enqueue_failed"
-  | "review_failed";
+  | "review_failed"
+  | "sync_refused"
+  | "helpdesk_auth_failed"
+  | "helpdesk_config"
+  | "helpdesk_sync_failed"
+  | "helpdesk_asleep_timeout";
 
 export interface AlertOptions {
   ticketId?: string | undefined;

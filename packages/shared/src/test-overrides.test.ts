@@ -89,3 +89,24 @@ describe("shadowMode switch", () => {
     expect(effectiveTestOverrides({ e2eMode: false, isTest: true, requested })).toEqual({});
   });
 });
+
+describe("helpdeskAsleepMinutes switch", () => {
+  it("accepts whole numbers from 1 to 30", () => {
+    for (const value of [1, 3, 30]) {
+      expect(testOverridesSchema.parse({ helpdeskAsleepMinutes: value })).toEqual({
+        helpdeskAsleepMinutes: value,
+      });
+    }
+  });
+
+  it.each([0, 31, -1, 2.5, "3", null, Number.NaN])("rejects %j", (value) => {
+    expect(testOverridesSchema.safeParse({ helpdeskAsleepMinutes: value }).success).toBe(false);
+  });
+
+  it("takes effect only with e2eMode and isTest", () => {
+    const requested = { helpdeskAsleepMinutes: 3 };
+    expect(effectiveTestOverrides({ e2eMode: true, isTest: true, requested })).toEqual(requested);
+    expect(effectiveTestOverrides({ e2eMode: true, isTest: false, requested })).toEqual({});
+    expect(effectiveTestOverrides({ e2eMode: false, isTest: true, requested })).toEqual({});
+  });
+});
