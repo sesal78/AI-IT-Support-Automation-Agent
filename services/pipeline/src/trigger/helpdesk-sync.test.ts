@@ -1,6 +1,7 @@
 import { IncidentConflictError, type Redaction, type Ticket, type Triage } from "@ai-it-support/db";
 import {
   HelpdeskError,
+  InstanceAsleepError,
   type CreateHelpdeskTicketInput,
   type CreatedHelpdeskTicket,
   type HelpdeskConnector,
@@ -90,6 +91,8 @@ interface Options {
   e2eMode?: boolean;
   connectorFactoryError?: unknown;
   incidentConflict?: boolean;
+  /** The fake clock at the start of the run (ISO). Default: the ticket's created_at. */
+  clockAt?: string;
 }
 
 function harness(options: Options = {}) {
@@ -189,9 +192,18 @@ function harness(options: Options = {}) {
     if (options.connectorFactoryError) throw options.connectorFactoryError;
     return connector;
   });
+  let clock = Date.parse(options.clockAt ?? NOW);
+  const waits: number[] = [];
   const deps: HelpdeskSyncDeps = {
     repos,
     createConnector,
+    wait: {
+      for: async ({ minutes }) => {
+        waits.push(minutes);
+        clock += minutes * 60_000;
+      },
+    },
+    now: () => clock,
     shadowMode: options.shadowMode ?? false,
     e2eMode: options.e2eMode ?? false,
     alert,
@@ -211,6 +223,7 @@ function harness(options: Options = {}) {
     stored,
     sent,
     incidents,
+    waits,
   };
 }
 
@@ -584,5 +597,102 @@ describe("runHelpdeskSync: privacy", () => {
     expect(JSON.stringify(h.sent.creates)).toContain(MARK.email);
     expect(JSON.stringify(h.sent.creates)).not.toContain(MARK.title);
     expect(JSON.stringify(h.sent.creates)).not.toContain(MARK.name);
+  });
+});
+
+describe("runHelpdeskSync: the instance is asleep", () => {
+  const asleep = () => new InstanceAsleepError("findByExternalRef");
+
+  it("waits 1 then 2 minutes, keeps helpdesk_pending in between, then creates the incident", async () => {
+    const h = harness({ failures: { findByExternalRef: [asleep(), asleep()] } });
+    await expect(run(h)).resolves.toMatchObject({ incident: { number: INC } });
+    expect(h.waits).toEqual([1, 2]);
+    expect(h.events.filter((e) => e.type === "helpdesk_asleep").map((e) => e.payload)).toEqual([
+      { attempt: 1 },
+      { attempt: 2 },
+    ]);
+    expect(h.statusWrites).toEqual(["helpdesk_pending", "incident_created"]);
+    expect(eventTypes(h)).toEqual([
+      "helpdesk_sync_started",
+      "helpdesk_asleep",
+      "helpdesk_asleep",
+      "incident_created",
+      "helpdesk_note_added",
+    ]);
+    expect(h.alert).not.toHaveBeenCalled();
+  });
+
+  it("an asleep answer after the create call is retried without a second incident", async () => {
+    const h = harness({ failures: { addNote: [new InstanceAsleepError("addNote")] } });
+    await run(h);
+    expect(h.waits).toEqual([1]);
+    expect(h.connector.createTicket).toHaveBeenCalledTimes(1);
+    expect(h.sent.notes).toHaveLength(1);
+    expect(eventTypes(h).filter((type) => type === "incident_created")).toHaveLength(1);
+  });
+
+  it("waits 1, 2, 4, 8, 15, 30, then 60 minutes, and gives up at 6 hours after the first answer", async () => {
+    const h = harness({ failures: { findByExternalRef: Array(50).fill(asleep()) } });
+    await expect(run(h)).resolves.toEqual({ ticketId: TICKET, failed: true, error: "asleep" });
+    expect(h.waits).toEqual([1, 2, 4, 8, 15, 30, 60, 60, 60, 60, 60]);
+    expect(h.waits.reduce((a, b) => a + b, 0)).toBe(360);
+    expect(eventTypes(h).filter((type) => type === "helpdesk_asleep")).toHaveLength(12);
+    expect(h.events.at(-1)).toEqual({ type: "helpdesk_sync_failed", payload: { error: "asleep" } });
+    expect(h.status.value).toBe("failed");
+    expect(h.alert.mock.calls).toEqual([["helpdesk_asleep_timeout", { ticketId: TICKET }]]);
+  });
+
+  it("still tries once more when the instance wakes up just before the limit", async () => {
+    const h = harness({ failures: { findByExternalRef: Array(11).fill(asleep()) } });
+    await expect(run(h)).resolves.toMatchObject({ incident: { number: INC } });
+    expect(h.waits).toHaveLength(11);
+    expect(h.alert).not.toHaveBeenCalled();
+  });
+});
+
+describe("runHelpdeskSync: the helpdeskAsleepMinutes switch", () => {
+  const e2eTicket = (isTest = true) => ticket("auto", isTest);
+
+  it("makes the connector asleep until created_at plus 3 minutes, then real calls go through", async () => {
+    const h = harness({ e2eMode: true, found: e2eTicket(), clockAt: NOW });
+    await expect(run(h, { helpdeskAsleepMinutes: 3 })).resolves.toMatchObject({
+      incident: { number: INC },
+    });
+    expect(h.waits).toEqual([1, 2]);
+    expect(h.events.filter((e) => e.type === "helpdesk_asleep")).toHaveLength(2);
+    expect(h.calls).toContain("createTicket");
+  });
+
+  it("stays asleep for longer when the clock starts before created_at", async () => {
+    const h = harness({ e2eMode: true, found: e2eTicket(), clockAt: "2026-11-10T09:58:00.000Z" });
+    await run(h, { helpdeskAsleepMinutes: 3 });
+    expect(h.waits).toEqual([1, 2, 4]);
+  });
+
+  it.each([
+    ["is_test = false", { e2eMode: true, found: e2eTicket(false) }],
+    ["E2E_MODE=false", { e2eMode: false, found: e2eTicket(true) }],
+  ] as Array<[string, Options]>)("has no effect with %s", async (_name, options) => {
+    const h = harness({ ...options, clockAt: NOW });
+    await run(h, { helpdeskAsleepMinutes: 3 });
+    expect(h.waits).toEqual([]);
+    expect(eventTypes(h)).not.toContain("helpdesk_asleep");
+  });
+
+  it("is rejected by the payload schema for 0, 31 and a string", () => {
+    for (const value of [0, 31, "3"]) {
+      const testOverrides = { helpdeskAsleepMinutes: value };
+      expect(helpdeskSyncPayload.safeParse({ ticketId: TICKET, testOverrides }).success).toBe(
+        false,
+      );
+    }
+  });
+
+  it("works together with the shadow switch: asleep first, then no write", async () => {
+    const h = harness({ e2eMode: true, found: e2eTicket(), clockAt: NOW });
+    await run(h, { helpdeskAsleepMinutes: 3, shadowMode: true });
+    expect(h.waits).toEqual([1, 2]);
+    expect(h.status.value).toBe("incident_skipped_shadow");
+    expect(h.connector.createTicket).not.toHaveBeenCalled();
   });
 });
