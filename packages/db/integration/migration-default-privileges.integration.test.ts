@@ -15,19 +15,19 @@ import {
 // itsupport, because default privileges (pg_default_acl) may grant them. This
 // test applies EVERY up file in supabase/migrations, new ones included, with
 // Supabase-like default privileges in place, once as postgres and once as
-// supabase_admin, and expects those roles to hold no right on any of them.
-// The end state covers every object up to 0007 (itsupport.reviews,
-// itsupport.notifications, ticket_number_seq, next_ticket_number(), the 0007
-// helpdesk tables, helpdesk_tickets_seq_seq and reject_helpdesk_log_change() included):
-// the rights come from has_*_privilege over the catalog, not from the SQL text.
+// supabase_admin, and expects those roles to hold exactly the ALLOWED rights:
+// the staff read access of 0008 for authenticated (G8 column grants, the six
+// staff functions, schema usage) and nothing else, nothing for anon or public,
+// and no sequence right for any role. The end state covers every object
+// (itsupport.reviews, notifications, ticket_number_seq, next_ticket_number(),
+// the 0007 helpdesk tables, helpdesk_tickets_seq_seq and reject_helpdesk_log_change()
+// included): the rights come from has_*_privilege over the catalog, not from the SQL text.
 // Then every down file runs in reverse and the schema is gone.
 
 const supabaseDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../../supabase");
 const read = (file: string) => readFileSync(resolve(supabaseDir, file), "utf8");
-// 0008 grants authenticated staff read access on purpose (P5-T11a). It joins
-// this test when P5-T11c (P5-B6) turns "no right" into the exact allow-list.
 const UPS = readdirSync(resolve(supabaseDir, "migrations"))
-  .filter((name) => name.endsWith(".sql") && !name.endsWith(".down.sql") && name < "0008")
+  .filter((name) => name.endsWith(".sql") && !name.endsWith(".down.sql"))
   .sort();
 const DOWNS = UPS.map((name) => name.replace(/\.sql$/, ".down.sql")).reverse();
 const LOCK = "0004_itsupport_lock_sequences.sql";
@@ -90,6 +90,67 @@ const RIGHTS = `
   where o.has
   order by 1, 2`;
 
+/** Each right a role in $1 holds, as "role object right"; column rights as right(col,...). */
+const EXACT = `
+  select r.role || ' ' || o.object || ' ' || o.r as right
+  from unnest($1::text[]) as r (role), lateral (
+    select 'schema itsupport', p from unnest(array['usage', 'create']) p
+    where has_schema_privilege(r.role, 'itsupport', p)
+    union all
+    select 'sequence ' || c.oid::regclass::text, p
+    from pg_catalog.pg_class c, unnest(array['usage', 'select', 'update']) p
+    where c.relnamespace = 'itsupport'::regnamespace and c.relkind = 'S'
+      and has_sequence_privilege(r.role, c.oid, p)
+    union all
+    select 'table ' || c.oid::regclass::text, p from pg_catalog.pg_class c,
+      unnest(array['select', 'insert', 'update', 'delete', 'truncate', 'references', 'trigger', 'maintain']) p
+    where c.relnamespace = 'itsupport'::regnamespace and c.relkind in ('r', 'p', 'v', 'm', 'f')
+      and has_table_privilege(r.role, c.oid, p)
+    union all
+    select 'table ' || c.oid::regclass::text, p || '(' || string_agg(a.attname::text, ',' order by a.attname) || ')'
+    from pg_catalog.pg_class c cross join unnest(array['select', 'insert', 'update', 'references']) p
+      join pg_catalog.pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped
+    where c.relnamespace = 'itsupport'::regnamespace and c.relkind in ('r', 'p', 'v', 'm', 'f')
+      and not has_table_privilege(r.role, c.oid, p) and has_column_privilege(r.role, c.oid, a.attnum, p)
+    group by c.oid, p
+    union all
+    select 'function ' || p.oid::regprocedure::text, 'execute' from pg_catalog.pg_proc p
+    where p.pronamespace = 'itsupport'::regnamespace and has_function_privilege(r.role, p.oid, 'execute')
+  ) as o (object, r)`;
+const T = "authenticated table itsupport.";
+// The only rights anon, authenticated and public may hold after every migration (0008, G8).
+const ALLOWED = [
+  "authenticated schema itsupport usage",
+  ...["current_staff()", "is_admin()", "is_staff()", "staff_add_note(uuid,text)"]
+    .concat(["staff_assign(uuid,uuid)", "staff_set_state(uuid,text)"])
+    .map((f) => `authenticated function itsupport.${f} execute`),
+  ...HELPDESK_TABLES.filter((t) => t !== "itsupport.staff").map(
+    (t) => `authenticated table ${t} select`,
+  ),
+  `${T}kb_articles select(id,slug,title)`,
+  `${T}reviews select(created_at,decided_at,decision,id,kind,proposal_id,staff_id,ticket_id)`,
+  `${T}staff select(active,display_name,id,role)`,
+  `${T}ticket_events select(at,id,payload,ticket_id,type)`,
+  `${T}ticket_redactions select(created_at,redacted_description,redacted_title,ticket_id)`,
+  `${T}tickets select(created_at,department,helpdesk,id,is_test,servicenow_number,` +
+    "servicenow_sys_id,source,status,ticket_number)",
+  `${T}triage_results select(assignment_group,category,checker,created_at,flags,` +
+    "grounding_score,kb_article_ids,model_versions,priority,probabilities,route,sensitive," +
+    "sensitive_flags,subcategory,suggested_fix,ticket_id,triaged_at,urgency)",
+].sort();
+// Each change must break the allow-list: removed required rights, then added forbidden ones.
+const CHANGES = [
+  "revoke select (ticket_number) on itsupport.tickets from authenticated",
+  "revoke execute on function itsupport.is_admin() from authenticated",
+  "revoke usage on schema itsupport from authenticated",
+  "grant update (role) on itsupport.staff to authenticated",
+  "grant select (raw_title) on itsupport.tickets to authenticated",
+  "grant select (id) on itsupport.tickets to anon",
+  "grant select on itsupport.notifications to public",
+  "grant usage on sequence itsupport.ticket_number_seq to authenticated",
+  "grant execute on function itsupport.next_ticket_number() to authenticated",
+];
+
 let container: PgContainer | undefined;
 const clients = new Map<string, pg.Client>();
 const as = (user: string): pg.Client => {
@@ -98,6 +159,8 @@ const as = (user: string): pg.Client => {
   return found;
 };
 const rights = async () => (await as("postgres").query(RIGHTS, [ROLES])).rows;
+const exact = async (db = as("postgres")) =>
+  (await db.query<{ right: string }>(EXACT, [ROLES])).rows.map((row) => row.right).sort();
 const notOk = async () =>
   (
     await as("postgres").query<{ object: string; ok: boolean }>(
@@ -126,7 +189,7 @@ afterAll(async () => {
 describe.each(OWNERS)(
   "every migration applied as %s, with Supabase-like default privileges",
   (owner) => {
-    it("public, anon and authenticated end with no right on any itsupport table, sequence or function", async () => {
+    it("public, anon and authenticated end with exactly the allowed rights on itsupport", async () => {
       await as(owner).query("create schema itsupport");
       await as("supabase_admin").query(defaults("grant"));
       const lock = UPS.indexOf(LOCK);
@@ -138,7 +201,18 @@ describe.each(OWNERS)(
         ROLES.map((role) => ({ object: "sequence itsupport.ticket_events_id_seq", role })),
       );
       for (const name of UPS.slice(lock)) await as(owner).query(read(`migrations/${name}`));
-      expect(await rights()).toEqual([]);
+      expect(UPS).toContain("0008_itsupport_staff_access.sql");
+      expect(await exact()).toEqual(ALLOWED);
+      for (const change of CHANGES) {
+        await as(owner).query("begin");
+        try {
+          await as(owner).query(change);
+          expect(await exact(as(owner)), change).not.toEqual(ALLOWED);
+        } finally {
+          await as(owner).query("rollback");
+        }
+      }
+      expect(await exact()).toEqual(ALLOWED);
 
       // Not vacuous: the objects exist and were all created by `owner`.
       const objects = (await as("postgres").query<{ object: string; owner: string }>(OBJECTS)).rows;
@@ -165,14 +239,14 @@ describe.each(OWNERS)(
       expect(objects.filter((o) => o.owner !== owner)).toEqual([]);
 
       // reviews, notifications and the 0007 tables by name: no table or column right for
-      // public, anon or authenticated, while the defaults still grant every new table to all three.
+      // public or anon, while the defaults still grant every new table to all three.
       for (const table of ["itsupport.reviews", "itsupport.notifications", ...HELPDESK_TABLES]) {
         const held = await as("postgres").query(
           `select r from unnest($1::text[]) r
            where has_table_privilege(r, $2::regclass,
                'select, insert, update, delete, truncate, references, trigger, maintain')
              or has_any_column_privilege(r, $2::regclass, 'select, insert, update, references')`,
-          [ROLES, table],
+          [["anon", "public"], table],
         );
         expect(held.rows, table).toEqual([]);
       }

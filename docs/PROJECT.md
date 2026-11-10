@@ -359,8 +359,8 @@ sizing is broken — fix that instead of granting a third.
       migration creates in `itsupport` gets an explicit `revoke all ... from
       public, anon, authenticated`, because default privileges may grant them
       (`migration-default-privileges.integration.test.ts` checks the end state:
-      after all migrations, no itsupport object grants anon, authenticated or
-      public a right)
+      after all migrations, anon and public hold no right on any itsupport
+      object, and authenticated holds exactly the 0008 staff allow-list)
 - [ ] Privacy: no PII in logs or error tracking; personal data collected only
       per §2's purpose and §12's compliance constraints
 - [ ] Errors observable: error tracking receiving events; automations notify on failure
