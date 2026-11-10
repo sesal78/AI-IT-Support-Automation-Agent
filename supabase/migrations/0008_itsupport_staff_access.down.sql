@@ -19,6 +19,6 @@ begin
     execute format('revoke all on table itsupport.%I from authenticated', t);
   end loop;
 end $$;
-drop function if exists itsupport.staff_add_note(uuid, text);
+drop function if exists itsupport.staff_add_note(uuid, text), itsupport.staff_assign(uuid, uuid);
 drop function if exists itsupport.is_admin(), itsupport.is_staff(), itsupport.current_staff();
 revoke usage on schema itsupport from authenticated;

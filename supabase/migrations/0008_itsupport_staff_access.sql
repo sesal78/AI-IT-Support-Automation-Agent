@@ -95,3 +95,31 @@ end $$;
 revoke all on function itsupport.staff_add_note(uuid, text)
   from public, anon, authenticated, service_role;
 grant execute on function itsupport.staff_add_note(uuid, text) to authenticated;
+
+create or replace function itsupport.staff_assign(helpdesk_ticket_id uuid, assignee_id uuid)
+  returns uuid language plpgsql security definer set search_path = ''
+as $$
+declare
+  me uuid := itsupport.current_staff();
+  assignee uuid := assignee_id;
+  ticket uuid;
+  assignment_id uuid;
+begin
+  if me is null then raise exception 'not active staff' using errcode = '42501'; end if;
+  select ticket_id into ticket from itsupport.helpdesk_tickets
+    where id = helpdesk_ticket_id for update;
+  if not found then raise exception 'helpdesk ticket not found' using errcode = 'P0002'; end if;
+  -- for share: the assignee cannot be deactivated until this commits.
+  perform from itsupport.staff where id = assignee and active for share;
+  if not found then raise exception 'assignee is not active staff' using errcode = '22023'; end if;
+  insert into itsupport.helpdesk_assignments (helpdesk_ticket_id, assignee_id, assigned_by_staff_id)
+    values (helpdesk_ticket_id, assignee, me) returning id into assignment_id;
+  update itsupport.helpdesk_tickets set assignee_id = assignee, updated_at = now()
+    where id = helpdesk_ticket_id;
+  insert into itsupport.ticket_events (ticket_id, type, payload) values (ticket, 'staff_assigned',
+    jsonb_build_object('helpdeskTicketId', helpdesk_ticket_id, 'staffId', me, 'assigneeId', assignee));
+  return assignment_id;
+end $$;
+revoke all on function itsupport.staff_assign(uuid, uuid)
+  from public, anon, authenticated, service_role;
+grant execute on function itsupport.staff_assign(uuid, uuid) to authenticated;
