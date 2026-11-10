@@ -10,6 +10,7 @@ import { createTestStaffUser } from "./test-users.js";
 let stack: RestStack;
 let hd = "";
 let agentStaffId = "";
+let assigneeStaffId = "";
 const tokens = { agent: "", inactive: "", none: "" };
 
 async function query<T = Record<string, unknown>>(text: string) {
@@ -61,6 +62,7 @@ beforeAll(async () => {
     });
     tokens[key] = ((await res.json()) as { access_token: string }).access_token;
   }
+  assigneeStaffId = (await createTestStaffUser(stack, { role: "agent" })).staffId!;
   expect(runSql(stack.pg, `${SEED};\n${UP}\nnotify pgrst, 'reload schema';`).status).toBe(0);
   hd = (await query<{ id: string }>("select id from itsupport.helpdesk_tickets"))[0]!.id;
   // Wait until PostgREST's schema cache has the 0008 functions.
@@ -73,13 +75,13 @@ describe("migration 0008 staff actions (PostgREST + JWT)", () => {
   it("refuses anon, service_role, non-staff and inactive staff with 42501, writing nothing", async () => {
     const before = await counts();
     for (const token of [undefined, stack.serviceRoleKey, tokens.none, tokens.inactive])
-      for (const [fn, args] of CALLS(agentStaffId))
+      for (const [fn, args] of CALLS(assigneeStaffId))
         expect(await rpc(fn, args, token), fn).toMatchObject({ code: "42501" });
     expect(await counts()).toBe(before);
   });
 
   it("lets an active staff JWT note, assign and change state, one event each", async () => {
-    const [note, assign, state] = CALLS(agentStaffId);
+    const [note, assign, state] = CALLS(assigneeStaffId);
     const noteId = await rpc(note![0], note![1], tokens.agent);
     await rpc(assign![0], assign![1], tokens.agent);
     expect(await rpc(state![0], state![1], tokens.agent)).toBe("in_progress");
@@ -91,7 +93,7 @@ describe("migration 0008 staff actions (PostgREST + JWT)", () => {
       { type: "staff_note_added", payload: { noteId, staffId: agentStaffId } },
       {
         type: "staff_assigned",
-        payload: { helpdeskTicketId: hd, staffId: agentStaffId, assigneeId: agentStaffId },
+        payload: { helpdeskTicketId: hd, staffId: agentStaffId, assigneeId: assigneeStaffId },
       },
       {
         type: "staff_state_changed",
