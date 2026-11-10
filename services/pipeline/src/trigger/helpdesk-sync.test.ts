@@ -11,7 +11,14 @@ import {
 import { assertTransition, type TicketStatus } from "@ai-it-support/shared";
 import { AbortTaskRunError } from "@trigger.dev/sdk";
 import { describe, expect, it, vi } from "vitest";
-import { helpdeskSyncPayload, runHelpdeskSync, type HelpdeskSyncDeps } from "./helpdesk-sync.js";
+import {
+  createHelpdeskSyncDeps,
+  helpdeskSyncOptions,
+  helpdeskSyncPayload,
+  onHelpdeskSyncFailure,
+  runHelpdeskSync,
+  type HelpdeskSyncDeps,
+} from "./helpdesk-sync.js";
 
 const TICKET = "00000000-0000-4000-8000-000000000001";
 const KB = "00000000-0000-4000-8000-00000000000b";
@@ -571,6 +578,22 @@ describe("runHelpdeskSync: errors", () => {
   });
 });
 
+describe("runHelpdeskSync: stored fix steps", () => {
+  it("throws for fix steps of an unexpected shape, after the incident exists, without a note", async () => {
+    const h = harness({ triage: triage({ suggested_fix: { steps: "not a list" } }) });
+    await expect(run(h)).rejects.toThrow(/unexpected shape/);
+    expect(h.connector.addNote).not.toHaveBeenCalled();
+    expect(h.status.value).toBe("helpdesk_pending");
+  });
+
+  it("sends a note with no fix steps when none were drafted", async () => {
+    const h = harness({ triage: triage({ suggested_fix: null, kb_article_ids: null }) });
+    await run(h);
+    expect(h.sent.notes[0]).toContain("Suggested fix steps: none drafted");
+    expect(h.sent.notes[0]).toContain("KB articles: vpn-reset");
+  });
+});
+
 describe("runHelpdeskSync: privacy", () => {
   it("no event, log, alert or note holds the raw title, raw description, requester name or email", async () => {
     for (const options of [
@@ -694,5 +717,153 @@ describe("runHelpdeskSync: the helpdeskAsleepMinutes switch", () => {
     expect(h.waits).toEqual([1, 2]);
     expect(h.status.value).toBe("incident_skipped_shadow");
     expect(h.connector.createTicket).not.toHaveBeenCalled();
+  });
+});
+
+describe("onHelpdeskSyncFailure", () => {
+  const failureDeps = (h: Harness) => ({ repos: h.repos, alert: h.alert, logger: h.logger });
+  const hook = (h: Harness, error: unknown, payload: unknown = { ticketId: TICKET }) =>
+    onHelpdeskSyncFailure({ payload, error }, failureDeps(h));
+
+  it("keeps one failure event when the run wrote it before a status write failed", async () => {
+    const h = harness({
+      found: ticket("helpdesk_pending"),
+      connectorFactoryError: new HelpdeskError("auth", "createTicket"),
+    });
+    const error = new TypeError("database unavailable");
+    h.repos.setTicketStatus.mockRejectedValueOnce(error);
+    await expect(run(h)).rejects.toBe(error);
+    await hook(h, error);
+    expect(h.events.filter((event) => event.type === "helpdesk_sync_failed")).toEqual([
+      { type: "helpdesk_sync_failed", payload: { error: "auth" } },
+    ]);
+    expect(h.status.value).toBe("failed");
+    expect(h.alert).toHaveBeenCalledWith("helpdesk_sync_failed", { ticketId: TICKET });
+  });
+
+  it.each(["auto", "approved", "helpdesk_pending"])(
+    "on a %s ticket: helpdesk_sync_failed { error }, failed, one alert",
+    async (status) => {
+      const h = harness({ found: ticket(status) });
+      await hook(h, new HelpdeskError("unavailable", "createTicket"));
+      expect(h.events).toEqual([
+        { type: "helpdesk_sync_failed", payload: { error: "unavailable" } },
+      ]);
+      expect(h.status.value).toBe("failed");
+      expect(h.alert.mock.calls).toEqual([["helpdesk_sync_failed", { ticketId: TICKET }]]);
+    },
+  );
+
+  it("uses the class name for an error that is not a HelpdeskError", async () => {
+    const h = harness({ found: ticket("helpdesk_pending") });
+    await hook(h, new TypeError("MARKER_detail"));
+    expect(h.events[0]?.payload).toEqual({ error: "TypeError" });
+    expect(JSON.stringify([h.events, h.logger.error.mock.calls])).not.toContain("MARKER_detail");
+  });
+
+  it.each([
+    "incident_created",
+    "incident_skipped_shadow",
+    "failed",
+    "rejected",
+    "escalated_manual",
+    "triaged",
+    "review_pending",
+  ])("on a %s ticket it changes nothing", async (status) => {
+    const h = harness({ found: ticket(status) });
+    await hook(h, new Error("x"));
+    expect(h.repos.addEvent).not.toHaveBeenCalled();
+    expect(h.repos.setTicketStatus).not.toHaveBeenCalled();
+    expect(h.alert).not.toHaveBeenCalled();
+  });
+
+  it("leaves an unknown ticket and an invalid payload alone", async () => {
+    const h = harness({ found: null });
+    await hook(h, new Error("x"));
+    await hook(h, new Error("x"), { ticketId: "nope" });
+    expect(h.repos.addEvent).not.toHaveBeenCalled();
+    expect(h.alert).not.toHaveBeenCalled();
+  });
+
+  it("with the database down it logs the class name and does not throw", async () => {
+    const h = harness({ found: ticket("helpdesk_pending") });
+    h.repos.getTicket.mockRejectedValue(new TypeError("fetch failed MARKER_detail"));
+    await expect(hook(h, new Error("x"))).resolves.toBeUndefined();
+    const lines = JSON.stringify(h.logger.error.mock.calls);
+    expect(lines).toContain("TypeError");
+    expect(lines).not.toContain("MARKER_detail");
+  });
+
+  it("does not throw when the logger itself throws", async () => {
+    const h = harness({ found: ticket("helpdesk_pending") });
+    h.logger.error.mockImplementation(() => {
+      throw new Error("log down");
+    });
+    h.repos.getTicket.mockRejectedValue(new Error("db down"));
+    await expect(hook(h, new Error("x"))).resolves.toBeUndefined();
+  });
+});
+
+describe("createHelpdeskSyncDeps", () => {
+  const password = ["Mark", "er", "Pw", "-0123456789"].join("");
+  const env = {
+    SUPABASE_URL: "http://127.0.0.1:54321",
+    SUPABASE_SERVICE_ROLE_KEY: "k".repeat(16),
+    SUPABASE_DB_SCHEMA: "itsupport",
+    SERVICENOW_INSTANCE_URL: "https://dev420188.service-now.com",
+    SERVICENOW_USERNAME: "svc.itsupport",
+    SERVICENOW_PASSWORD: password,
+    SERVICENOW_DEFAULT_CALLER: "d".repeat(32),
+    SHADOW_MODE: "false",
+    E2E_MODE: "true",
+  };
+
+  it("builds deps with a ServiceNow connector, without a request", () => {
+    const deps = createHelpdeskSyncDeps(env);
+    expect(deps.shadowMode).toBe(false);
+    expect(deps.e2eMode).toBe(true);
+    expect(deps.createConnector().kind).toBe("servicenow");
+    expect(deps.now()).toBeGreaterThan(Date.parse("2026-11-01"));
+  });
+
+  it("fails closed: SHADOW_MODE unset means shadow mode on", () => {
+    expect(createHelpdeskSyncDeps({ ...env, SHADOW_MODE: undefined }).shadowMode).toBe(true);
+  });
+
+  it.each([
+    "SERVICENOW_INSTANCE_URL",
+    "SERVICENOW_USERNAME",
+    "SERVICENOW_PASSWORD",
+    "SERVICENOW_DEFAULT_CALLER",
+    "SUPABASE_URL",
+  ])("throws without %s, naming it and never the password", (name) => {
+    const attempt = () => createHelpdeskSyncDeps({ ...env, [name]: undefined });
+    expect(attempt).toThrow(new RegExp(name));
+    try {
+      attempt();
+    } catch (error) {
+      expect(String(error)).not.toContain(password);
+    }
+  });
+
+  it("rejects a bad SERVICENOW_INSTANCE_URL, naming it", () => {
+    expect(() =>
+      createHelpdeskSyncDeps({ ...env, SERVICENOW_INSTANCE_URL: "https://example.com" }),
+    ).toThrow(/SERVICENOW_INSTANCE_URL/);
+  });
+});
+
+describe("helpdeskSyncOptions", () => {
+  it("is the helpdesk-sync task with a payload schema, three attempts and the failure hook", () => {
+    expect(helpdeskSyncOptions.id).toBe("helpdesk-sync");
+    expect(helpdeskSyncOptions.schema).toBe(helpdeskSyncPayload);
+    expect(helpdeskSyncOptions.retry).toEqual({
+      maxAttempts: 3,
+      factor: 2,
+      minTimeoutInMs: 1000,
+      maxTimeoutInMs: 10_000,
+      randomize: true,
+    });
+    expect(helpdeskSyncOptions.onFailure).toBe(onHelpdeskSyncFailure);
   });
 });

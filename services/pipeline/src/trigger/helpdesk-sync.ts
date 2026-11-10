@@ -1,23 +1,37 @@
 import { errorClassName, type AlertFn } from "@ai-it-support/ai";
-import { IncidentConflictError, type Repositories } from "@ai-it-support/db";
+import {
+  IncidentConflictError,
+  createDbClient,
+  createRepositories,
+  dbEnvShape,
+  type Repositories,
+} from "@ai-it-support/db";
 import {
   HelpdeskError,
   InstanceAsleepError,
+  ServiceNowConnector,
+  createServiceNowClient,
   shadowEnabled,
   withShadowMode,
   type HelpdeskConnector,
   type HelpdeskTicketRef,
 } from "@ai-it-support/helpdesk";
 import {
+  HELPDESK_SYNC_TASK_ID,
+  e2eEnvShape,
   effectiveTestOverrides,
+  parseEnv,
+  phase1EnvShape,
+  serviceNowEnvShape,
   testOverridesSchema,
   type HelpdeskSyncPayload,
 } from "@ai-it-support/shared";
-import { AbortTaskRunError } from "@trigger.dev/sdk";
+import { AbortTaskRunError, logger, schemaTask, wait } from "@trigger.dev/sdk";
 import { z } from "zod";
 import { asleepUntil, withAsleepSwitch } from "../helpdesk/asleep-switch.js";
 import { checkSync } from "../helpdesk/sync-guard.js";
 import { buildSyncNote } from "../helpdesk/sync-note.js";
+import { createFailureAlert, createPipelineAlert } from "../pipeline-alert.js";
 
 // Payload type is shared with the caller that triggers it (packages/shared).
 export const helpdeskSyncPayload = z.object({
@@ -280,3 +294,124 @@ export async function runHelpdeskSync(
     }
   }
 }
+
+const helpdeskSyncDepsEnvShape = {
+  ...dbEnvShape,
+  ...serviceNowEnvShape,
+  ...e2eEnvShape,
+  // Unset means `true`: shadow mode is the safe default.
+  SHADOW_MODE: phase1EnvShape.SHADOW_MODE,
+};
+
+/** Validates env and builds the real deps. Invalid variables throw, naming the variable. */
+export function createHelpdeskSyncDeps(
+  source: Record<string, string | undefined>,
+): HelpdeskSyncDeps {
+  const env = parseEnv(helpdeskSyncDepsEnvShape, source);
+  const repos = createRepositories(createDbClient(source));
+  return {
+    repos,
+    createConnector: () =>
+      new ServiceNowConnector({
+        client: createServiceNowClient({
+          instanceUrl: env.SERVICENOW_INSTANCE_URL,
+          username: env.SERVICENOW_USERNAME,
+          password: env.SERVICENOW_PASSWORD,
+        }),
+        defaultCaller: env.SERVICENOW_DEFAULT_CALLER,
+      }),
+    wait: { for: (options) => wait.for(options) },
+    now: () => Date.now(),
+    shadowMode: env.SHADOW_MODE,
+    e2eMode: env.E2E_MODE,
+    alert: createPipelineAlert(source, repos),
+    logger,
+  };
+}
+
+export interface HelpdeskSyncFailureDeps {
+  repos: Pick<Repositories, "getTicket" | "addEvent" | "listEventTypes" | "setTicketStatus">;
+  alert: AlertFn;
+  logger: { info: LogFn; warn: LogFn; error: LogFn };
+}
+
+/** The database and the alert sink only: the run may have failed on any other variable. */
+export function createHelpdeskSyncFailureDeps(
+  source: Record<string, string | undefined>,
+  repos: HelpdeskSyncFailureDeps["repos"] &
+    Pick<Repositories, "recordSecurityEvent"> = createRepositories(createDbClient(source)),
+): HelpdeskSyncFailureDeps {
+  return { repos, alert: createFailureAlert("helpdesk-sync", source, repos), logger };
+}
+
+/**
+ * The task's `onFailure` hook, called once after the last attempt failed. For
+ * a ticket the sync still owns (`auto`, `approved`, `helpdesk_pending`) it
+ * records `helpdesk_sync_failed { error }` (a HelpdeskError code or the error
+ * class name), sets `failed` and raises `alert:helpdesk_sync_failed`. Any other
+ * ticket, finished, refused or failed, is left unchanged. It never throws; a
+ * failure here (the database is down) is logged by class name only.
+ */
+export async function onHelpdeskSyncFailure(
+  params: { payload: unknown; error: unknown },
+  deps?: HelpdeskSyncFailureDeps,
+): Promise<void> {
+  const error =
+    params.error instanceof HelpdeskError ? params.error.code : errorClassName(params.error);
+  const log = deps?.logger ?? logger;
+  const safeLog = (message: string, data: object) => {
+    try {
+      log.error(message, { ...data });
+    } catch {
+      // The hook must not throw, even when logging fails.
+    }
+  };
+  try {
+    const parsed = helpdeskSyncPayload.safeParse(params.payload);
+    if (!parsed.success) {
+      safeLog("helpdesk-sync: failed run without a valid ticket id", { error });
+      return;
+    }
+    const { ticketId } = parsed.data;
+    const { repos, alert } = deps ?? createHelpdeskSyncFailureDeps(process.env);
+    const ticket = await repos.getTicket(ticketId);
+    if (!ticket || checkSync(ticket.status) !== "run") {
+      safeLog("helpdesk-sync: failed run, ticket unchanged", { ticketId, error });
+      return;
+    }
+    const written = await repos.listEventTypes(ticketId, ["helpdesk_sync_failed"]);
+    if (!written.includes("helpdesk_sync_failed")) {
+      await repos.addEvent(ticketId, "helpdesk_sync_failed", { error });
+    }
+    await repos.setTicketStatus(ticketId, "failed");
+    await alert("helpdesk_sync_failed", { ticketId });
+    safeLog("helpdesk-sync: failed", { ticketId, error });
+  } catch (hookError) {
+    safeLog("helpdesk-sync: could not record the failure", {
+      error,
+      cause: errorClassName(hookError),
+    });
+  }
+}
+
+/**
+ * Task options, exported so a test can assert the wiring. Creates the
+ * ServiceNow incident for an `auto` or `approved` ticket. Three attempts with
+ * exponential backoff; env is validated at the start of each run.
+ */
+export const helpdeskSyncOptions = {
+  id: HELPDESK_SYNC_TASK_ID,
+  schema: helpdeskSyncPayload,
+  retry: {
+    maxAttempts: 3,
+    factor: 2,
+    minTimeoutInMs: 1000,
+    maxTimeoutInMs: 10_000,
+    randomize: true,
+  },
+  run: async (payload: HelpdeskSyncPayload, { ctx }: { ctx: { attempt: { number: number } } }) =>
+    runHelpdeskSync(payload, createHelpdeskSyncDeps(process.env), ctx.attempt.number),
+  onFailure: onHelpdeskSyncFailure,
+};
+
+export const helpdeskSync = schemaTask(helpdeskSyncOptions);
