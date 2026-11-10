@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createPipelineAlert } from "../src/pipeline-alert.js";
 import {
   createHelpdeskSyncDeps,
+  onHelpdeskSyncFailure,
   runHelpdeskSync,
   type HelpdeskSyncDeps,
 } from "../src/trigger/helpdesk-sync.js";
@@ -185,6 +186,14 @@ const sync = (
   testOverrides?: Record<string, unknown>,
 ) => runHelpdeskSync({ ticketId, ...(testOverrides ? { testOverrides } : {}) }, deps, attempt);
 
+async function alertRows(kind: string) {
+  const { rows } = await sql().query(
+    "select source, kind, count from itsupport.security_events where source = 'pipeline' and kind = $1",
+    [`alert:${kind}`],
+  );
+  return rows as Array<{ source: string; kind: string; count: number }>;
+}
+
 async function stored(ticketId: string) {
   const { rows } = await sql().query(
     "select servicenow_sys_id, servicenow_number from itsupport.tickets where id = $1",
@@ -195,6 +204,14 @@ async function stored(ticketId: string) {
 
 const snowRequests = () => requestsTo(SERVICENOW_HOST);
 const writes = () => snowRequests().filter((r) => r.method === "POST" || r.method === "PATCH");
+
+async function eventPayloads(ticketId: string, type: string): Promise<unknown[]> {
+  const { rows } = await sql().query(
+    "select payload from itsupport.ticket_events where ticket_id = $1 and type = $2 order by id",
+    [ticketId, type],
+  );
+  return rows.map((row: { payload: unknown }) => row.payload);
+}
 
 // ---- Tests -------------------------------------------------------------------------
 
@@ -296,4 +313,201 @@ describe("helpdesk-sync on the local REST stack", () => {
       "helpdesk_note_added",
     ]);
   });
+
+  it.each([401, 403])(
+    "T5.I.03: ServiceNow %i fails the ticket with auth, one alert, and no retry",
+    async (status) => {
+      const { ticketId } = await seed();
+      snow.fail("GET incident", { status });
+
+      await expect(sync(ticketId, harness().deps)).resolves.toEqual({
+        ticketId,
+        failed: true,
+        error: "auth",
+      });
+
+      expect(await ticketStatus(ticketId)).toBe("failed");
+      expect(await eventPayloads(ticketId, "helpdesk_sync_failed")).toEqual([{ error: "auth" }]);
+      expect(await alertRows("helpdesk_auth_failed")).toEqual([
+        { source: "pipeline", kind: "alert:helpdesk_auth_failed", count: 1 },
+      ]);
+      expect(snowRequests().filter((r) => r.path.endsWith("/incident"))).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    ["a 500", { status: 500 }],
+    ["a timeout", "timeout"],
+  ] as const)(
+    "T5.I.03: %s on every try: 3 attempts, then onFailure sets failed",
+    async (_name, fault) => {
+      const { ticketId } = await seed();
+      const { deps } = harness();
+      snow.fail("GET incident", fault, fault, fault);
+
+      let lastError: unknown;
+      for (const attempt of [1, 2, 3]) {
+        lastError = await sync(ticketId, deps, attempt).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        expect(lastError).toMatchObject({ code: "unavailable" });
+      }
+      expect(await ticketStatus(ticketId)).toBe("helpdesk_pending");
+      expect(writes()).toHaveLength(0);
+
+      await onHelpdeskSyncFailure(
+        { payload: { ticketId }, error: lastError },
+        { repos: testRepos(), alert: deps.alert, logger: quiet },
+      );
+
+      expect(await ticketStatus(ticketId)).toBe("failed");
+      expect(await eventPayloads(ticketId, "helpdesk_sync_failed")).toEqual([
+        { error: "unavailable" },
+      ]);
+      expect(await alertRows("helpdesk_sync_failed")).toEqual([
+        { source: "pipeline", kind: "alert:helpdesk_sync_failed", count: 1 },
+      ]);
+    },
+  );
+
+  it("T5.I.03: a 500 then success ends incident_created on the second attempt", async () => {
+    const { ticketId } = await seed();
+    const { deps } = harness();
+    snow.fail("GET incident", { status: 500 });
+
+    await expect(sync(ticketId, deps, 1)).rejects.toMatchObject({ code: "unavailable" });
+    await expect(sync(ticketId, deps, 2)).resolves.toMatchObject({
+      incident: { number: "INC0000001" },
+    });
+
+    expect(await ticketStatus(ticketId)).toBe("incident_created");
+    expect(snow.incidents).toHaveLength(1);
+    expect(await alertRows("helpdesk_sync_failed")).toEqual([]);
+  });
+
+  it.each(["rejected", "escalated_manual", "review_pending", "triaged", "failed"] as const)(
+    "T5.I.05: a forged trigger for a %s ticket is refused, with no ServiceNow request",
+    async (status) => {
+      const { ticketId } = await seed({ status });
+
+      await expect(sync(ticketId, harness().deps)).resolves.toEqual({ ticketId, refused: true });
+
+      expect(snowRequests()).toHaveLength(0);
+      expect(await ticketStatus(ticketId)).toBe(status);
+      expect(await eventPayloads(ticketId, "sync_refused")).toEqual([{ status }]);
+      expect(await alertRows("sync_refused")).toEqual([
+        { source: "pipeline", kind: "alert:sync_refused", count: 1 },
+      ]);
+    },
+  );
+
+  it("a finished ticket is skipped: a second run makes no request and no event", async () => {
+    const { ticketId } = await seed();
+    const { deps } = harness();
+    await sync(ticketId, deps);
+    const requests = snowRequests().length;
+    const events = await eventTypes(ticketId);
+
+    await expect(sync(ticketId, deps)).resolves.toEqual({ ticketId, skipped: true });
+
+    expect(snowRequests()).toHaveLength(requests);
+    expect(await eventTypes(ticketId)).toEqual(events);
+  });
+});
+
+describe("helpdesk-sync: the instance is asleep", () => {
+  it("waits 1 then 2 minutes with helpdesk_pending in between, then creates the incident", async () => {
+    const { ticketId } = await seed();
+    const seen: string[] = [];
+    const { deps, waits } = harness({
+      onWait: async () => void seen.push(await ticketStatus(ticketId)),
+    });
+    snow.fail("GET incident", "asleep", "asleep");
+
+    await sync(ticketId, deps);
+
+    expect(waits).toEqual([1, 2]);
+    expect(seen).toEqual(["helpdesk_pending", "helpdesk_pending"]);
+    expect(await eventPayloads(ticketId, "helpdesk_asleep")).toEqual([
+      { attempt: 1 },
+      { attempt: 2 },
+    ]);
+    expect(await ticketStatus(ticketId)).toBe("incident_created");
+    expect(snow.incidents).toHaveLength(1);
+  });
+
+  it("gives up 6 hours after the first answer: failed with asleep and one timeout alert", async () => {
+    const { ticketId } = await seed();
+    const { deps, waits } = harness();
+    snow.setAsleep(true);
+
+    await expect(sync(ticketId, deps)).resolves.toEqual({
+      ticketId,
+      failed: true,
+      error: "asleep",
+    });
+
+    expect(waits).toEqual([1, 2, 4, 8, 15, 30, 60, 60, 60, 60, 60]);
+    expect(await ticketStatus(ticketId)).toBe("failed");
+    expect(await eventPayloads(ticketId, "helpdesk_sync_failed")).toEqual([{ error: "asleep" }]);
+    expect(await alertRows("helpdesk_asleep_timeout")).toEqual([
+      { source: "pipeline", kind: "alert:helpdesk_asleep_timeout", count: 1 },
+    ]);
+    expect(snow.incidents).toHaveLength(0);
+  });
+
+  it("helpdeskAsleepMinutes: 3 on an e2e test ticket: no request until 3 minutes after created_at", async () => {
+    const { ticketId, createdAt } = await seed({ isTest: true });
+    const requestsAtWait: number[] = [];
+    const { deps, waits } = harness({
+      e2e: true,
+      startAt: Date.parse(createdAt),
+      onWait: async () => void requestsAtWait.push(snowRequests().length),
+    });
+
+    await sync(ticketId, deps, 1, { helpdeskAsleepMinutes: 3 });
+
+    expect(waits).toEqual([1, 2]);
+    expect(requestsAtWait).toEqual([0, 0]);
+    expect(await ticketStatus(ticketId)).toBe("incident_created");
+    expect(snow.incidents[0]?.short_description).toMatch(/^\[E2E\] /);
+  });
+
+  it.each([
+    ["is_test = false", { isTest: false, e2e: true }],
+    ["E2E_MODE=false", { isTest: true, e2e: false }],
+  ])("helpdeskAsleepMinutes has no effect with %s", async (_name, { isTest, e2e }) => {
+    const { ticketId, createdAt } = await seed({ isTest });
+    const { deps, waits } = harness({ e2e, startAt: Date.parse(createdAt) });
+
+    await sync(ticketId, deps, 1, { helpdeskAsleepMinutes: 3 });
+
+    expect(waits).toEqual([]);
+    expect(await ticketStatus(ticketId)).toBe("incident_created");
+  });
+});
+
+describe("helpdesk-sync: shadow mode", () => {
+  it.each([
+    ["SHADOW_MODE=true", { shadow: true }, undefined],
+    ["the shadowMode switch on an e2e test ticket", { e2e: true }, { shadowMode: true }],
+  ] as Array<[string, DepsOptions, Record<string, unknown> | undefined]>)(
+    "%s: incident_skipped_shadow, no POST and no PATCH",
+    async (_name, options, overrides) => {
+      const { ticketId } = await seed({ isTest: options.e2e === true });
+
+      await expect(sync(ticketId, harness(options).deps, 1, overrides)).resolves.toEqual({
+        ticketId,
+        shadow: true,
+      });
+
+      expect(await ticketStatus(ticketId)).toBe("incident_skipped_shadow");
+      expect(await eventTypes(ticketId)).toEqual(["helpdesk_sync_started", "shadow_skipped"]);
+      expect(await eventPayloads(ticketId, "shadow_skipped")).toEqual([{ operation: "create" }]);
+      expect(writes()).toHaveLength(0);
+      expect(snow.incidents).toHaveLength(0);
+      expect(await stored(ticketId)).toEqual({ servicenow_sys_id: null, servicenow_number: null });
+    },
+  );
 });
