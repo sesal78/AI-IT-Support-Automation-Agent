@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { IllegalHelpdeskTransitionError } from "@ai-it-support/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDbClient } from "./client.js";
-import { DbError } from "./errors.js";
+import { DbError, HelpdeskConflictError } from "./errors.js";
 import { createRepositories } from "./repositories.js";
 
 const SECRET_KEY = "test-service-role-key";
@@ -210,5 +211,134 @@ describe("addSystemNote", () => {
     respond(pgError("23503", 409), ok({ ...noteRow, author_kind: SECRET_TEXT }, 201));
     await expectDbError(repos.addSystemNote(helpdeskId, SECRET_TEXT), "addSystemNote");
     await expectDbError(repos.addSystemNote(helpdeskId, SECRET_TEXT), "addSystemNote");
+  });
+});
+
+describe("setHelpdeskState", () => {
+  const moved = { ...row, state: "in_progress" };
+
+  it("moves with one compare-and-set update and returns the new row", async () => {
+    const calls = respond(ok([moved]));
+    const outcome = await repos.setHelpdeskState(helpdeskId, "new", "in_progress");
+    expect(outcome).toEqual({ changed: true, helpdeskTicket: moved });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("PATCH");
+    expect(calls[0]?.url.searchParams.get("id")).toBe(`eq.${helpdeskId}`);
+    expect(calls[0]?.url.searchParams.get("state")).toBe("eq.new");
+    expect(selectOf(calls[0])).toBe(COLUMNS);
+    const body = calls[0]?.body as { state: string; updated_at: string };
+    expect(Object.keys(body).sort()).toEqual(["state", "updated_at"]);
+    expect(body.state).toBe("in_progress");
+    expect(new Date(body.updated_at).toISOString()).toBe(body.updated_at);
+  });
+
+  it("returns changed: false and the stored row when the stored state is not `from`", async () => {
+    const calls = respond(ok([]), ok(moved));
+    const outcome = await repos.setHelpdeskState(helpdeskId, "new", "on_hold");
+    expect(outcome).toEqual({ changed: false, helpdeskTicket: moved });
+    expect(calls[1]?.method).toBe("GET");
+    expect(calls[1]?.url.searchParams.get("id")).toBe(`eq.${helpdeskId}`);
+    expect(selectOf(calls[1])).toBe(COLUMNS);
+  });
+
+  it("throws DbError for an unknown id, and when more than one row matched", async () => {
+    respond(ok([]), ok(null), ok([moved, moved]));
+    await expectDbError(repos.setHelpdeskState(helpdeskId, "new", "closed"), "setHelpdeskState");
+    await expectDbError(repos.setHelpdeskState(helpdeskId, "new", "closed"), "setHelpdeskState");
+  });
+
+  it("throws DbError naming the operation on a Supabase error, on either request", async () => {
+    respond(pgError("42501", 403), ok([]), pgError("42501", 403));
+    await expectDbError(repos.setHelpdeskState(helpdeskId, "new", "closed"), "setHelpdeskState");
+    await expectDbError(repos.setHelpdeskState(helpdeskId, "new", "closed"), "setHelpdeskState");
+  });
+
+  it("throws DbError for a malformed row", async () => {
+    respond(ok([{ ...moved, state: SECRET_TEXT }]));
+    await expectDbError(repos.setHelpdeskState(helpdeskId, "new", "closed"), "setHelpdeskState");
+  });
+
+  it.each([
+    ["new", "new"],
+    ["closed", "new"],
+    ["on_hold", "closed"],
+    ["in_progress", "new"],
+    ["resolved", "on_hold"],
+  ] as const)("throws before any request for the illegal pair %s -> %s", async (from, to) => {
+    const calls = respond();
+    await expect(repos.setHelpdeskState(helpdeskId, from, to)).rejects.toThrow(
+      IllegalHelpdeskTransitionError,
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it("throws the fixed error for an unknown state, without echoing it", async () => {
+    const calls = respond();
+    const call = repos.setHelpdeskState(helpdeskId, SECRET_TEXT as never, "closed");
+    await expect(call).rejects.toThrow(IllegalHelpdeskTransitionError);
+    await expect(call).rejects.not.toThrow(/SSN/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("throws TypeError for a non-UUID id before any request", async () => {
+    const calls = respond();
+    await expect(repos.setHelpdeskState("nope", "new", "closed")).rejects.toThrow(TypeError);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("setTicketHelpdesk", () => {
+  const stored = (helpdesk: string | null) => ok({ helpdesk });
+
+  it("sets the helpdesk only while it is null, with one conditional update", async () => {
+    const calls = respond(ok([{ id: ticketId }]));
+    expect(await repos.setTicketHelpdesk(ticketId, "builtin")).toEqual({ changed: true });
+    expect(calls[0]?.method).toBe("PATCH");
+    expect(calls[0]?.url.pathname).toBe("/rest/v1/tickets");
+    expect(calls[0]?.url.searchParams.get("id")).toBe(`eq.${ticketId}`);
+    expect(calls[0]?.url.searchParams.get("helpdesk")).toBe("is.null");
+    expect(calls[0]?.body).toEqual({ helpdesk: "builtin" });
+    expect(selectOf(calls[0])).toBe("id");
+  });
+
+  it("reports changed: false when the ticket already holds the same value", async () => {
+    const calls = respond(ok([]), stored("servicenow"));
+    expect(await repos.setTicketHelpdesk(ticketId, "servicenow")).toEqual({ changed: false });
+    expect(calls[1]?.url.searchParams.get("id")).toBe(`eq.${ticketId}`);
+    expect(selectOf(calls[1])).toBe("helpdesk");
+  });
+
+  it("fails loudly with HelpdeskConflictError when the ticket holds another value", async () => {
+    respond(ok([]), stored("servicenow"));
+    const error = await expectDbError(
+      repos.setTicketHelpdesk(ticketId, "builtin"),
+      "setTicketHelpdesk",
+    );
+    expect(error).toBeInstanceOf(HelpdeskConflictError);
+    expect(error.name).toBe("HelpdeskConflictError");
+    expect(error.message).not.toMatch(/servicenow|builtin/);
+  });
+
+  it("throws DbError for an unknown ticket, a null value after a miss, or more than one row", async () => {
+    respond(ok([]), ok(null), ok([]), stored(null), ok([{ id: ticketId }, { id: ticketId }]));
+    for (let i = 0; i < 3; i += 1) {
+      await expectDbError(repos.setTicketHelpdesk(ticketId, "builtin"), "setTicketHelpdesk");
+    }
+  });
+
+  it("throws DbError on a Supabase error, on either request", async () => {
+    respond(pgError("42501", 403), ok([]), pgError("42501", 403));
+    await expectDbError(repos.setTicketHelpdesk(ticketId, "builtin"), "setTicketHelpdesk");
+    await expectDbError(repos.setTicketHelpdesk(ticketId, "builtin"), "setTicketHelpdesk");
+  });
+
+  it.each([
+    ["a non-UUID id", "nope", "builtin"],
+    ["an unknown kind", ticketId, "jira"],
+    ["a null kind", ticketId, null],
+  ])("rejects %s with a TypeError before any request", async (_name, id, kind) => {
+    const calls = respond();
+    await expect(repos.setTicketHelpdesk(id, kind as never)).rejects.toThrow(TypeError);
+    expect(calls).toHaveLength(0);
   });
 });

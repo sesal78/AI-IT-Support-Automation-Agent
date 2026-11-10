@@ -1,4 +1,5 @@
 import {
+  assertHelpdeskTransition,
   assertTransition,
   CATEGORIES,
   HELPDESK_STATES,
@@ -8,6 +9,7 @@ import {
   triageResultSchema,
   type AiUsage,
   type Category,
+  type HelpdeskState,
   type InternalTicketView,
   type KbArticle,
   type Priority,
@@ -16,7 +18,7 @@ import {
 } from "@ai-it-support/shared";
 import { z } from "zod";
 import type { DbClient } from "./client.js";
-import { DbError, StatusConflictError } from "./errors.js";
+import { DbError, HelpdeskConflictError, StatusConflictError } from "./errors.js";
 
 const timestamp = z.iso.datetime({ offset: true });
 
@@ -303,6 +305,8 @@ interface SupabaseResult {
 
 const UNIQUE_VIOLATION = "23505";
 const REVIEW_DECISIONS: readonly string[] = ["approve", "reject", "timeout"];
+const HELPDESK_KINDS = ["servicenow", "builtin"] as const;
+export type HelpdeskKind = (typeof HELPDESK_KINDS)[number];
 // A Slack user ID: the one shared rule (packages/shared env.ts), also used by the reviewer allow-list.
 const SLACK_USER_ID = slackUserIdRule();
 const uuidSchema = z.uuid();
@@ -858,6 +862,79 @@ export function createRepositories(client: DbClient) {
         .select(HELPDESK_NOTE_COLUMNS)
         .single();
       return parseRow(op, helpdeskNoteSchema, result);
+    },
+
+    /**
+     * Moves a helpdesk ticket from `from` to `to` with a compare-and-set: ONE
+     * UPDATE that matches the id AND `state = from`. An illegal pair, or a value
+     * that is not a helpdesk state, throws IllegalHelpdeskTransitionError before
+     * any request. The winner gets `changed: true` and the new row. When the
+     * stored state is not `from` (stale), nothing is written and the result is
+     * `changed: false` with the stored row. An unknown id throws DbError.
+     */
+    async setHelpdeskState(
+      id: string,
+      from: HelpdeskState,
+      to: HelpdeskState,
+    ): Promise<{ changed: boolean; helpdeskTicket: HelpdeskTicket }> {
+      const op = "setHelpdeskState";
+      assertUuid(op, "id", id);
+      assertHelpdeskTransition(from, to);
+      const result = await client
+        .from("helpdesk_tickets")
+        .update({ state: to, updated_at: new Date().toISOString() })
+        .eq("id", id)
+        .eq("state", from)
+        .select(HELPDESK_TICKET_COLUMNS);
+      const rows = parseRow(op, z.array(helpdeskTicketSchema), result);
+      const [won] = rows;
+      if (rows.length > 1) throw new DbError(op, "unexpected response shape at (rows)");
+      if (won) return { changed: true, helpdeskTicket: won };
+
+      // Stale `from`, or the id is unknown: read what is stored.
+      const read = await client
+        .from("helpdesk_tickets")
+        .select(HELPDESK_TICKET_COLUMNS)
+        .eq("id", id)
+        .maybeSingle();
+      const stored = parseRow(op, helpdeskTicketSchema.nullable(), read);
+      if (!stored) throw new DbError(op, "no helpdesk_tickets row with this id");
+      return { changed: false, helpdeskTicket: stored };
+    },
+
+    /**
+     * Records which helpdesk the ticket lives in (G2), only while it is still
+     * null (one conditional UPDATE). `changed: false` when it already holds
+     * the same value. A different stored value throws HelpdeskConflictError
+     * and an unknown ticket DbError; nothing is overwritten.
+     */
+    async setTicketHelpdesk(ticketId: string, kind: HelpdeskKind): Promise<{ changed: boolean }> {
+      const op = "setTicketHelpdesk";
+      assertUuid(op, "ticketId", ticketId);
+      if (!(HELPDESK_KINDS as readonly unknown[]).includes(kind)) {
+        throw new TypeError(`${op}: unknown helpdesk`);
+      }
+      const result = await client
+        .from("tickets")
+        .update({ helpdesk: kind })
+        .eq("id", ticketId)
+        .is("helpdesk", null)
+        .select("id");
+      const rows = parseRow(op, z.array(z.object({ id: z.uuid() })), result);
+      if (rows.length > 1) throw new DbError(op, "unexpected response shape at (rows)");
+      if (rows.length === 1) return { changed: true };
+
+      const read = await client.from("tickets").select("helpdesk").eq("id", ticketId).maybeSingle();
+      const stored = parseRow(
+        op,
+        z.object({ helpdesk: z.enum(HELPDESK_KINDS).nullable() }).nullable(),
+        read,
+      );
+      if (!stored) throw new DbError(op, "no ticket with this id");
+      // The update matched nothing, so a null here is not a state a caller can act on.
+      if (stored.helpdesk === null) throw new DbError(op, "unexpected response shape at helpdesk");
+      if (stored.helpdesk !== kind) throw new HelpdeskConflictError(op);
+      return { changed: false };
     },
 
     /**

@@ -3,7 +3,7 @@ import { CATEGORIES, PRIORITIES } from "@ai-it-support/shared";
 import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDbClient } from "../src/client.js";
-
+import { DbError, HelpdeskConflictError } from "../src/errors.js";
 import { createRepositories, type Repositories } from "../src/repositories.js";
 import { clientFor } from "./pg-container.js";
 import { removeRestStack, startRestStack, type RestStack } from "./rest-stack.js";
@@ -131,6 +131,77 @@ describe("addSystemNote", () => {
       name: "DbError",
       operation: "addSystemNote",
       code: "23503",
+    });
+  });
+});
+
+describe("setHelpdeskState", () => {
+  it("moves a legal pair, then reports a stale `from` as changed: false with the stored row", async () => {
+    const { helpdeskTicket } = await newHelpdeskTicket();
+    const moved = await repos.setHelpdeskState(helpdeskTicket.id, "new", "in_progress");
+    expect(moved.changed).toBe(true);
+    expect(moved.helpdeskTicket.state).toBe("in_progress");
+    expect(new Date(moved.helpdeskTicket.updated_at).getTime()).toBeGreaterThan(
+      new Date(helpdeskTicket.updated_at).getTime(),
+    );
+
+    const stale = await repos.setHelpdeskState(helpdeskTicket.id, "new", "on_hold");
+    expect(stale).toEqual({ changed: false, helpdeskTicket: moved.helpdeskTicket });
+    const { rows } = await sql().query(
+      "select state from itsupport.helpdesk_tickets where id = $1",
+      [helpdeskTicket.id],
+    );
+    expect(rows).toEqual([{ state: "in_progress" }]);
+  });
+
+  it("refuses an illegal pair before any request and leaves the row alone", async () => {
+    const { helpdeskTicket } = await newHelpdeskTicket();
+    await expect(repos.setHelpdeskState(helpdeskTicket.id, "new", "new")).rejects.toMatchObject({
+      name: "IllegalHelpdeskTransitionError",
+    });
+    expect(await repos.getHelpdeskTicketByTicketId(helpdeskTicket.ticket_id)).toEqual(
+      helpdeskTicket,
+    );
+  });
+
+  it("lets exactly one of two parallel moves from `new` win", async () => {
+    const { helpdeskTicket } = await newHelpdeskTicket();
+    const outcomes = await Promise.all([
+      repos.setHelpdeskState(helpdeskTicket.id, "new", "in_progress"),
+      repos.setHelpdeskState(helpdeskTicket.id, "new", "resolved"),
+    ]);
+    expect(outcomes.filter((outcome) => outcome.changed)).toHaveLength(1);
+    const [winner] = outcomes.filter((outcome) => outcome.changed);
+    for (const outcome of outcomes) {
+      expect(outcome.helpdeskTicket.state).toBe(winner?.helpdeskTicket.state);
+    }
+  });
+
+  it("throws DbError for an unknown id", async () => {
+    await expect(repos.setHelpdeskState(randomUUID(), "new", "closed")).rejects.toBeInstanceOf(
+      DbError,
+    );
+  });
+});
+
+describe("setTicketHelpdesk", () => {
+  it("sets a null helpdesk once, accepts the same value again and refuses a different one", async () => {
+    const ticketId = await newTicketId();
+    expect(await repos.setTicketHelpdesk(ticketId, "builtin")).toEqual({ changed: true });
+    expect(await repos.setTicketHelpdesk(ticketId, "builtin")).toEqual({ changed: false });
+    await expect(repos.setTicketHelpdesk(ticketId, "servicenow")).rejects.toBeInstanceOf(
+      HelpdeskConflictError,
+    );
+    const { rows } = await sql().query("select helpdesk from itsupport.tickets where id = $1", [
+      ticketId,
+    ]);
+    expect(rows).toEqual([{ helpdesk: "builtin" }]);
+  });
+
+  it("throws DbError for an unknown ticket", async () => {
+    await expect(repos.setTicketHelpdesk(randomUUID(), "builtin")).rejects.toMatchObject({
+      name: "DbError",
+      operation: "setTicketHelpdesk",
     });
   });
 });
