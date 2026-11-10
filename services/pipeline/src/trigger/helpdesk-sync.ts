@@ -330,7 +330,7 @@ export function createHelpdeskSyncDeps(
 }
 
 export interface HelpdeskSyncFailureDeps {
-  repos: Pick<Repositories, "getTicket" | "addEvent" | "setTicketStatus">;
+  repos: Pick<Repositories, "getTicket" | "addEvent" | "listEventTypes" | "setTicketStatus">;
   alert: AlertFn;
   logger: { info: LogFn; warn: LogFn; error: LogFn };
 }
@@ -379,7 +379,10 @@ export async function onHelpdeskSyncFailure(
       safeLog("helpdesk-sync: failed run, ticket unchanged", { ticketId, error });
       return;
     }
-    await repos.addEvent(ticketId, "helpdesk_sync_failed", { error });
+    const written = await repos.listEventTypes(ticketId, ["helpdesk_sync_failed"]);
+    if (!written.includes("helpdesk_sync_failed")) {
+      await repos.addEvent(ticketId, "helpdesk_sync_failed", { error });
+    }
     await repos.setTicketStatus(ticketId, "failed");
     await alert("helpdesk_sync_failed", { ticketId });
     safeLog("helpdesk-sync: failed", { ticketId, error });

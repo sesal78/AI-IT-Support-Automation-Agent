@@ -95,6 +95,26 @@ describe("egress recorder: allowInQuery", () => {
   const lookup = (email = EMAIL, url = `${ORIGIN}${LOOKUP}`) =>
     fetch(`${url}?${new URLSearchParams({ email, active: "true" }).toString()}`);
 
+  it.each([
+    ["GET", { email: EMAIL, sysparm_query: `email=${EMAIL}` }],
+    ["POST", { email: EMAIL }],
+    ["GET", { email: `prefix-${EMAIL}` }],
+  ])("rejects an email outside the exact GET email parameter: %s %j", async (method, query) => {
+    recorder.forbid(EMAIL);
+    recorder.allowInQuery(ORIGIN, LOOKUP, EMAIL);
+    await fetch(`${ORIGIN}${LOOKUP}?${new URLSearchParams(query)}`, { method });
+    expect(leakMessage()).toContain("query:");
+  });
+
+  it("does not exempt the same host over HTTP", async () => {
+    const insecure = ORIGIN.replace("https:", "http:");
+    recorder.mock(insecure);
+    recorder.forbid(EMAIL);
+    recorder.allowInQuery(ORIGIN, LOOKUP, EMAIL);
+    await lookup(EMAIL, `${insecure}${LOOKUP}`);
+    expect(leakMessage()).toContain("query:");
+  });
+
   it("lets a registered value be in the query of one origin and path, and still records it", async () => {
     recorder.forbid(EMAIL);
     recorder.allowInQuery(ORIGIN, LOOKUP, EMAIL);

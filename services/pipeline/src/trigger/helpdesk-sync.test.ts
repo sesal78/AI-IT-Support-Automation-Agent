@@ -725,6 +725,22 @@ describe("onHelpdeskSyncFailure", () => {
   const hook = (h: Harness, error: unknown, payload: unknown = { ticketId: TICKET }) =>
     onHelpdeskSyncFailure({ payload, error }, failureDeps(h));
 
+  it("keeps one failure event when the run wrote it before a status write failed", async () => {
+    const h = harness({
+      found: ticket("helpdesk_pending"),
+      connectorFactoryError: new HelpdeskError("auth", "createTicket"),
+    });
+    const error = new TypeError("database unavailable");
+    h.repos.setTicketStatus.mockRejectedValueOnce(error);
+    await expect(run(h)).rejects.toBe(error);
+    await hook(h, error);
+    expect(h.events.filter((event) => event.type === "helpdesk_sync_failed")).toEqual([
+      { type: "helpdesk_sync_failed", payload: { error: "auth" } },
+    ]);
+    expect(h.status.value).toBe("failed");
+    expect(h.alert).toHaveBeenCalledWith("helpdesk_sync_failed", { ticketId: TICKET });
+  });
+
   it.each(["auto", "approved", "helpdesk_pending"])(
     "on a %s ticket: helpdesk_sync_failed { error }, failed, one alert",
     async (status) => {
