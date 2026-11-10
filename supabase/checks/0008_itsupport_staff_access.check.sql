@@ -19,7 +19,7 @@ select 'function ' || f, coalesce((select p.prosecdef
     and not has_function_privilege('service_role', p.oid, 'execute')
   from pg_proc p where p.oid = to_regprocedure('itsupport.' || f)), false)
 from unnest(array['current_staff()', 'is_staff()', 'is_admin()',
-  'staff_add_note(uuid,text)', 'staff_assign(uuid,uuid)']) f
+  'staff_add_note(uuid,text)', 'staff_assign(uuid,uuid)', 'staff_set_state(uuid,text)']) f
 union all
 select 'table ' || t.name, coalesce(c.relrowsecurity
   and exists (select 1 from pg_policies p where p.schemaname = 'itsupport' and p.tablename = t.name
