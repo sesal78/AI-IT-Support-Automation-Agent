@@ -90,4 +90,38 @@ describe("supabase/scripts/grant-staff.sql", () => {
     expect(run.stderr).not.toContain(email);
     expect(await staff()).toEqual(before);
   });
+
+  it.each(["ambiguous", "conflict"])(
+    "rejects the %s case without echoing the email",
+    async (kind) => {
+      const email = `${kind}@example.test`;
+      const ids = [randomUUID(), randomUUID()];
+      await query("insert into auth.users (id, email) values ($1, $2)", [ids[0], email]);
+      if (kind === "ambiguous")
+        await query("insert into auth.users (id, email) values ($1, $2)", [
+          ids[1],
+          email.toUpperCase(),
+        ]);
+      else
+        await query(
+          "insert into itsupport.staff (auth_user_id, email, display_name, role) values ($1, $2, 'Old', 'agent')",
+          [ids[1], email],
+        );
+      const before = await staff();
+      try {
+        const run = grant(email, "New", "admin");
+        expect(run.status).not.toBe(0);
+        expect(run.stderr.toLowerCase()).not.toContain(email);
+        expect(run.stderr).toContain(
+          kind === "ambiguous"
+            ? "more than one Supabase Auth user matches this email"
+            : "staff identity conflicts with an existing row",
+        );
+        expect(await staff()).toEqual(before);
+      } finally {
+        await query("delete from itsupport.staff where auth_user_id = any($1::uuid[])", [ids]);
+        await query("delete from auth.users where id = any($1::uuid[])", [ids]);
+      }
+    },
+  );
 });
