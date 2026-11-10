@@ -89,6 +89,69 @@ describe("egress recorder: what counts as a leak", () => {
   });
 });
 
+describe("egress recorder: allowInQuery", () => {
+  const LOOKUP = "/api/now/table/sys_user";
+  const EMAIL = "demo.carol@example.com";
+  const lookup = (email = EMAIL, url = `${ORIGIN}${LOOKUP}`) =>
+    fetch(`${url}?${new URLSearchParams({ email, active: "true" }).toString()}`);
+
+  it.each([
+    ["GET", { email: EMAIL, sysparm_query: `email=${EMAIL}` }],
+    ["POST", { email: EMAIL }],
+    ["GET", { email: `prefix-${EMAIL}` }],
+  ])("rejects an email outside the exact GET email parameter: %s %j", async (method, query) => {
+    recorder.forbid(EMAIL);
+    recorder.allowInQuery(ORIGIN, LOOKUP, EMAIL);
+    await fetch(`${ORIGIN}${LOOKUP}?${new URLSearchParams(query)}`, { method });
+    expect(leakMessage()).toContain("query:");
+  });
+
+  it("does not exempt the same host over HTTP", async () => {
+    const insecure = ORIGIN.replace("https:", "http:");
+    recorder.mock(insecure);
+    recorder.forbid(EMAIL);
+    recorder.allowInQuery(ORIGIN, LOOKUP, EMAIL);
+    await lookup(EMAIL, `${insecure}${LOOKUP}`);
+    expect(leakMessage()).toContain("query:");
+  });
+
+  it("lets a registered value be in the query of one origin and path, and still records it", async () => {
+    recorder.forbid(EMAIL);
+    recorder.allowInQuery(ORIGIN, LOOKUP, EMAIL);
+    await lookup();
+    expect(() => recorder.assertClean()).not.toThrow();
+    expect(recorder.requests()[0]?.query).toContain("demo.carol%40example.com");
+  });
+
+  it("still flags the value in the body, in another path and in another origin", async () => {
+    recorder.forbid(EMAIL);
+    recorder.allowInQuery(ORIGIN, LOOKUP, EMAIL);
+    await post(JSON.stringify({ to: EMAIL }), {}, `${ORIGIN}${LOOKUP}`);
+    await lookup(EMAIL, `${ORIGIN}/api/now/table/incident`);
+    const message = leakMessage();
+    expect(message).toMatch(/body: custom#\d+/);
+    expect(message).toMatch(/query: custom#\d+/);
+  });
+
+  it("flags a different email and a canary in the allowed query", async () => {
+    recorder.allowInQuery(ORIGIN, LOOKUP, EMAIL);
+    await lookup("someone.else@example.com");
+    await fetch(`${ORIGIN}${LOOKUP}?x=${encodeURIComponent(canary("ssn"))}&email=${EMAIL}`);
+    const message = leakMessage();
+    expect(message).toContain("query: unredacted:EMAIL");
+    expect(message).toContain("query: ssn");
+  });
+
+  it.each([
+    ["an empty value", ORIGIN, LOOKUP, ""],
+    ["a path without a leading slash", ORIGIN, "api/x", EMAIL],
+    ["a path with a query", ORIGIN, "/api/x?y=1", EMAIL],
+    ["an origin that is not a URL", "nope", LOOKUP, EMAIL],
+  ])("rejects %s", (_name, origin, path, value) => {
+    expect(() => recorder.allowInQuery(origin, path, value)).toThrow(TypeError);
+  });
+});
+
 describe("egress recorder: hosts", () => {
   it("blocks an un-mocked host, names it, and makes no real call", async () => {
     const res = await fetch("https://unmocked.invalid/x");
