@@ -1,6 +1,11 @@
 export { referencedSchemas, unqualifiedCreates } from "./schema-refs.js";
 export { createDbClient, dbEnvShape, type DbClient } from "./client.js";
-export { DbError, HelpdeskConflictError, StatusConflictError } from "./errors.js";
+export {
+  DbError,
+  HelpdeskConflictError,
+  IncidentConflictError,
+  StatusConflictError,
+} from "./errors.js";
 export {
   aiReservationSchema,
   createRepositories,

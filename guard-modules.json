@@ -26,5 +26,11 @@
   { "path": "apps/web/src/lib/slack/decide.ts", "statements": 90, "mutation": 80 },
   { "path": "packages/slack/src/card.ts", "statements": 90, "mutation": 80, "related": false },
   { "path": "packages/slack/src/client.ts", "statements": 90, "mutation": 80, "related": false },
-  { "path": "packages/helpdesk/src/shadow.ts", "statements": 90, "mutation": 80, "related": false }
+  { "path": "packages/helpdesk/src/shadow.ts", "statements": 90, "mutation": 80, "related": false },
+  {
+    "path": "services/pipeline/src/helpdesk/sync-guard.ts",
+    "statements": 90,
+    "mutation": 80,
+    "related": false
+  }
 ]

@@ -98,12 +98,14 @@ export {
   type TestOverrides,
 } from "./test-overrides.js";
 export {
+  HELPDESK_SYNC_TASK_ID,
   INTAKE_TICKET_TASK_ID,
   REVIEW_TICKET_TASK_ID,
   TRIAGE_TICKET_TASK_ID,
   TICKET_NUMBER_RE,
   ticketNumberSchema,
   ticketSubmissionSchema,
+  type HelpdeskSyncPayload,
   type IntakeTicketPayload,
   type ReviewTicketPayload,
   type TicketSubmission,

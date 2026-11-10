@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
+  HELPDESK_SYNC_TASK_ID,
   INTAKE_TICKET_TASK_ID,
   TRIAGE_TICKET_TASK_ID,
   ticketNumberSchema,
@@ -74,6 +75,12 @@ describe("INTAKE_TICKET_TASK_ID", () => {
 describe("TRIAGE_TICKET_TASK_ID", () => {
   it("is the Trigger.dev task id of the triage task", () => {
     expect(TRIAGE_TICKET_TASK_ID).toBe("triage-ticket");
+  });
+});
+
+describe("HELPDESK_SYNC_TASK_ID", () => {
+  it("is the Trigger.dev task id of the helpdesk sync task", () => {
+    expect(HELPDESK_SYNC_TASK_ID).toBe("helpdesk-sync");
   });
 });
 

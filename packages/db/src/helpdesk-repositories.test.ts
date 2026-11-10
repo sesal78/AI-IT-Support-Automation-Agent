@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { IllegalHelpdeskTransitionError } from "@ai-it-support/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDbClient } from "./client.js";
-import { DbError, HelpdeskConflictError } from "./errors.js";
+import { DbError, HelpdeskConflictError, IncidentConflictError } from "./errors.js";
 import { createRepositories } from "./repositories.js";
 
 const SECRET_KEY = "test-service-role-key";
@@ -339,6 +339,73 @@ describe("setTicketHelpdesk", () => {
   ])("rejects %s with a TypeError before any request", async (_name, id, kind) => {
     const calls = respond();
     await expect(repos.setTicketHelpdesk(id, kind as never)).rejects.toThrow(TypeError);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("setTicketIncident", () => {
+  const incident = { sysId: "a".repeat(32), number: "INC0010001" };
+  const stored = (sysId: string | null) =>
+    ok({ servicenow_sys_id: sysId, servicenow_number: sysId === null ? null : incident.number });
+
+  it("stores the incident only while no sys_id is set, with one conditional update", async () => {
+    const calls = respond(ok([{ id: ticketId }]));
+    expect(await repos.setTicketIncident(ticketId, incident)).toEqual({ changed: true });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("PATCH");
+    expect(calls[0]?.url.pathname).toBe("/rest/v1/tickets");
+    expect(calls[0]?.url.searchParams.get("id")).toBe(`eq.${ticketId}`);
+    expect(calls[0]?.url.searchParams.get("servicenow_sys_id")).toBe("is.null");
+    expect(calls[0]?.body).toEqual({
+      servicenow_sys_id: incident.sysId,
+      servicenow_number: incident.number,
+    });
+    expect(selectOf(calls[0])).toBe("id");
+  });
+
+  it("reports changed: false when the ticket already holds the same sys_id", async () => {
+    const calls = respond(ok([]), stored(incident.sysId));
+    expect(await repos.setTicketIncident(ticketId, incident)).toEqual({ changed: false });
+    expect(calls[1]?.url.searchParams.get("id")).toBe(`eq.${ticketId}`);
+    expect(selectOf(calls[1])).toBe("servicenow_sys_id,servicenow_number");
+  });
+
+  it("fails loudly with IncidentConflictError for another sys_id and names no value", async () => {
+    respond(ok([]), stored("b".repeat(32)));
+    const error = await expectDbError(
+      repos.setTicketIncident(ticketId, incident),
+      "setTicketIncident",
+    );
+    expect(error).toBeInstanceOf(IncidentConflictError);
+    expect(error.name).toBe("IncidentConflictError");
+    expect(error.message).not.toContain("b".repeat(32));
+    expect(error.message).not.toContain(incident.sysId);
+  });
+
+  it("throws DbError for an unknown ticket, a null sys_id after a miss, or more than one row", async () => {
+    respond(ok([]), ok(null), ok([]), stored(null), ok([{ id: ticketId }, { id: ticketId }]));
+    for (let i = 0; i < 3; i += 1) {
+      await expectDbError(repos.setTicketIncident(ticketId, incident), "setTicketIncident");
+    }
+  });
+
+  it("throws DbError on a Supabase error, on either request", async () => {
+    respond(pgError("42501", 403), ok([]), pgError("42501", 403));
+    await expectDbError(repos.setTicketIncident(ticketId, incident), "setTicketIncident");
+    await expectDbError(repos.setTicketIncident(ticketId, incident), "setTicketIncident");
+  });
+
+  it.each([
+    ["a non-UUID id", "nope", incident],
+    ["a short sys_id", ticketId, { ...incident, sysId: "a".repeat(31) }],
+    ["an upper-case sys_id", ticketId, { ...incident, sysId: "A".repeat(32) }],
+    ["an empty number", ticketId, { ...incident, number: "" }],
+    ["a number that is too long", ticketId, { ...incident, number: "N".repeat(41) }],
+    ["a number with a space", ticketId, { ...incident, number: "INC 1" }],
+    ["a null incident", ticketId, null],
+  ])("rejects %s with a TypeError before any request", async (_name, id, value) => {
+    const calls = respond();
+    await expect(repos.setTicketIncident(id, value as never)).rejects.toThrow(TypeError);
     expect(calls).toHaveLength(0);
   });
 });

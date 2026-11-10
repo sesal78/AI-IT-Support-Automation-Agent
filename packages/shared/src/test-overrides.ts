@@ -10,6 +10,8 @@ export const testOverridesSchema = z.strictObject({
   langfuseDown: z.boolean().optional(),
   // Only `true`: a payload can make a run safer, never less safe (phase 5).
   shadowMode: z.literal(true).optional(),
+  // Whole minutes (1-30) the helpdesk acts asleep after the ticket's created_at (phase 5).
+  helpdeskAsleepMinutes: z.number().int().min(1).max(30).optional(),
   reviewTimeout: z
     .string()
     .regex(/^[1-9][0-9]?m$/)
