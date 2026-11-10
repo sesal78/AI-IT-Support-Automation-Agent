@@ -10,6 +10,12 @@
   { "path": "packages/shared/src/policy.ts", "statements": 90, "mutation": 80 },
   { "path": "packages/shared/src/status.ts", "statements": 90, "mutation": null },
   {
+    "path": "packages/shared/src/helpdesk-state.ts",
+    "statements": 90,
+    "mutation": 80,
+    "related": false
+  },
+  {
     "path": "packages/shared/src/slack-signature.ts",
     "statements": 90,
     "mutation": 80,

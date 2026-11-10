@@ -49,6 +49,15 @@ export {
 } from "./eval-ticket.js";
 export { healthConfigSchema, type HealthConfig } from "./health.js";
 export {
+  assertHelpdeskTransition,
+  canHelpdeskTransition,
+  HELPDESK_STATE_TRANSITIONS,
+  HELPDESK_STATES,
+  IllegalHelpdeskTransitionError,
+  nextHelpdeskStates,
+  type HelpdeskState,
+} from "./helpdesk-state.js";
+export {
   buildKbQuery,
   KB_QUERY_MAX_WORD_LENGTH,
   KB_QUERY_MAX_WORDS,
