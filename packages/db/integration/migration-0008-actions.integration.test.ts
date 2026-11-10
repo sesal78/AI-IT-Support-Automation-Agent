@@ -229,11 +229,14 @@ describe("staff_set_state (Postgres)", () => {
           await refuse(ids.agentUser, "staff_set_state", [ids.hd, to], "23514");
           continue;
         }
+        await query("update itsupport.helpdesk_tickets set updated_at = '2000-01-01'");
         const before = (await query("select count(*)::int as n from itsupport.ticket_events"))[0];
         expect(await call(ids.agentUser, "staff_set_state", ids.hd, to)).toBe(to);
-        expect(await query("select state from itsupport.helpdesk_tickets")).toEqual([
-          { state: to },
-        ]);
+        expect(
+          await query(
+            "select state, updated_at > '2000-01-02' as updated from itsupport.helpdesk_tickets",
+          ),
+        ).toEqual([{ state: to, updated: true }]);
         expect(await query("select count(*)::int as n from itsupport.ticket_events")).toEqual([
           { n: (before!.n as number) + 1 },
         ]);
