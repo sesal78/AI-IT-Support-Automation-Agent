@@ -4,6 +4,8 @@ export { DbError, StatusConflictError } from "./errors.js";
 export {
   aiReservationSchema,
   createRepositories,
+  helpdeskNoteSchema,
+  helpdeskTicketSchema,
   kbArticleRowSchema,
   kbSearchResultSchema,
   redactionSchema,
@@ -19,6 +21,9 @@ export {
   type KbArticleTitle,
   type KbSearchResult,
   type AiUsageMonth,
+  type HelpdeskNote,
+  type HelpdeskTicket,
+  type NewHelpdeskTicket,
   type NewRedaction,
   type NewTicket,
   type NewTriage,
