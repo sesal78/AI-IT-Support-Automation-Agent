@@ -26,7 +26,8 @@ export const GOTRUE_IMAGE = `supabase/gotrue:${GOTRUE_VERSION}`;
 const SCHEMA = "itsupport";
 // Every up file, in order, so each REST-stack test runs on the schema the
 // shared database will have (0004 locks the sequences, 0005 adds reviews,
-// 0006 adds notifications and the ticket number, 0007 the built-in helpdesk tables).
+// 0006 adds notifications and the ticket number, 0007 the built-in helpdesk tables,
+// 0008 staff read access and the staff actions).
 export const MIGRATIONS = [
   "0001_itsupport_foundation.sql",
   "0002_itsupport_intake.sql",
@@ -35,6 +36,7 @@ export const MIGRATIONS = [
   "0005_itsupport_reviews.sql",
   "0006_itsupport_helpdesk.sql",
   "0007_itsupport_builtin_helpdesk.sql",
+  "0008_itsupport_staff_access.sql",
 ];
 const migrationsDir = resolve(
   dirname(fileURLToPath(import.meta.url)),
