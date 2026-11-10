@@ -22,6 +22,7 @@ export {
   type ReviewTicketPayload,
   type ReviewTicketResult,
 } from "./trigger/review-ticket.js";
+export { helpdeskHealth, type HelpdeskHealthOutput } from "./trigger/helpdesk-health.js";
 export {
   helpdeskSync,
   type HelpdeskSyncPayload,

@@ -47,7 +47,13 @@ export {
   type EvalSet,
   type EvalTicket,
 } from "./eval-ticket.js";
-export { healthConfigSchema, type HealthConfig } from "./health.js";
+export {
+  HELPDESK_HEALTH_TASK_ID,
+  healthConfigSchema,
+  helpdeskHealthOutputSchema,
+  type HealthConfig,
+  type HelpdeskHealthOutput,
+} from "./health.js";
 export {
   assertHelpdeskTransition,
   canHelpdeskTransition,

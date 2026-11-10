@@ -14,7 +14,9 @@ export type AlertKind =
   | "helpdesk_config"
   | "helpdesk_sync_failed"
   | "helpdesk_note_unconfirmed"
-  | "helpdesk_asleep_timeout";
+  | "helpdesk_asleep_timeout"
+  | "helpdesk_asleep"
+  | "helpdesk_down";
 
 export interface AlertOptions {
   ticketId?: string | undefined;

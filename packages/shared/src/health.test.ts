@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { healthConfigSchema } from "./health.js";
+import {
+  HELPDESK_HEALTH_TASK_ID,
+  healthConfigSchema,
+  helpdeskHealthOutputSchema,
+} from "./health.js";
 
 const valid = {
   version: "1.0.0",
@@ -42,5 +46,31 @@ describe("healthConfigSchema", () => {
 
   it("rejects a non-string version", () => {
     expect(healthConfigSchema.safeParse({ ...valid, version: 1 }).success).toBe(false);
+  });
+});
+
+describe("helpdeskHealthOutputSchema", () => {
+  const output = { connector: "servicenow", status: "ok", checkedAt: "2026-11-10T10:00:00.000Z" };
+
+  it("names the scheduled task", () => {
+    expect(HELPDESK_HEALTH_TASK_ID).toBe("helpdesk-health");
+  });
+
+  it.each(["ok", "asleep", "down"])("accepts status %s", (status) => {
+    expect(helpdeskHealthOutputSchema.parse({ ...output, status })).toEqual({ ...output, status });
+  });
+
+  it.each(["", "OK", "up", 1, null])("rejects status %j", (status) => {
+    expect(helpdeskHealthOutputSchema.safeParse({ ...output, status }).success).toBe(false);
+  });
+
+  it("rejects another connector, an invalid time and an extra key", () => {
+    expect(helpdeskHealthOutputSchema.safeParse({ ...output, connector: "builtin" }).success).toBe(
+      false,
+    );
+    expect(
+      helpdeskHealthOutputSchema.safeParse({ ...output, checkedAt: "yesterday" }).success,
+    ).toBe(false);
+    expect(helpdeskHealthOutputSchema.safeParse({ ...output, error: "boom" }).success).toBe(false);
   });
 });
