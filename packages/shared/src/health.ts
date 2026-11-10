@@ -20,3 +20,21 @@ export const healthConfigSchema = z.strictObject({
 });
 
 export type HealthConfig = z.infer<typeof healthConfigSchema>;
+
+/**
+ * Trigger.dev id of the scheduled helpdesk health task (services/pipeline,
+ * P5-T6). The web app reads the output of its latest completed run.
+ */
+export const HELPDESK_HEALTH_TASK_ID = "helpdesk-health";
+
+/**
+ * Output of one `helpdesk-health` run: the connector's answer and when it was
+ * asked. Fixed values only, never an error text or a host.
+ */
+export const helpdeskHealthOutputSchema = z.strictObject({
+  connector: z.literal("servicenow"),
+  status: z.enum(["ok", "asleep", "down"]),
+  checkedAt: z.iso.datetime(),
+});
+
+export type HelpdeskHealthOutput = z.infer<typeof helpdeskHealthOutputSchema>;
