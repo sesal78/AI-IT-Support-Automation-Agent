@@ -13,7 +13,15 @@ import { MIGRATIONS } from "./rest-stack.js";
 // A caller is an auth user ID (auth.uid()); null = anon. PostgREST + GoTrue
 // JWTs are in migration-0008-actions-rest.integration.test.ts.
 let pg: PgContainer;
-const ids = { ticket: "", hd: "", agent: "", agentUser: "", inactive: "", inactiveUser: "" };
+const ids = {
+  ticket: "",
+  hd: "",
+  agent: "",
+  agentUser: "",
+  assignee: "",
+  inactive: "",
+  inactiveUser: "",
+};
 const NOBODY = "00000000-0000-4000-8000-000000000001";
 
 async function query<T = Record<string, unknown>>(text: string, params: unknown[] = []) {
@@ -94,6 +102,7 @@ beforeAll(async () => {
     )
   )[0]!.id;
   ({ id: ids.agent, auth_user_id: ids.agentUser } = await staff(true));
+  ({ id: ids.assignee } = await staff(true));
   ({ id: ids.inactive, auth_user_id: ids.inactiveUser } = await staff(false));
 }, 300_000);
 afterAll(() => removePgContainer(pg));
@@ -167,7 +176,7 @@ describe("staff_assign (Postgres)", () => {
 
   it("assigns active staff: one assignment row, one staff_assigned event, updated_at", async () => {
     await query("update itsupport.helpdesk_tickets set updated_at = '2000-01-01'");
-    const assignmentId = await call(ids.agentUser, "staff_assign", ids.hd, ids.agent);
+    const assignmentId = await call(ids.agentUser, "staff_assign", ids.hd, ids.assignee);
     expect(
       await query(
         `select a.assignee_id, a.assigned_by_staff_id, h.assignee_id as current,
@@ -178,9 +187,9 @@ describe("staff_assign (Postgres)", () => {
       ),
     ).toEqual([
       {
-        assignee_id: ids.agent,
+        assignee_id: ids.assignee,
         assigned_by_staff_id: ids.agent,
-        current: ids.agent,
+        current: ids.assignee,
         u: true,
         n: 1,
       },
@@ -188,7 +197,7 @@ describe("staff_assign (Postgres)", () => {
     expect(await lastEvent()).toEqual({
       ticket_id: ids.ticket,
       type: "staff_assigned",
-      payload: { helpdeskTicketId: ids.hd, staffId: ids.agent, assigneeId: ids.agent },
+      payload: { helpdeskTicketId: ids.hd, staffId: ids.agent, assigneeId: ids.assignee },
     });
   });
 });
