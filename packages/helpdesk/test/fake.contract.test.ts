@@ -13,6 +13,7 @@ const TICKET_ID = "5b0f3c1e-2d4a-4f6b-8c7d-9e0a1b2c3d4e";
 const MARKER = "MARKER-TITLE-4e8b";
 const input = (over: Partial<CreateHelpdeskTicketInput> = {}): CreateHelpdeskTicketInput => ({
   ticketId: TICKET_ID,
+  ticketNumber: "ITS-000001",
   isTest: true,
   redactedTitle: "Printer offline",
   redactedDescription: "Offline.",

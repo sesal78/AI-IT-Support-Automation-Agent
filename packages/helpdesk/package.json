@@ -21,7 +21,7 @@
     "test": "vitest run",
     "build": "tsc -p tsconfig.build.json"
   },
-  "devDependencies": {
+  "dependencies": {
     "@ai-it-support/shared": "workspace:*"
   }
 }

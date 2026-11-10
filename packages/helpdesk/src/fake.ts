@@ -46,6 +46,7 @@ export class FakeConnector implements HelpdeskConnector {
   protected recordedInput(input: CreateHelpdeskTicketInput): unknown {
     return {
       ticketId: input.ticketId,
+      ticketNumber: input.ticketNumber,
       isTest: input.isTest,
       redactedTitle: input.redactedTitle,
       redactedDescription: input.redactedDescription,

@@ -4,6 +4,7 @@ export {
   type ServiceNowClient,
   type ServiceNowClientOptions,
 } from "./client.js";
+export { ServiceNowConnector, type ServiceNowConnectorOptions } from "./connector.js";
 export { isHibernationPage, isHibernationRedirect } from "./hibernation.js";
 export {
   CLOSE_CODE,
