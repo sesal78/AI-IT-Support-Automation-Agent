@@ -8,7 +8,7 @@ import {
 } from "@ai-it-support/helpdesk";
 import { assertTransition, type TicketStatus } from "@ai-it-support/shared";
 import { describe, expect, it, vi } from "vitest";
-import { helpdeskSyncPayload, type HelpdeskSyncDeps } from "./helpdesk-sync.js";
+import { helpdeskSyncPayload, runHelpdeskSync, type HelpdeskSyncDeps } from "./helpdesk-sync.js";
 
 const TICKET = "00000000-0000-4000-8000-000000000001";
 const KB = "00000000-0000-4000-8000-00000000000b";
@@ -90,7 +90,7 @@ interface Options {
   incidentConflict?: boolean;
 }
 
-export function harness(options: Options = {}) {
+function harness(options: Options = {}) {
   const calls: string[] = [];
   const status = { value: (options.found ?? ticket()).status as string };
   const events: Array<{ type: string; payload: Record<string, unknown> }> = (
@@ -212,6 +212,17 @@ export function harness(options: Options = {}) {
   };
 }
 
+type Harness = ReturnType<typeof harness>;
+const run = (h: Harness, testOverrides?: Record<string, unknown>, attempt = 1) =>
+  runHelpdeskSync(
+    { ticketId: TICKET, ...(testOverrides ? { testOverrides } : {}) },
+    h.deps,
+    attempt,
+  );
+const eventTypes = (h: Harness) => h.events.map((event) => event.type);
+const payloadOf = (h: Harness, type: string) =>
+  h.events.find((event) => event.type === type)?.payload;
+
 describe("helpdeskSyncPayload", () => {
   it("accepts a ticket id and test overrides and rejects a non-UUID or an unknown switch", () => {
     expect(helpdeskSyncPayload.safeParse({ ticketId: TICKET }).success).toBe(true);
@@ -223,5 +234,144 @@ describe("helpdeskSyncPayload", () => {
     expect(
       helpdeskSyncPayload.safeParse({ ticketId: TICKET, testOverrides: { nope: true } }).success,
     ).toBe(false);
+  });
+});
+
+describe("runHelpdeskSync: the incident is created", () => {
+  it.each(["auto", "approved"])(
+    "an %s ticket ends incident_created with its events",
+    async (from) => {
+      const h = harness({ found: ticket(from) });
+      await expect(run(h)).resolves.toEqual({
+        ticketId: TICKET,
+        incident: { externalId: SYS_ID, number: INC },
+      });
+      expect(eventTypes(h)).toEqual([
+        "helpdesk_sync_started",
+        "incident_created",
+        "helpdesk_note_added",
+      ]);
+      expect(payloadOf(h, "incident_created")).toEqual({ externalId: SYS_ID, number: INC });
+      expect(payloadOf(h, "helpdesk_note_added")).toEqual({ externalId: SYS_ID });
+      expect(h.statusWrites).toEqual(["helpdesk_pending", "incident_created"]);
+      expect(h.stored.incident).toEqual({ sysId: SYS_ID, number: INC });
+    },
+  );
+
+  it("calls the steps in the specified order", async () => {
+    const h = harness();
+    await run(h);
+    expect(h.calls.filter((c) => c !== "getTicket")).toEqual([
+      "status:helpdesk_pending",
+      "event:helpdesk_sync_started",
+      "findByExternalRef",
+      "createTicket",
+      "setTicketIncident",
+      "event:incident_created",
+      "addNote",
+      "event:helpdesk_note_added",
+      "status:incident_created",
+    ]);
+  });
+
+  it("sends the redaction, triage fields, ticket number and requester email to the connector", async () => {
+    const h = harness({ found: ticket("auto", true) });
+    await run(h);
+    expect(h.sent.creates).toEqual([
+      {
+        ticketId: TICKET,
+        ticketNumber: "ITS-000042",
+        isTest: true,
+        redactedTitle: redaction.redacted_title,
+        redactedDescription: redaction.redacted_description,
+        category: "network",
+        priority: "P3",
+        assignmentGroup: "Network Support",
+        requesterEmail: MARK.email,
+      },
+    ]);
+  });
+
+  it("adds one work note with the triage fields, KB slugs and fix steps", async () => {
+    const h = harness();
+    await run(h);
+    expect(h.sent.notes).toHaveLength(1);
+    const note = h.sent.notes[0] ?? "";
+    expect(note).toContain("ITS-000042");
+    expect(note).toContain("Category: network");
+    expect(note).toContain("Priority: P3");
+    expect(note).toContain("Assignment group: Network Support");
+    expect(note).toContain("KB articles: vpn-reset");
+    expect(note).toContain("1. Restart the VPN client");
+    expect(note).toContain("- Needs admin rights");
+  });
+
+  it("writes caller_defaulted before incident_created when the connector flags it", async () => {
+    const h = harness({ callerDefaulted: true });
+    await run(h);
+    expect(eventTypes(h)).toEqual([
+      "helpdesk_sync_started",
+      "caller_defaulted",
+      "incident_created",
+      "helpdesk_note_added",
+    ]);
+  });
+
+  it("uses an incident that findByExternalRef already knows, without a create call", async () => {
+    const h = harness({ incidentExists: true });
+    await run(h);
+    expect(h.connector.createTicket).not.toHaveBeenCalled();
+    expect(eventTypes(h)).toEqual([
+      "helpdesk_sync_started",
+      "incident_created",
+      "helpdesk_note_added",
+    ]);
+    expect(h.stored.incident).toEqual({ sysId: SYS_ID, number: INC });
+  });
+
+  it("T5.I.02: a lost create response is found by the retry; one incident, incident_created once", async () => {
+    const h = harness({ loseCreateResponse: true });
+    await expect(run(h, undefined, 1)).rejects.toMatchObject({ code: "unavailable" });
+    expect(h.status.value).toBe("helpdesk_pending");
+    await run(h, undefined, 2);
+    expect(h.incidents.size).toBe(1);
+    expect(h.connector.createTicket).toHaveBeenCalledTimes(1);
+    expect(eventTypes(h).filter((type) => type === "incident_created")).toHaveLength(1);
+    expect(eventTypes(h).filter((type) => type === "helpdesk_sync_started")).toHaveLength(1);
+    expect(h.status.value).toBe("incident_created");
+  });
+
+  it("T5.I.03: a 500 then success ends incident_created on the second attempt", async () => {
+    const h = harness({
+      failures: { createTicket: [new HelpdeskError("unavailable", "createTicket")] },
+    });
+    await expect(run(h, undefined, 1)).rejects.toMatchObject({ code: "unavailable" });
+    await expect(run(h, undefined, 2)).resolves.toMatchObject({ incident: { number: INC } });
+    expect(h.status.value).toBe("incident_created");
+  });
+
+  it("on a retry after the note failed: no second incident_created, the note is sent again, once", async () => {
+    const h = harness({ failures: { addNote: [new HelpdeskError("unavailable", "addNote")] } });
+    await expect(run(h, undefined, 1)).rejects.toMatchObject({ code: "unavailable" });
+    expect(eventTypes(h)).toEqual(["helpdesk_sync_started", "incident_created"]);
+    await run(h, undefined, 2);
+    expect(eventTypes(h)).toEqual([
+      "helpdesk_sync_started",
+      "incident_created",
+      "helpdesk_note_added",
+    ]);
+    expect(h.sent.notes).toHaveLength(1);
+  });
+
+  it("on a retry from helpdesk_pending with every event written: only the status moves", async () => {
+    const h = harness({
+      found: ticket("helpdesk_pending"),
+      incidentExists: true,
+      events: ["helpdesk_sync_started", "incident_created", "helpdesk_note_added"],
+    });
+    await run(h);
+    expect(h.events).toHaveLength(3);
+    expect(h.connector.addNote).not.toHaveBeenCalled();
+    expect(h.statusWrites).toEqual(["incident_created"]);
   });
 });
