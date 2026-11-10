@@ -166,12 +166,16 @@ export function createEgressRecorder(options: { runId?: string } = {}): EgressRe
   function scannedQuery(url: URL, method: string): string {
     if (method !== "GET") return url.search;
     const query = new URLSearchParams(url.search);
+    let changed = false;
     for (const rule of allowedInQuery) {
       if (rule.origin !== url.origin || rule.path !== url.pathname) continue;
       const values = query.getAll("email");
-      if (values.length === 1 && values[0] === rule.value) query.set("email", "[allowed]");
+      if (values.length === 1 && values[0] === rule.value) {
+        query.set("email", "[allowed]");
+        changed = true;
+      }
     }
-    return query.toString();
+    return changed ? query.toString().replaceAll("+", "%20") : url.search;
   }
 
   async function capture(request: Request): Promise<void> {

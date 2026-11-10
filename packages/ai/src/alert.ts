@@ -13,6 +13,7 @@ export type AlertKind =
   | "helpdesk_auth_failed"
   | "helpdesk_config"
   | "helpdesk_sync_failed"
+  | "helpdesk_note_unconfirmed"
   | "helpdesk_asleep_timeout";
 
 export interface AlertOptions {
