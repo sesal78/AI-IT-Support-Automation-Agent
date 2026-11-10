@@ -6,7 +6,8 @@
 -- table on is_staff(), and column grants that leave out raw text, requester
 -- data, idempotency keys, the redaction log, kb content, staff email and auth
 -- ID, and the Slack and wait-token columns of reviews (G8). ticket_number is
--- granted (display only). No insert, update or delete for `authenticated`.
+-- granted (display only). No insert, update or delete for `authenticated`: staff
+-- write only through the staff_* functions at the end (P5-T11b).
 -- Touches only the `itsupport` schema. Requires 0001 to 0007. Idempotent.
 -- Reverse with 0008_itsupport_staff_access.down.sql; verify with
 -- supabase/checks/0008_itsupport_staff_access.check.sql.
@@ -66,3 +67,31 @@ begin
       ' using (itsupport.is_staff())', t || '_staff_select', t);
   end loop;
 end $$;
+
+-- Staff actions (P5-T11b, G5): the only staff writes. Each one finds the caller
+-- (no active staff row: 42501), locks the helpdesk ticket (unknown: P0002),
+-- checks its rule, writes its row and one ticket_events row (IDs only, never
+-- note text) and sets updated_at, all in the caller's one transaction.
+create or replace function itsupport.staff_add_note(helpdesk_ticket_id uuid, body text)
+  returns uuid language plpgsql security definer set search_path = ''
+as $$
+declare
+  me uuid := itsupport.current_staff();
+  ticket uuid;
+  note_id uuid;
+begin
+  if me is null then raise exception 'not active staff' using errcode = '42501'; end if;
+  select ticket_id into ticket from itsupport.helpdesk_tickets
+    where id = helpdesk_ticket_id for update;
+  if not found then raise exception 'helpdesk ticket not found' using errcode = 'P0002'; end if;
+  -- The body check (1 to 5000 characters) is the table's: 23514.
+  insert into itsupport.helpdesk_notes (helpdesk_ticket_id, author_kind, author_staff_id, body)
+    values (helpdesk_ticket_id, 'staff', me, body) returning id into note_id;
+  update itsupport.helpdesk_tickets set updated_at = now() where id = helpdesk_ticket_id;
+  insert into itsupport.ticket_events (ticket_id, type, payload) values (ticket,
+    'staff_note_added', jsonb_build_object('noteId', note_id, 'staffId', me));
+  return note_id;
+end $$;
+revoke all on function itsupport.staff_add_note(uuid, text)
+  from public, anon, authenticated, service_role;
+grant execute on function itsupport.staff_add_note(uuid, text) to authenticated;
