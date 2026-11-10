@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CHECK, DOWN, migration, SEED, UP } from "./migration-0008-harness.js";
 import {
@@ -113,6 +114,31 @@ beforeAll(async () => {
   apply(UP);
 }, 300_000);
 afterAll(() => removePgContainer(pg));
+
+it("H28b checks each migration before applying the next", async () => {
+  const probe = await startPgContainer();
+  const db = clientFor(probe);
+  try {
+    await db.connect();
+    for (const name of MIGRATIONS) {
+      expect(runSql(probe, migration(name)).status, name).toBe(0);
+      if (name < "0006") continue;
+      const check = readFileSync(
+        new URL(`../../../supabase/checks/${name.replace(".sql", ".check.sql")}`, import.meta.url),
+        "utf8",
+      );
+      const { rows } = await db.query<{ object: string; ok: boolean }>(check);
+      expect(rows.length, name).toBeGreaterThan(0);
+      expect(
+        rows.filter((row) => !row.ok).map((row) => row.object),
+        name,
+      ).toEqual([]);
+    }
+  } finally {
+    await db.end();
+    removePgContainer(probe);
+  }
+});
 
 describe("migration 0008 staff read access (Postgres)", () => {
   it("is_staff(), is_admin() and current_staff() with no JWT are false and null", async () => {
