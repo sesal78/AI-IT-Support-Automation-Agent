@@ -241,6 +241,9 @@ importers:
 
   tests/live:
     dependencies:
+      '@ai-it-support/helpdesk':
+        specifier: workspace:*
+        version: link:../../packages/helpdesk
       '@ai-it-support/shared':
         specifier: workspace:*
         version: link:../../packages/shared

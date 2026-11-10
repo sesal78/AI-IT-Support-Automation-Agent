@@ -4,7 +4,13 @@ import { defineProject } from "vitest/config";
 export default defineProject({
   resolve: {
     alias: {
-      // Tests run against shared source, so they do not need a prior build of dist/.
+      // Tests run against package source, so they do not need a prior build of dist/.
+      "@ai-it-support/helpdesk/testing": fileURLToPath(
+        new URL("../../packages/helpdesk/src/testing/contract.ts", import.meta.url),
+      ),
+      "@ai-it-support/helpdesk": fileURLToPath(
+        new URL("../../packages/helpdesk/src/index.ts", import.meta.url),
+      ),
       "@ai-it-support/shared": fileURLToPath(
         new URL("../../packages/shared/src/index.ts", import.meta.url),
       ),

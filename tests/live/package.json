@@ -11,6 +11,7 @@
     "test:browser": "playwright test"
   },
   "dependencies": {
+    "@ai-it-support/helpdesk": "workspace:*",
     "@ai-it-support/shared": "workspace:*",
     "zod": "^4.6.5"
   },
