@@ -14,6 +14,7 @@ export default defineConfig({
       // Tests run against workspace source, so they do not need a prior build of dist/.
       "@ai-it-support/ai": src("ai"),
       "@ai-it-support/db": src("db"),
+      "@ai-it-support/helpdesk": src("helpdesk"),
       "@ai-it-support/shared": src("shared"),
       "@ai-it-support/slack": src("slack"),
     },

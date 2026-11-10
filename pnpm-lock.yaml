@@ -219,6 +219,9 @@ importers:
       '@ai-it-support/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@ai-it-support/helpdesk':
+        specifier: workspace:*
+        version: link:../../packages/helpdesk
       '@ai-it-support/shared':
         specifier: workspace:*
         version: link:../../packages/shared
