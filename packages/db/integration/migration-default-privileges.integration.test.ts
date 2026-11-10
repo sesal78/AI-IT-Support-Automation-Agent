@@ -24,8 +24,10 @@ import {
 
 const supabaseDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../../supabase");
 const read = (file: string) => readFileSync(resolve(supabaseDir, file), "utf8");
+// 0008 grants authenticated staff read access on purpose (P5-T11a). It joins
+// this test when P5-T11c (P5-B6) turns "no right" into the exact allow-list.
 const UPS = readdirSync(resolve(supabaseDir, "migrations"))
-  .filter((name) => name.endsWith(".sql") && !name.endsWith(".down.sql"))
+  .filter((name) => name.endsWith(".sql") && !name.endsWith(".down.sql") && name < "0008")
   .sort();
 const DOWNS = UPS.map((name) => name.replace(/\.sql$/, ".down.sql")).reverse();
 const LOCK = "0004_itsupport_lock_sequences.sql";
