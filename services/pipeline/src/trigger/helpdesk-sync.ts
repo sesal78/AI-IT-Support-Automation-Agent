@@ -1,8 +1,21 @@
-import type { AlertFn } from "@ai-it-support/ai";
-import type { Repositories } from "@ai-it-support/db";
-import type { HelpdeskConnector, HelpdeskTicketRef } from "@ai-it-support/helpdesk";
-import { testOverridesSchema, type HelpdeskSyncPayload } from "@ai-it-support/shared";
+import { errorClassName, type AlertFn } from "@ai-it-support/ai";
+import { IncidentConflictError, type Repositories } from "@ai-it-support/db";
+import {
+  HelpdeskError,
+  shadowEnabled,
+  withShadowMode,
+  type HelpdeskConnector,
+  type HelpdeskTicketRef,
+} from "@ai-it-support/helpdesk";
+import {
+  effectiveTestOverrides,
+  testOverridesSchema,
+  type HelpdeskSyncPayload,
+} from "@ai-it-support/shared";
+import { AbortTaskRunError } from "@trigger.dev/sdk";
 import { z } from "zod";
+import { checkSync } from "../helpdesk/sync-guard.js";
+import { buildSyncNote } from "../helpdesk/sync-note.js";
 
 // Payload type is shared with the caller that triggers it (packages/shared).
 export const helpdeskSyncPayload = z.object({
@@ -45,4 +58,179 @@ export interface HelpdeskSyncDeps {
   /** Never throws (createAlertSink). */
   alert: AlertFn;
   logger: { info: LogFn; warn: LogFn; error: LogFn };
+}
+
+/** Events written once across retries and attempts. */
+const ONCE_EVENTS = [
+  "helpdesk_sync_started",
+  "caller_defaulted",
+  "incident_created",
+  "helpdesk_note_added",
+  "shadow_skipped",
+  "helpdesk_sync_failed",
+];
+
+const fixStepsSchema = z.object({ steps: z.array(z.string()), caveats: z.array(z.string()) });
+
+type FailureAlert = "helpdesk_auth_failed" | "helpdesk_config" | "helpdesk_sync_failed";
+
+/** How a non-retryable error is reported: the event `error` value and the alert kind. */
+function classify(error: unknown): { code: string; alert: FailureAlert } | null {
+  if (error instanceof IncidentConflictError) {
+    return { code: "conflict", alert: "helpdesk_sync_failed" };
+  }
+  if (!(error instanceof HelpdeskError) || error.retryable) return null;
+  if (error.code === "auth") return { code: error.code, alert: "helpdesk_auth_failed" };
+  if (error.code === "config" || error.code === "bad_request") {
+    return { code: error.code, alert: "helpdesk_config" };
+  }
+  return { code: error.code, alert: "helpdesk_sync_failed" };
+}
+
+/**
+ * The task body, exported so tests can call it without the Trigger.dev runtime.
+ *
+ * Order: load the ticket; the sync guard (`refuse`: event `sync_refused`, alert,
+ * no connector; `done`: skip); the triage row and the redaction; status
+ * `helpdesk_pending` and `helpdesk_sync_started`; the connector (shadow mode
+ * wraps it); `findByExternalRef`, else `createTicket`. A `ShadowSkip` ends in
+ * `incident_skipped_shadow`. Otherwise the incident is stored
+ * (`setTicketIncident`), then `caller_defaulted` (when flagged),
+ * `incident_created`, the triage work note, `helpdesk_note_added`, and the
+ * status `incident_created`.
+ *
+ * Every event is written once: a retried attempt reads the event types first.
+ * Retryable errors (`unavailable`, `rate_limited`) and unknown errors are
+ * thrown, so the task retries. Every other error ends the ticket in `failed`
+ * with `helpdesk_sync_failed` and an alert, and the run returns.
+ *
+ * Privacy: only redacted text, enums, IDs and the incident number leave the
+ * task. The requester email goes to the connector's create input only.
+ */
+export async function runHelpdeskSync(
+  payload: HelpdeskSyncPayload,
+  deps: HelpdeskSyncDeps,
+  attempt = 1,
+): Promise<HelpdeskSyncResult> {
+  const { ticketId } = payload;
+  const { repos, logger: log } = deps;
+
+  const ticket = await repos.getTicket(ticketId);
+  if (!ticket) throw new AbortTaskRunError(`helpdesk-sync: ticket ${ticketId} not found`);
+  const decision = checkSync(ticket.status);
+  if (decision === "refuse") {
+    await repos.addEvent(ticketId, "sync_refused", { status: ticket.status });
+    await deps.alert("sync_refused", { ticketId });
+    log.warn("helpdesk-sync: refused", { ticketId, status: ticket.status });
+    return { ticketId, refused: true };
+  }
+  if (decision === "done") {
+    log.info("helpdesk-sync: skipped", { ticketId, status: ticket.status });
+    return { ticketId, skipped: true };
+  }
+
+  const triage = await repos.getTriage(ticketId);
+  if (!triage || triage.category === null || triage.priority === null) {
+    throw new AbortTaskRunError(`helpdesk-sync: ticket ${ticketId} has no triage result`);
+  }
+  const { category, priority } = triage;
+  const redaction = await repos.getRedaction(ticketId);
+  if (!redaction) throw new AbortTaskRunError(`helpdesk-sync: ticket ${ticketId} has no redaction`);
+
+  if (ticket.status !== "helpdesk_pending")
+    await repos.setTicketStatus(ticketId, "helpdesk_pending");
+  const written = new Set(await repos.listEventTypes(ticketId, ONCE_EVENTS));
+  const once = async (type: string, data: Record<string, unknown> = {}): Promise<void> => {
+    if (written.has(type)) return;
+    await repos.addEvent(ticketId, type, data);
+    written.add(type);
+  };
+  await once("helpdesk_sync_started");
+  log.info("helpdesk-sync: started", { ticketId, attempt });
+
+  const overrides = effectiveTestOverrides({
+    e2eMode: deps.e2eMode,
+    isTest: ticket.is_test,
+    requested: payload.testOverrides,
+  });
+
+  const fail = async (code: string, alert: FailureAlert): Promise<HelpdeskSyncResult> => {
+    await once("helpdesk_sync_failed", { error: code });
+    await repos.setTicketStatus(ticketId, "failed");
+    await deps.alert(alert, { ticketId });
+    log.error("helpdesk-sync: failed", { ticketId, attempt, error: code });
+    return { ticketId, failed: true, error: code };
+  };
+
+  const sync = async (): Promise<HelpdeskSyncResult> => {
+    const connector = withShadowMode(deps.createConnector(), {
+      enabled: shadowEnabled({ env: { SHADOW_MODE: deps.shadowMode }, overrides }),
+      log: (event, fields) => log.info(`helpdesk-sync: ${event}`, { ticketId, ...fields }),
+    });
+    let ref = await connector.findByExternalRef(ticketId);
+    let callerDefaulted = false;
+    if (ref === null) {
+      const created = await connector.createTicket({
+        ticketId,
+        ticketNumber: ticket.ticket_number,
+        isTest: ticket.is_test,
+        redactedTitle: redaction.redacted_title,
+        redactedDescription: redaction.redacted_description,
+        category,
+        priority,
+        assignmentGroup: triage.assignment_group,
+        requesterEmail: ticket.requester_email,
+      });
+      if ("skipped" in created) {
+        await once("shadow_skipped", { operation: "create" });
+        await repos.setTicketStatus(ticketId, "incident_skipped_shadow");
+        return { ticketId, shadow: true };
+      }
+      ref = { externalId: created.externalId, number: created.number };
+      callerDefaulted = created.callerDefaulted;
+    }
+
+    await repos.setTicketIncident(ticketId, { sysId: ref.externalId, number: ref.number });
+    if (callerDefaulted) await once("caller_defaulted");
+    await once("incident_created", { externalId: ref.externalId, number: ref.number });
+    if (!written.has("helpdesk_note_added")) {
+      const skipped = await connector.addNote(ref, await note());
+      if (skipped === undefined) await once("helpdesk_note_added", { externalId: ref.externalId });
+    }
+    await repos.setTicketStatus(ticketId, "incident_created");
+    log.info("helpdesk-sync: incident created", { ticketId, attempt });
+    return { ticketId, incident: ref };
+  };
+
+  const note = async (): Promise<string> => {
+    const articles = await repos.getKbArticlesByIds(triage.kb_article_ids ?? []);
+    const fix =
+      triage.suggested_fix === null ? null : fixStepsSchema.safeParse(triage.suggested_fix);
+    if (fix !== null && !fix.success) {
+      throw new Error("helpdesk-sync: the saved fix steps have an unexpected shape");
+    }
+    return buildSyncNote({
+      ticketNumber: ticket.ticket_number,
+      category,
+      priority,
+      assignmentGroup: triage.assignment_group,
+      kbSlugs: articles.map((article) => article.slug),
+      fixSteps: fix === null ? null : fix.data,
+    });
+  };
+
+  try {
+    return await sync();
+  } catch (error) {
+    const failure = classify(error);
+    if (failure === null) {
+      log.warn("helpdesk-sync: attempt failed", {
+        ticketId,
+        attempt,
+        error: errorClassName(error),
+      });
+      throw error;
+    }
+    return fail(failure.code, failure.alert);
+  }
 }
