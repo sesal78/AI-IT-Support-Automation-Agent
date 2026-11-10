@@ -98,7 +98,11 @@ beforeAll(async () => {
 }, 300_000);
 afterAll(() => removePgContainer(pg));
 
-describe.each(["staff_add_note(uuid,text)", "staff_assign(uuid,uuid)"])("%s privileges", (fn) => {
+describe.each([
+  "staff_add_note(uuid,text)",
+  "staff_assign(uuid,uuid)",
+  "staff_set_state(uuid,text)",
+])("%s privileges", (fn) => {
   it("is security definer with an empty search_path; only authenticated may execute", async () => {
     const [row] = await query(
       `select p.prosecdef, p.proconfig, array(select coalesce(nullif(a.grantee, 0)::regrole::text, 'public')
@@ -190,5 +194,90 @@ describe("staff_assign (Postgres)", () => {
       type: "staff_assigned",
       payload: { helpdeskTicketId: ids.hd, staffId: ids.agent, assigneeId: ids.agent },
     });
+  });
+});
+
+// G3 (plan §6.3.1), written out here as the test oracle.
+const STATES = ["new", "in_progress", "on_hold", "resolved", "closed"];
+const G3 = ["new>in_progress", "new>on_hold", "new>resolved", "new>closed", "in_progress>on_hold"]
+  .concat(["in_progress>resolved", "on_hold>in_progress", "on_hold>resolved"])
+  .concat(["resolved>closed", "resolved>in_progress"]);
+const setState = (s: string) => query("update itsupport.helpdesk_tickets set state = $1", [s]);
+
+describe("staff_set_state (Postgres)", () => {
+  it("refuses anon, non-staff and inactive staff with 42501 and an unknown ticket with P0002", async () => {
+    await setState("new");
+    for (const user of [null, NOBODY, ids.inactiveUser])
+      await refuse(user, "staff_set_state", [ids.hd, "in_progress"], "42501");
+    await refuse(ids.agentUser, "staff_set_state", [NOBODY, "in_progress"], "P0002");
+  });
+
+  it("makes every G3 move with one staff_state_changed event; refuses all 15 other pairs with 23514", async () => {
+    for (const from of STATES)
+      for (const to of STATES) {
+        await setState(from);
+        if (!G3.includes(`${from}>${to}`)) {
+          await refuse(ids.agentUser, "staff_set_state", [ids.hd, to], "23514");
+          continue;
+        }
+        const before = (await query("select count(*)::int as n from itsupport.ticket_events"))[0];
+        expect(await call(ids.agentUser, "staff_set_state", ids.hd, to)).toBe(to);
+        expect(await query("select state from itsupport.helpdesk_tickets")).toEqual([
+          { state: to },
+        ]);
+        expect(await query("select count(*)::int as n from itsupport.ticket_events")).toEqual([
+          { n: (before!.n as number) + 1 },
+        ]);
+        expect(await lastEvent()).toEqual({
+          ticket_id: ids.ticket,
+          type: "staff_state_changed",
+          payload: { helpdeskTicketId: ids.hd, staffId: ids.agent, from, to },
+        });
+      }
+    await setState("new");
+    await refuse(ids.agentUser, "staff_set_state", [ids.hd, "bogus"], "23514");
+  });
+
+  it("two simultaneous new -> in_progress calls: the second waits on the row lock, then is refused", async () => {
+    await setState("new");
+    const events = async () =>
+      (
+        await query(
+          "select count(*)::int as n from itsupport.ticket_events where type = 'staff_state_changed'",
+        )
+      )[0];
+    const before = await events();
+    const [a, b] = [clientFor(pg), clientFor(pg)];
+    await Promise.all([a.connect(), b.connect()]);
+    try {
+      for (const db of [a, b]) {
+        await db.query("begin");
+        await db.query("set local role authenticated");
+        await db.query("select set_config('request.jwt.claim.sub', $1, true)", [ids.agentUser]);
+      }
+      const call = "select itsupport.staff_set_state($1, 'in_progress') as r";
+      await a.query(call, [ids.hd]);
+      const pidB = (await b.query("select pg_backend_pid() as p")).rows[0].p;
+      const second = b.query(call, [ids.hd]).then(
+        () => "ok",
+        (e: { code?: string }) => e.code,
+      );
+      let waiting = false;
+      for (let i = 0; i < 100 && !waiting; i++)
+        waiting = (
+          await query("select wait_event_type = 'Lock' as w from pg_stat_activity where pid = $1", [
+            pidB,
+          ])
+        )[0]?.w as boolean;
+      expect(waiting).toBe(true);
+      await a.query("commit");
+      expect(await second).toBe("23514");
+    } finally {
+      await Promise.all([a.end(), b.end()]);
+    }
+    expect(await query("select state from itsupport.helpdesk_tickets")).toEqual([
+      { state: "in_progress" },
+    ]);
+    expect(await events()).toEqual({ n: (before!.n as number) + 1 });
   });
 });

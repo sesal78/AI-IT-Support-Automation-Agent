@@ -123,3 +123,35 @@ end $$;
 revoke all on function itsupport.staff_assign(uuid, uuid)
   from public, anon, authenticated, service_role;
 grant execute on function itsupport.staff_assign(uuid, uuid) to authenticated;
+
+-- G3: only the pairs 0007 seeded. The ticket lock makes concurrent calls run
+-- one after the other; the second sees the new state.
+create or replace function itsupport.staff_set_state(helpdesk_ticket_id uuid, to_state text)
+  returns text language plpgsql security definer set search_path = ''
+as $$
+#variable_conflict use_column
+declare
+  me uuid := itsupport.current_staff();
+  target text := to_state;
+  ticket uuid;
+  old_state text;
+begin
+  if me is null then raise exception 'not active staff' using errcode = '42501'; end if;
+  select ticket_id, state into ticket, old_state from itsupport.helpdesk_tickets
+    where id = helpdesk_ticket_id for update;
+  if not found then raise exception 'helpdesk ticket not found' using errcode = 'P0002'; end if;
+  perform from itsupport.helpdesk_state_transitions
+    where from_state = old_state and to_state = target;
+  -- The message never echoes the requested value (client text).
+  if not found then
+    raise exception 'illegal helpdesk transition from %', old_state using errcode = '23514';
+  end if;
+  update itsupport.helpdesk_tickets set state = target, updated_at = now()
+    where id = helpdesk_ticket_id;
+  insert into itsupport.ticket_events (ticket_id, type, payload) values (ticket, 'staff_state_changed',
+    jsonb_build_object('helpdeskTicketId', helpdesk_ticket_id, 'staffId', me, 'from', old_state, 'to', target));
+  return target;
+end $$;
+revoke all on function itsupport.staff_set_state(uuid, text)
+  from public, anon, authenticated, service_role;
+grant execute on function itsupport.staff_set_state(uuid, text) to authenticated;
