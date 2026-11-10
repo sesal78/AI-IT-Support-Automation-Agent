@@ -49,6 +49,9 @@ export function fullInstance(): MockSnData {
   };
 }
 
+const stringify = (body: Record<string, unknown>): Row =>
+  Object.fromEntries(Object.entries(body).map(([k, v]) => [k, String(v)]));
+
 export interface Recorded {
   readonly method: string;
   readonly url: URL;
@@ -57,7 +60,7 @@ export interface Recorded {
 
 export function mockServiceNow(
   data: MockSnData,
-  options: { denyRoles?: boolean; denyAll?: number } = {},
+  options: { denyRoles?: boolean; denyAll?: number; keepOpen?: boolean } = {},
 ) {
   const requests: Recorded[] = [];
   const fetchImpl = async (input: URL, init: RequestInit): Promise<Response> => {
@@ -72,11 +75,23 @@ export function mockServiceNow(
         headers: { "content-type": "application/json" },
       });
     const table = input.pathname.replace("/api/now/table/", "");
+    if (method === "POST") {
+      // The connector's create: the row gets the fields the helper reads back.
+      const n = data.incidents.length + 1;
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      const row: Row = { assignment_group: "", state: "1", ...stringify(body) };
+      row["sys_id"] = sysId(900 + n);
+      row["number"] = `INC${String(n).padStart(7, "0")}`;
+      data.incidents.push(row);
+      return json({ result: { sys_id: row["sys_id"], number: row["number"] } }, 201);
+    }
     if (method === "PATCH") {
       const id = table.split("/")[1]!;
       const row = data.incidents.find((r) => r["sys_id"] === id);
       if (row === undefined) return json({}, 404);
-      Object.assign(row, JSON.parse(String(init.body)));
+      const patch = stringify(JSON.parse(String(init.body)));
+      // keepOpen: the instance says OK but never closes (T5.C.02 failure path).
+      if (!(options.keepOpen && patch["state"] === "7")) Object.assign(row, patch);
       return json({ result: row });
     }
     const terms = Object.fromEntries(
@@ -97,7 +112,8 @@ export function mockServiceNow(
       rows = data.incidents.filter((r) =>
         terms["sys_id"] !== undefined
           ? r["sys_id"] === terms["sys_id"]
-          : r["correlation_id"] === terms["correlation_id"],
+          : r["correlation_id"] ===
+            (terms["correlation_id"] ?? input.searchParams.get("correlation_id")),
       );
     } else if (table === "sys_journal_field")
       rows = data.journal.filter((r) => r["element_id"] === terms["element_id"]);
