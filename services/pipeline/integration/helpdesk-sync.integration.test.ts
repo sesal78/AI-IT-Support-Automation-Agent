@@ -1,0 +1,299 @@
+import { randomUUID } from "node:crypto";
+import { ServiceNowConnector, createServiceNowClient } from "@ai-it-support/helpdesk";
+import { ASSIGNMENT_GROUPS, type TicketStatus } from "@ai-it-support/shared";
+import { beforeEach, describe, expect, it } from "vitest";
+import { createPipelineAlert } from "../src/pipeline-alert.js";
+import {
+  createHelpdeskSyncDeps,
+  runHelpdeskSync,
+  type HelpdeskSyncDeps,
+} from "../src/trigger/helpdesk-sync.js";
+import { egress } from "../test-support/egress.js";
+import {
+  DEFAULT_CALLER,
+  SERVICENOW_ENV,
+  SERVICENOW_HOST,
+  SERVICENOW_ORIGIN,
+  SYS_USER_LOOKUP_PATH,
+  mockServiceNow,
+  type ServiceNowMock,
+} from "../test-support/servicenow-mock.js";
+import {
+  eventTypes,
+  quiet,
+  requestsTo,
+  sql,
+  testEnv,
+  testRepos,
+  ticketStatus,
+  useTriageStack,
+} from "./triage-harness.js";
+
+// P5-T5a: helpdesk-sync on the local REST stack (migrations 0001-0008). The real
+// repositories and the real ServiceNow client and connector run; ServiceNow is
+// the in-memory Table API of test-support/servicenow-mock.ts, behind the egress
+// recorder (the setup file checks every test for leaked PII). wait.for and the
+// clock are fake. A seeded ticket has no events, so a ticket's events are the
+// events after `auto`.
+
+useTriageStack();
+
+let snow: ServiceNowMock;
+const REQUESTER_USER = "c".repeat(32);
+
+beforeEach(async () => {
+  snow = mockServiceNow(egress);
+  await sql().query("delete from itsupport.security_events where kind like 'alert:%'");
+});
+
+// ---- Seeding -----------------------------------------------------------------------
+
+const PATHS: Partial<Record<TicketStatus, TicketStatus[]>> = {
+  redacted: ["redacted"],
+  triaged: ["redacted", "triaged"],
+  auto: ["redacted", "triaged", "auto"],
+  review_pending: ["redacted", "triaged", "review_pending"],
+  approved: ["redacted", "triaged", "review_pending", "approved"],
+  rejected: ["redacted", "triaged", "review_pending", "rejected"],
+  escalated_manual: ["redacted", "triaged", "review_pending", "escalated_manual"],
+  failed: ["failed"],
+};
+
+interface Seed {
+  status?: TicketStatus;
+  isTest?: boolean;
+  /** The requester has a sys_user in the mock. Default true. */
+  known?: boolean;
+}
+
+async function seedKbArticleId(): Promise<string> {
+  const { rows } = await sql().query("select id from itsupport.kb_articles order by slug limit 1");
+  return (rows[0] as { id: string }).id;
+}
+
+/** A triaged ticket in the given status, with raw text and requester data forbidden to leave. */
+async function seed({ status = "auto", isTest = false, known = true }: Seed = {}) {
+  const suffix = randomUUID().slice(0, 8);
+  const raw = {
+    title: `RAW-TITLE-${suffix}`,
+    description: `RAW-DESCRIPTION-${suffix}`,
+    name: `Sync Requester ${suffix}`,
+    email: `sync.${suffix}@example.test`,
+  };
+  for (const value of Object.values(raw)) {
+    egress.forbid(value);
+  }
+  // The email may be in the sys_user lookup query, nowhere else.
+  egress.allowInQuery(SERVICENOW_ORIGIN, SYS_USER_LOOKUP_PATH, raw.email);
+  const repos = testRepos();
+  const { ticket } = await repos.createTicket({
+    source: "web",
+    raw_title: raw.title,
+    raw_description: raw.description,
+    requester_email: raw.email,
+    requester_name: raw.name,
+    department: "Finance",
+    idempotency_key: `it-sync-${suffix}`,
+    is_test: isTest,
+  });
+  await repos.saveRedaction({
+    ticket_id: ticket.id,
+    redacted_title: "Printer on level 2 is jammed",
+    redacted_description: "The printer shows a paper jam and nothing is stuck inside.",
+    redaction_log: [],
+  });
+  await repos.saveTriage({
+    ticket_id: ticket.id,
+    sensitive: false,
+    sensitive_flags: [],
+    checker: "keywords",
+  });
+  const kbId = await seedKbArticleId();
+  await repos.saveTriageResult(ticket.id, {
+    category: "hardware",
+    subcategory: null,
+    priority: "P3",
+    urgency: "medium",
+    assignmentGroup: "Hardware",
+    route: "auto",
+    probabilities: { hardware: 0.9 },
+    flags: [],
+    groundingScore: 0.9,
+    kbArticleIds: [kbId],
+    suggestedFix: { steps: ["Open the rear cover", "Remove the jammed paper"], caveats: [] },
+    modelVersions: { llm: "test" },
+  });
+  for (const next of PATHS[status] ?? []) await repos.setTicketStatus(ticket.id, next);
+  snow.groups.push(
+    ...ASSIGNMENT_GROUPS.map((name, i) => ({ sys_id: `${i + 1}`.repeat(32), name })),
+  );
+  if (known) snow.users.push({ sys_id: REQUESTER_USER, email: raw.email });
+  return { ticketId: ticket.id, createdAt: ticket.created_at, raw };
+}
+
+// ---- Deps --------------------------------------------------------------------------
+
+interface DepsOptions {
+  shadow?: boolean;
+  e2e?: boolean;
+  /** Called with the ticket's status each time the task waits. */
+  onWait?: (minutes: number) => Promise<void>;
+  startAt?: number;
+}
+
+function harness(options: DepsOptions = {}) {
+  const env = {
+    ...testEnv(),
+    ...SERVICENOW_ENV,
+    SHADOW_MODE: options.shadow ? "true" : "false",
+    E2E_MODE: options.e2e ? "true" : "false",
+  };
+  let clock = options.startAt ?? Date.now();
+  const waits: number[] = [];
+  const real = createHelpdeskSyncDeps(env);
+  const deps: HelpdeskSyncDeps = {
+    ...real,
+    // A short timeout, so a lost response ends the attempt quickly.
+    createConnector: () =>
+      new ServiceNowConnector({
+        client: createServiceNowClient({
+          instanceUrl: env.SERVICENOW_INSTANCE_URL,
+          username: env.SERVICENOW_USERNAME,
+          password: env.SERVICENOW_PASSWORD,
+          timeoutMs: 300,
+        }),
+        defaultCaller: DEFAULT_CALLER,
+      }),
+    wait: {
+      for: async ({ minutes }) => {
+        waits.push(minutes);
+        clock += minutes * 60_000;
+        await options.onWait?.(minutes);
+      },
+    },
+    now: () => clock,
+    alert: createPipelineAlert(env, testRepos(), { logger: { error: () => undefined } }),
+    logger: quiet,
+  };
+  return { deps, waits };
+}
+
+const sync = (
+  ticketId: string,
+  deps: HelpdeskSyncDeps,
+  attempt = 1,
+  testOverrides?: Record<string, unknown>,
+) => runHelpdeskSync({ ticketId, ...(testOverrides ? { testOverrides } : {}) }, deps, attempt);
+
+async function stored(ticketId: string) {
+  const { rows } = await sql().query(
+    "select servicenow_sys_id, servicenow_number from itsupport.tickets where id = $1",
+    [ticketId],
+  );
+  return rows[0] as { servicenow_sys_id: string | null; servicenow_number: string | null };
+}
+
+const snowRequests = () => requestsTo(SERVICENOW_HOST);
+const writes = () => snowRequests().filter((r) => r.method === "POST" || r.method === "PATCH");
+
+// ---- Tests -------------------------------------------------------------------------
+
+describe("helpdesk-sync on the local REST stack", () => {
+  it.each(["auto", "approved"] as const)(
+    "T5.I.01: an %s ticket ends incident_created; one incident POST, one work-note PATCH",
+    async (status) => {
+      const { ticketId } = await seed({ status });
+      const { deps } = harness();
+
+      await expect(sync(ticketId, deps)).resolves.toMatchObject({
+        incident: { number: "INC0000001" },
+      });
+
+      expect(await ticketStatus(ticketId)).toBe("incident_created");
+      expect(await stored(ticketId)).toEqual({
+        servicenow_sys_id: "1".padStart(32, "0"),
+        servicenow_number: "INC0000001",
+      });
+      expect(await eventTypes(ticketId)).toEqual([
+        "helpdesk_sync_started",
+        "incident_created",
+        "helpdesk_note_added",
+      ]);
+      expect(writes().map((r) => r.method)).toEqual(["POST", "PATCH"]);
+      expect(snow.incidents).toHaveLength(1);
+      expect(snow.incidents[0]).toMatchObject({
+        caller_id: REQUESTER_USER,
+        category: "hardware",
+        correlation_id: ticketId,
+        correlation_display: expect.stringMatching(/^ITS-\d{6}$/),
+      });
+      expect(snow.incidents[0]?.work_notes).toContain("Category: hardware");
+    },
+  );
+
+  it("T5.I.01 privacy: the requester email is only in the sys_user lookup; no raw text anywhere", async () => {
+    const { ticketId, raw } = await seed();
+    await sync(ticketId, harness().deps);
+
+    const lookups = snowRequests().filter((r) => decodeURIComponent(r.query).includes(raw.email));
+    expect(lookups.map((r) => `${r.method} ${r.path}`)).toEqual([`GET ${SYS_USER_LOOKUP_PATH}`]);
+    const postBody = JSON.parse(writes()[0]?.body ?? "{}") as Record<string, string>;
+    expect(Object.keys(postBody).sort()).toEqual(
+      [
+        "assignment_group",
+        "caller_id",
+        "category",
+        "correlation_display",
+        "correlation_id",
+        "description",
+        "impact",
+        "short_description",
+        "urgency",
+      ].sort(),
+    );
+    const { rows } = await sql().query(
+      "select payload::text as p from itsupport.ticket_events where ticket_id = $1",
+      [ticketId],
+    );
+    const everything = JSON.stringify([snowRequests().map((r) => r.body), rows]);
+    for (const marker of [raw.title, raw.description, raw.name]) {
+      expect(everything).not.toContain(marker);
+    }
+    expect(everything).not.toContain(raw.email);
+  });
+
+  it("writes caller_defaulted and uses the default caller for an unknown requester", async () => {
+    const { ticketId } = await seed({ known: false });
+    await sync(ticketId, harness().deps);
+    expect(await eventTypes(ticketId)).toEqual([
+      "helpdesk_sync_started",
+      "caller_defaulted",
+      "incident_created",
+      "helpdesk_note_added",
+    ]);
+    expect(snow.incidents[0]?.caller_id).toBe(DEFAULT_CALLER);
+  });
+
+  it("T5.I.02: a lost create response is found by the retry; one incident, incident_created once", async () => {
+    const { ticketId } = await seed();
+    const { deps } = harness();
+    snow.fail("POST incident", "lose-response");
+
+    await expect(sync(ticketId, deps, 1)).rejects.toMatchObject({ code: "unavailable" });
+    expect(snow.incidents).toHaveLength(1);
+    expect(await ticketStatus(ticketId)).toBe("helpdesk_pending");
+
+    await sync(ticketId, deps, 2);
+
+    expect(snow.incidents).toHaveLength(1);
+    expect(writes().filter((r) => r.method === "POST")).toHaveLength(1);
+    expect(await ticketStatus(ticketId)).toBe("incident_created");
+    expect(await stored(ticketId)).toMatchObject({ servicenow_number: "INC0000001" });
+    expect((await eventTypes(ticketId)).filter((t) => t === "incident_created")).toHaveLength(1);
+    expect(await eventTypes(ticketId)).toEqual([
+      "helpdesk_sync_started",
+      "incident_created",
+      "helpdesk_note_added",
+    ]);
+  });
+});
