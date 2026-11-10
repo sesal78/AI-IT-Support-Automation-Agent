@@ -55,6 +55,14 @@ export type EgressRecorder = {
   mock(origin: string, resolver?: HttpResponseResolver): void;
   /** Registers a string that must never leave the process. Reported as `custom#N`. */
   forbid(value: string): void;
+  /**
+   * Lets `value` appear in the query string of requests to one origin and path
+   * (for example the requester email in a ServiceNow `sys_user` lookup). The
+   * request is still recorded in full. The value is still a leak in a body, a
+   * header, a path, or in any other origin or path; the rest of the query is
+   * still scanned. Cleared by `stop()`.
+   */
+  allowInQuery(origin: string, path: string, value: string): void;
   /** Forgets recorded requests and violations; keeps mocks and forbidden strings. */
   reset(): void;
   /** Recorded requests (without 127.0.0.1 traffic). */
@@ -151,14 +159,25 @@ export function createEgressRecorder(options: { runId?: string } = {}): EgressRe
   const entries: Entry[] = [];
   const unmocked = new Set<string>();
   const forbidden: string[] = [];
+  const allowedInQuery: Array<{ host: string; path: string; forms: string[] }> = [];
   let running = false;
+
+  /** The query text to scan: allowed values for this host and path are blanked out. */
+  function scannedQuery(url: URL): string {
+    let text = url.search;
+    for (const rule of allowedInQuery) {
+      if (rule.host !== url.host || rule.path !== url.pathname) continue;
+      for (const form of rule.forms) text = text.replaceAll(form, "[allowed]");
+    }
+    return text;
+  }
 
   async function capture(request: Request): Promise<void> {
     const url = new URL(request.url);
     const headers: Record<string, string> = {};
     const haystacks: Haystack[] = [
       { where: "path", text: url.pathname },
-      { where: "query", text: url.search },
+      { where: "query", text: scannedQuery(url) },
     ];
     request.headers.forEach((value, name) => {
       const key = name.toLowerCase();
@@ -256,6 +275,7 @@ export function createEgressRecorder(options: { runId?: string } = {}): EgressRe
       entries.length = 0;
       unmocked.clear();
       forbidden.length = 0;
+      allowedInQuery.length = 0;
     },
     mock(origin, resolver) {
       const base = new URL(origin).origin;
@@ -271,6 +291,21 @@ export function createEgressRecorder(options: { runId?: string } = {}): EgressRe
         throw new TypeError("forbid() needs a non-empty string");
       }
       forbidden.push(value);
+    },
+    allowInQuery(origin, path, value) {
+      if (typeof value !== "string" || value.trim() === "") {
+        throw new TypeError("allowInQuery() needs a non-empty string");
+      }
+      if (!path.startsWith("/") || path.includes("?") || path.includes("#")) {
+        throw new TypeError("allowInQuery() needs a path such as /api/x, without a query");
+      }
+      // The three ways a client writes the value into a query string.
+      const forms = [
+        value,
+        encodeURIComponent(value),
+        new URLSearchParams({ v: value }).toString().slice(2),
+      ];
+      allowedInQuery.push({ host: new URL(origin).host, path, forms: [...new Set(forms)] });
     },
     reset() {
       entries.length = 0;
