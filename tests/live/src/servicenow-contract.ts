@@ -44,6 +44,14 @@ export const serviceNowContractScenario: Scenario = {
     };
 
     let failedCases = 0;
+    let cleanupErrors = 0;
+    async function close(sysId: string) {
+      try {
+        await sn.closeIncident(sysId);
+      } catch {
+        cleanupErrors += 1;
+      }
+    }
     for (const testCase of helpdeskContractCases(true)) {
       const created: HelpdeskTicketRef[] = [];
       try {
@@ -51,18 +59,34 @@ export const serviceNowContractScenario: Scenario = {
       } catch {
         failedCases += 1;
       }
-      for (const ref of created) await sn.closeIncident(ref.externalId);
+      for (const ref of created) await close(ref.externalId);
+    }
+
+    // A create can succeed remotely but return an invalid response. Find those
+    // incidents by the ID recorded before the request, and retry any failed close.
+    for (const ticketId of ticketIds) {
+      try {
+        for (const incident of await sn.incidentsByCorrelationId(ticketId)) {
+          if (incident.state !== CLOSED) await close(incident.sys_id);
+        }
+      } catch {
+        cleanupErrors += 1;
+      }
     }
 
     let open = 0;
     for (const ticketId of ticketIds) {
-      for (const incident of await sn.incidentsByCorrelationId(ticketId)) {
-        if (incident.state !== CLOSED) open += 1;
+      try {
+        for (const incident of await sn.incidentsByCorrelationId(ticketId)) {
+          if (incident.state !== CLOSED) open += 1;
+        }
+      } catch {
+        cleanupErrors += 1;
       }
     }
     return {
-      status: failedCases === 0 && open === 0 ? "pass" : "fail",
-      evidence: { created: ticketIds.length, failedCases, open, aiCallCount: 0 },
+      status: failedCases === 0 && cleanupErrors === 0 && open === 0 ? "pass" : "fail",
+      evidence: { created: ticketIds.length, failedCases, cleanupErrors, open, aiCallCount: 0 },
     };
   },
 };
