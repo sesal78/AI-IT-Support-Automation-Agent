@@ -124,7 +124,7 @@ export function createReviewDeps(source: Record<string, string | undefined>): Re
 }
 
 /** Statuses after the review: a run on one of them is a no-op. */
-const DONE: ReadonlySet<string> = new Set(["approved", "rejected", "escalated_manual", "failed"]);
+const DONE: ReadonlySet<string> = new Set(["rejected", "escalated_manual", "failed"]);
 
 const fixStepsSchema = z.object({ steps: z.array(z.string()), caveats: z.array(z.string()) });
 
@@ -163,6 +163,17 @@ export async function runReviewTicket(
 
   const ticket = await repos.getTicket(ticketId);
   if (!ticket) throw new AbortTaskRunError(`review-ticket: ticket ${ticketId} not found`);
+  if (ticket.status === "approved") {
+    // Retry the handoff after a crash between the approval write and enqueue.
+    await enqueueHelpdeskSync(payload, {
+      task: "review-ticket",
+      repos,
+      triggerHelpdeskSync: deps.triggerHelpdeskSync,
+      alert: deps.alert,
+      logger: log,
+    });
+    return { ticketId, skipped: true };
+  }
   if (DONE.has(ticket.status)) {
     log.info("review-ticket: skipped", { ticketId, status: ticket.status });
     return { ticketId, skipped: true };

@@ -436,7 +436,33 @@ describe("runReviewTicket", () => {
     expect(h.wait.createToken).not.toHaveBeenCalled();
   });
 
-  it.each(["approved", "rejected", "escalated_manual", "failed"])(
+  it("recovers an approved ticket, including a DB failure while recording a failed enqueue", async () => {
+    const h = harness({ found: ticket("approved") });
+    vi.mocked(h.deps.triggerHelpdeskSync).mockRejectedValueOnce(new TypeError("enqueue failed"));
+    h.repos.addEvent.mockRejectedValueOnce(new Error("event write failed"));
+    const switches = { shadowMode: true };
+
+    await expect(run(h, switches)).rejects.toThrow("event write failed");
+    await expect(run(h, switches)).resolves.toEqual({ ticketId: TICKET, skipped: true });
+
+    expect(vi.mocked(h.deps.triggerHelpdeskSync).mock.calls).toEqual([
+      [
+        { ticketId: TICKET, testOverrides: switches },
+        { idempotencyKey: `helpdesk-sync:${TICKET}` },
+      ],
+      [
+        { ticketId: TICKET, testOverrides: switches },
+        { idempotencyKey: `helpdesk-sync:${TICKET}` },
+      ],
+    ]);
+    expect(h.repos.setTicketStatus).not.toHaveBeenCalled();
+    expect(h.repos.getTriage).not.toHaveBeenCalled();
+    expect(h.slack.postMessage).not.toHaveBeenCalled();
+    expect(h.wait.createToken).not.toHaveBeenCalled();
+    expect(h.wait.forToken).not.toHaveBeenCalled();
+  });
+
+  it.each(["rejected", "escalated_manual", "failed"])(
     "skips a %s ticket with no further call",
     async (status) => {
       const h = harness({ found: ticket(status) });
