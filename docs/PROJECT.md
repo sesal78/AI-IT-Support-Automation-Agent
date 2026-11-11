@@ -398,6 +398,8 @@ the rollback once on staging so the first real execution isn't during a fire.
 
 ## 11. Decisions Log
 
+- 2026-11-11 — Seun approved one `.gitleaksignore` fingerprint for the synthetic error marker in commit `e043ed9d30b0c4338b361f1be9cca90a5e3e4811`, `packages/helpdesk/src/builtin.test.ts:12`, rule `generic-api-key`. No file, commit or rule is excluded as a whole. The default rules and existing canary-path allow-list stay unchanged; the guard test pins the one historical fingerprint. Current tests use a plain error marker instead.
+
 ### Pending decisions (the parking lot for what's NOT yet decided)
 
 | Decision needed | Options | Decide by | Blocks build? | Blocks release? | Status / resolution |
