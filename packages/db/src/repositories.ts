@@ -38,6 +38,9 @@ export const ticketSchema = z.object({
   status: z.string(),
   servicenow_sys_id: z.string().nullable(),
   servicenow_number: z.string().nullable(),
+  // The helpdesk the ticket lives in (0007, G2); null until a helpdesk ticket exists.
+  // Optional, so a row read before 0007 still parses.
+  helpdesk: z.enum(["servicenow", "builtin"]).nullable().optional(),
   idempotency_key: z.string(),
   is_test: z.boolean(),
   // Filled by the database default (0006); intake reads it back and never sends it.

@@ -179,11 +179,21 @@ describe("createHelpdeskHealthReader: failures give false and log the class name
     expect(JSON.stringify(s.log.mock.calls)).not.toContain(MARK);
   });
 
+  it.each(["servicenow", "builtin"])(
+    "reads a fresh ok run of the %s connector",
+    async (connector) => {
+      const s = setup();
+      s.list.mockResolvedValue({ data: [item(1 * MIN)] });
+      s.retrieve.mockResolvedValue({ output: { ...output("ok"), connector } });
+      await expect(s.reader.get()).resolves.toEqual({ reachable: true, asleep: false });
+    },
+  );
+
   it.each([
     ["no output", undefined],
     ["null", null],
     ["a string", MARK],
-    ["another connector", { ...output("ok"), connector: "builtin" }],
+    ["another connector", { ...output("ok"), connector: "jira" }],
     ["an unknown status", { ...output("ok"), status: "up" }],
     ["an extra key", { ...output("ok"), host: MARK }],
     ["a missing time", { connector: "servicenow", status: "ok" }],

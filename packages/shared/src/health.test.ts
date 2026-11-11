@@ -79,10 +79,14 @@ describe("helpdeskHealthOutputSchema", () => {
     expect(helpdeskHealthOutputSchema.safeParse({ ...output, status }).success).toBe(false);
   });
 
+  it.each(["servicenow", "builtin", "unknown"])("accepts the connector %s", (connector) => {
+    expect(helpdeskHealthOutputSchema.safeParse({ ...output, connector }).success).toBe(true);
+  });
+
   it("rejects another connector, an invalid time and an extra key", () => {
-    expect(helpdeskHealthOutputSchema.safeParse({ ...output, connector: "builtin" }).success).toBe(
-      false,
-    );
+    for (const connector of ["jira", "ServiceNow", "", null]) {
+      expect(helpdeskHealthOutputSchema.safeParse({ ...output, connector }).success).toBe(false);
+    }
     expect(
       helpdeskHealthOutputSchema.safeParse({ ...output, checkedAt: "yesterday" }).success,
     ).toBe(false);

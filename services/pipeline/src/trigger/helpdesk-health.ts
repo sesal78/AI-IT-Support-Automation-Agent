@@ -1,15 +1,17 @@
 import { errorClassName, type AlertFn } from "@ai-it-support/ai";
 import { createDbClient, createRepositories } from "@ai-it-support/db";
 import {
+  HelpdeskError,
   ServiceNowConnector,
   createServiceNowClient,
+  selectHelpdeskConnector,
   type HelpdeskConnector,
 } from "@ai-it-support/helpdesk";
 import {
   HELPDESK_HEALTH_TASK_ID,
+  helpdeskEnvShape,
   helpdeskHealthOutputSchema,
-  parseEnv,
-  serviceNowEnvShape,
+  parseHelpdeskEnv,
   type HelpdeskHealthOutput,
 } from "@ai-it-support/shared";
 import { logger, schedules } from "@trigger.dev/sdk";
@@ -20,10 +22,12 @@ export type { HelpdeskHealthOutput };
 type LogFn = (message: string, data?: Record<string, unknown>) => void;
 
 export interface HelpdeskHealthDeps {
+  /** The chosen connector's name for the output; `unknown` when HELPDESK is not valid. */
+  helpdesk: HelpdeskHealthOutput["connector"];
   /**
    * Builds the connector. Called inside the run, so a missing or invalid
-   * ServiceNow setting counts as `down` and raises an alert, like any other
-   * health failure.
+   * HELPDESK or ServiceNow setting counts as `down` and raises an alert, like
+   * any other health failure.
    */
   createConnector: () => HelpdeskConnector;
   /** Epoch ms. Replaced in tests. */
@@ -39,7 +43,8 @@ const statusSchema = helpdeskHealthOutputSchema.shape.status;
 /**
  * The task body, exported so tests can call it without the Trigger.dev
  * runtime. It asks the connector for its health once and returns
- * `{ connector: "servicenow", status, checkedAt }`. `asleep` raises
+ * `{ connector, status, checkedAt }`, where `connector` is the one `HELPDESK`
+ * chose (the built-in helpdesk is `ok` or `down`, never `asleep`). `asleep` raises
  * `alert:helpdesk_asleep` and `down` raises `alert:helpdesk_down`; the alert
  * sink counts them per minute (phase 3 resolved point 7). A health call that
  * throws, a connector that cannot be built, and a status that is not
@@ -64,28 +69,43 @@ export async function runHelpdeskHealth(deps: HelpdeskHealthDeps): Promise<Helpd
       deps.logger.error("helpdesk-health: alert failed", { error: errorClassName(error) });
     }
   }
-  return { connector: "servicenow", status, checkedAt };
+  return { connector: deps.helpdesk, status, checkedAt };
+}
+
+/** The configured helpdesk, or `unknown`: only a fixed word reaches the output. */
+function configuredHelpdesk(
+  source: Record<string, string | undefined>,
+): HelpdeskHealthOutput["connector"] {
+  const parsed = helpdeskEnvShape.HELPDESK.safeParse(source.HELPDESK);
+  return parsed.success ? parsed.data : "unknown";
 }
 
 /**
  * The database (for the alert record) and the alert sink are built now; the
- * ServiceNow connector is built when the run asks for it. Invalid database
- * variables throw here, naming the variable.
+ * connector is built when the run asks for it. Invalid database variables
+ * throw here, naming the variable.
  */
 export function createHelpdeskHealthDeps(
   source: Record<string, string | undefined>,
 ): HelpdeskHealthDeps {
   const repos = createRepositories(createDbClient(source));
   return {
+    helpdesk: configuredHelpdesk(source),
     createConnector: () => {
-      const env = parseEnv(serviceNowEnvShape, source);
-      return new ServiceNowConnector({
-        client: createServiceNowClient({
-          instanceUrl: env.SERVICENOW_INSTANCE_URL,
-          username: env.SERVICENOW_USERNAME,
-          password: env.SERVICENOW_PASSWORD,
-        }),
-        defaultCaller: env.SERVICENOW_DEFAULT_CALLER,
+      const env = parseHelpdeskEnv(source);
+      return selectHelpdeskConnector(env, {
+        store: repos,
+        serviceNow: () => {
+          if (env.HELPDESK !== "servicenow") throw new HelpdeskError("config", "select");
+          return new ServiceNowConnector({
+            client: createServiceNowClient({
+              instanceUrl: env.SERVICENOW_INSTANCE_URL,
+              username: env.SERVICENOW_USERNAME,
+              password: env.SERVICENOW_PASSWORD,
+            }),
+            defaultCaller: env.SERVICENOW_DEFAULT_CALLER,
+          });
+        },
       });
     },
     now: () => Date.now(),
@@ -109,7 +129,11 @@ export async function runHelpdeskHealthTask(
     deps = createHelpdeskHealthDeps(source);
   } catch (error) {
     log.error("helpdesk-health: could not build the deps", { error: errorClassName(error) });
-    return { connector: "servicenow", status: "down", checkedAt: new Date(now()).toISOString() };
+    return {
+      connector: configuredHelpdesk(source),
+      status: "down",
+      checkedAt: new Date(now()).toISOString(),
+    };
   }
   return runHelpdeskHealth({ ...deps, logger: log, now });
 }

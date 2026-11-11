@@ -213,6 +213,35 @@ async function eventPayloads(ticketId: string, type: string): Promise<unknown[]>
   return rows.map((row: { payload: unknown }) => row.payload);
 }
 
+/** The built-in side of a ticket: the flag, the helpdesk rows and the system notes. */
+async function builtinState(ticketId: string) {
+  const { rows } = await sql().query(
+    `select t.helpdesk,
+       (select count(*)::int from itsupport.helpdesk_tickets h where h.ticket_id = t.id) as tickets,
+       (select count(*)::int from itsupport.helpdesk_notes n
+          join itsupport.helpdesk_tickets h on h.id = n.helpdesk_ticket_id
+          where h.ticket_id = t.id and n.author_kind = 'system') as notes
+     from itsupport.tickets t where t.id = $1`,
+    [ticketId],
+  );
+  return rows[0] as { helpdesk: string | null; tickets: number; notes: number };
+}
+
+/** The real deps for HELPDESK=builtin: no ServiceNow variable is set at all (G1). */
+function builtinDeps(options: { shadow?: boolean } = {}): HelpdeskSyncDeps {
+  const env = {
+    ...testEnv(),
+    HELPDESK: "builtin",
+    SHADOW_MODE: options.shadow ? "true" : "false",
+    E2E_MODE: "false",
+  };
+  return {
+    ...createHelpdeskSyncDeps(env),
+    alert: createPipelineAlert(env, testRepos(), { logger: { error: () => undefined } }),
+    logger: quiet,
+  };
+}
+
 // ---- Tests -------------------------------------------------------------------------
 
 describe("helpdesk-sync on the local REST stack", () => {
@@ -256,6 +285,12 @@ describe("helpdesk-sync on the local REST stack", () => {
         "helpdesk_note_added",
       ]);
       expect(writes().map((r) => r.method)).toEqual(["POST", "PATCH"]);
+      // P5-T14: with servicenow the flag is set and no built-in row is written.
+      expect(await builtinState(ticketId)).toEqual({
+        helpdesk: "servicenow",
+        tickets: 0,
+        notes: 0,
+      });
       expect(snow.incidents).toHaveLength(1);
       expect(snow.incidents[0]).toMatchObject({
         caller_id: REQUESTER_USER,
@@ -379,7 +414,7 @@ describe("helpdesk-sync on the local REST stack", () => {
 
       await onHelpdeskSyncFailure(
         { payload: { ticketId }, error: lastError },
-        { repos: testRepos(), alert: deps.alert, logger: quiet },
+        { repos: testRepos(), helpdesk: deps.helpdesk, alert: deps.alert, logger: quiet },
       );
 
       expect(await ticketStatus(ticketId)).toBe("failed");
@@ -531,4 +566,68 @@ describe("helpdesk-sync: shadow mode", () => {
       expect(await stored(ticketId)).toEqual({ servicenow_sys_id: null, servicenow_number: null });
     },
   );
+});
+
+describe("helpdesk-sync with the built-in helpdesk (P5-T14)", () => {
+  it.each(["auto", "approved"] as const)(
+    "an %s ticket ends incident_created with one helpdesk row, one system note and no ServiceNow call",
+    async (status) => {
+      const { ticketId } = await seed({ status });
+      const result = await sync(ticketId, builtinDeps());
+
+      expect(result).toMatchObject({ incident: { number: expect.stringMatching(/^HD\d{7}$/) } });
+      expect(await ticketStatus(ticketId)).toBe("incident_created");
+      expect(await builtinState(ticketId)).toEqual({ helpdesk: "builtin", tickets: 1, notes: 1 });
+      // The legacy ServiceNow columns stay empty: a built-in ID is a UUID.
+      expect(await stored(ticketId)).toEqual({ servicenow_sys_id: null, servicenow_number: null });
+      expect(await eventTypes(ticketId)).toEqual([
+        "helpdesk_sync_started",
+        "incident_created",
+        "helpdesk_note_attempted",
+        "helpdesk_note_added",
+      ]);
+      expect(snowRequests()).toHaveLength(0);
+    },
+  );
+
+  it("a run again changes nothing: still one helpdesk ticket and one note", async () => {
+    const { ticketId } = await seed();
+    const deps = builtinDeps();
+    await sync(ticketId, deps);
+    await expect(sync(ticketId, deps)).resolves.toEqual({ ticketId, skipped: true });
+    expect(await builtinState(ticketId)).toEqual({ helpdesk: "builtin", tickets: 1, notes: 1 });
+  });
+
+  it("shadow mode: no helpdesk row, no flag, shadow_skipped, incident_skipped_shadow", async () => {
+    const { ticketId } = await seed();
+    await expect(sync(ticketId, builtinDeps({ shadow: true }))).resolves.toEqual({
+      ticketId,
+      shadow: true,
+    });
+    expect(await ticketStatus(ticketId)).toBe("incident_skipped_shadow");
+    expect(await builtinState(ticketId)).toEqual({ helpdesk: null, tickets: 0, notes: 0 });
+    expect(await eventTypes(ticketId)).toEqual(["helpdesk_sync_started", "shadow_skipped"]);
+  });
+
+  it("G2: a ticket made under servicenow, synced again after a switch to builtin, is refused with no write", async () => {
+    const { ticketId } = await seed();
+    const { deps } = harness();
+    snow.fail("PATCH incident", "lose-response");
+    await expect(sync(ticketId, deps)).rejects.toMatchObject({ code: "unavailable" });
+    expect(await ticketStatus(ticketId)).toBe("helpdesk_pending");
+    const before = { writes: writes().length, events: await eventTypes(ticketId) };
+
+    await expect(sync(ticketId, builtinDeps(), 2)).resolves.toEqual({ ticketId, refused: true });
+
+    expect(await eventPayloads(ticketId, "helpdesk_mismatch")).toEqual([
+      { stored: "servicenow", configured: "builtin" },
+    ]);
+    expect(await alertRows("helpdesk_mismatch")).toEqual([
+      { source: "pipeline", kind: "alert:helpdesk_mismatch", count: 1 },
+    ]);
+    expect(await ticketStatus(ticketId)).toBe("helpdesk_pending");
+    expect(await builtinState(ticketId)).toEqual({ helpdesk: "servicenow", tickets: 0, notes: 0 });
+    expect(writes()).toHaveLength(before.writes);
+    expect(await eventTypes(ticketId)).toEqual([...before.events, "helpdesk_mismatch"]);
+  });
 });
