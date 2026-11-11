@@ -19,6 +19,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
