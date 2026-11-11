@@ -43,6 +43,7 @@ const view = {
   reviews: [],
   notifications: [],
   autofix: [],
+  incident: null,
 };
 
 type Route = typeof import("./route");
@@ -137,6 +138,25 @@ describe("GET /api/internal/tickets/:id", () => {
   it("returns the ticket number as number, next to the UUID", async () => {
     const body = await (await call(ID)).json();
     expect(body).toMatchObject({ id: ID, number: "ITS-000042" });
+  });
+
+  it("returns the helpdesk incident, and its absence as null (P5-T5b)", async () => {
+    const incident = { number: "INC0010001", sysId: "a".repeat(32) };
+    getTicketView.mockResolvedValue({ ...view, incident });
+    expect((await (await call(ID)).json()).incident).toEqual(incident);
+
+    getTicketView.mockResolvedValue(view);
+    expect((await (await call(ID)).json()).incident).toBeNull();
+  });
+
+  it("fails with 500 and no value when the incident carries a stray key", async () => {
+    getTicketView.mockResolvedValue({
+      ...view,
+      incident: { number: "INC0010001", sysId: "a".repeat(32), description: MARKER },
+    });
+    const res = await call(ID);
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toContain(MARKER);
   });
 
   it("fails with 500 and no value when the repository returns a view with a bad number", async () => {

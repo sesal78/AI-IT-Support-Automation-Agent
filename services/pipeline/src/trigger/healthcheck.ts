@@ -15,6 +15,12 @@ const FEATURE_ENV_NAMES = {
   langfuse: ["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL"],
   caps: ["LLM_MONTHLY_CALL_CAP", "TYPESAFE_MONTHLY_CALL_CAP"],
   slack: ["SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID"],
+  servicenow: [
+    "SERVICENOW_INSTANCE_URL",
+    "SERVICENOW_USERNAME",
+    "SERVICENOW_PASSWORD",
+    "SERVICENOW_DEFAULT_CALLER",
+  ],
 } as const;
 
 type Feature = keyof typeof FEATURE_ENV_NAMES;
@@ -48,6 +54,7 @@ function readConfigured(env: EnvSource): HealthcheckConfigured {
     langfuse: feature("langfuse"),
     caps: feature("caps"),
     slack: feature("slack"),
+    servicenow: feature("servicenow"),
     e2eMode: env.E2E_MODE === "true",
   };
 }

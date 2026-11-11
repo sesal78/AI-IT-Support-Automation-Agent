@@ -185,7 +185,8 @@ export type SensitiveCheck = z.infer<typeof sensitiveCheckSchema>;
 
 // Named columns for the internal ticket view. The raw title, raw description,
 // requester name, requester email and department are never in these lists.
-const VIEW_TICKET_COLUMNS = "id,ticket_number,status,is_test,source,created_at";
+const VIEW_TICKET_COLUMNS =
+  "id,ticket_number,status,is_test,source,created_at,servicenow_number,servicenow_sys_id";
 const VIEW_REDACTION_COLUMNS = "redacted_title,redacted_description";
 const VIEW_TRIAGE_COLUMNS =
   "sensitive,sensitive_flags,category,subcategory,priority,urgency,assignment_group,route," +
@@ -207,14 +208,26 @@ const KB_ARTICLE_COLUMNS = "id,slug,title,content,category,assignment_group";
 const SECURITY_EVENT_COLUMNS = "source,kind,window_start,count";
 const MAX_SECURITY_EVENTS = 500;
 
-const viewTicketSchema = z.object({
-  id: z.uuid(),
-  ticket_number: ticketNumberSchema,
-  status: z.string(),
-  is_test: z.boolean(),
-  source: z.string(),
-  created_at: timestamp,
-});
+const viewTicketSchema = z
+  .object({
+    id: z.uuid(),
+    ticket_number: ticketNumberSchema,
+    status: z.string(),
+    is_test: z.boolean(),
+    source: z.string(),
+    created_at: timestamp,
+    servicenow_number: z.string().nullable(),
+    servicenow_sys_id: z.string().nullable(),
+  })
+  // P5-T5b: the view's `incident` is the pair or null, so a row with only one
+  // of the two columns is a shape error, not a half incident.
+  .refine(
+    (row) =>
+      (row.servicenow_number === null) === (row.servicenow_sys_id === null) &&
+      (row.servicenow_number === null ||
+        (INCIDENT_NUMBER.test(row.servicenow_number) && SYS_ID.test(row.servicenow_sys_id ?? ""))),
+    { path: ["incident"], message: "servicenow_number and servicenow_sys_id must be set together" },
+  );
 const viewRedactionSchema = z.object({
   redacted_title: z.string(),
   redacted_description: z.string(),
@@ -696,6 +709,10 @@ export function createRepositories(client: DbClient) {
         })),
         notifications: [],
         autofix: [],
+        incident:
+          ticket.servicenow_number === null || ticket.servicenow_sys_id === null
+            ? null
+            : { number: ticket.servicenow_number, sysId: ticket.servicenow_sys_id },
       };
     },
 

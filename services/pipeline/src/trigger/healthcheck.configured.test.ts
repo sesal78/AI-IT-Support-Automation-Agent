@@ -24,6 +24,12 @@ const FEATURES = {
   langfuse: ["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL"],
   caps: ["LLM_MONTHLY_CALL_CAP", "TYPESAFE_MONTHLY_CALL_CAP"],
   slack: ["SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID"],
+  servicenow: [
+    "SERVICENOW_INSTANCE_URL",
+    "SERVICENOW_USERNAME",
+    "SERVICENOW_PASSWORD",
+    "SERVICENOW_DEFAULT_CALLER",
+  ],
 } as const;
 
 const ALL_NAMES = Object.values(FEATURES).flat();
@@ -34,6 +40,7 @@ const allTrue = {
   langfuse: true,
   caps: true,
   slack: true,
+  servicenow: true,
 };
 const allFalse = {
   supabase: false,
@@ -42,6 +49,7 @@ const allFalse = {
   langfuse: false,
   caps: false,
   slack: false,
+  servicenow: false,
 };
 
 /** Every listed name set to a harmless value. */
@@ -64,11 +72,11 @@ afterEach(() => {
 // missing or blank name is reported as `false`, which is the point of the
 // task. The payload's failure path is covered in healthcheck.test.ts.
 describe("healthcheck configured map", () => {
-  it("lists 14 env names", () => {
-    expect(new Set(ALL_NAMES).size).toBe(14);
+  it("lists 18 env names", () => {
+    expect(new Set(ALL_NAMES).size).toBe(18);
   });
 
-  it("reports every feature true when all 14 names are set", async () => {
+  it("reports every feature true when all 18 names are set", async () => {
     expect(await configuredFor(fullEnv())).toEqual({ ...allTrue, e2eMode: false });
   });
 
@@ -87,11 +95,20 @@ describe("healthcheck configured map", () => {
     expect(new Date(result.at).toISOString()).toBe(result.at);
   });
 
-  it("has exactly the seven keys, each a boolean, whatever the env holds", async () => {
+  it("has exactly the eight keys, each a boolean, whatever the env holds", async () => {
     for (const env of [{}, fullEnv(), { ...fullEnv(), E2E_MODE: "true" }]) {
       const configured = await configuredFor(env);
       expect(Object.keys(configured).sort()).toEqual(
-        ["caps", "e2eMode", "langfuse", "llm", "slack", "supabase", "typesafe"].sort(),
+        [
+          "caps",
+          "e2eMode",
+          "langfuse",
+          "llm",
+          "servicenow",
+          "slack",
+          "supabase",
+          "typesafe",
+        ].sort(),
       );
       for (const value of Object.values(configured)) expect(typeof value).toBe("boolean");
     }
@@ -144,6 +161,19 @@ describe("healthcheck configured map", () => {
     it("does not change any feature", async () => {
       expect(await configuredFor({ E2E_MODE: "true" })).toEqual({ ...allFalse, e2eMode: true });
     });
+  });
+
+  it("servicenow is true only when all four names are set", async () => {
+    expect((await configuredFor(fullEnv())).servicenow).toBe(true);
+    for (const name of FEATURES.servicenow) {
+      const partial: Record<string, string | undefined> = fullEnv();
+      delete partial[name];
+      expect(await configuredFor(partial)).toEqual({
+        ...allTrue,
+        servicenow: false,
+        e2eMode: false,
+      });
+    }
   });
 
   it("never puts an env value, its length or a prefix of it in the result or a log line", async () => {
