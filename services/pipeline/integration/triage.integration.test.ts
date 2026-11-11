@@ -63,7 +63,8 @@ describe("triage pipeline on the local REST stack", () => {
     });
     if (!result.skipped) expect(row?.route).toBe(result.route);
     expect((row?.kb_article_ids as string[]).length).toBeGreaterThan(0);
-    expect(await ticketStatus(ticketId)).toBe("triaged");
+    // P5-T5b: an auto ticket moves on to `auto`; the sync itself is stubbed here.
+    expect(await ticketStatus(ticketId)).toBe("auto");
     expect(await eventsAfterCheck(ticketId)).toEqual(TRIAGE_EVENTS);
     // The judgments and the KB rerank run in parallel (P3-T10k): either may go first.
     const kinds = typesafeKinds();
@@ -106,7 +107,7 @@ describe("triage pipeline on the local REST stack", () => {
 
     expect(await triage(payload, 2)).toEqual({ ticketId, skipped: true });
 
-    expect(await ticketStatus(ticketId)).toBe("triaged");
+    expect(await ticketStatus(ticketId)).toBe("auto");
     expect(await rowCount("triage_results", ticketId)).toBe(1);
     const events = await eventTypes(ticketId);
     expect(events).toEqual(before.events);

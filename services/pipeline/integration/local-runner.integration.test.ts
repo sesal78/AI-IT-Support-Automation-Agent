@@ -1,4 +1,6 @@
 import {
+  ASSIGNMENT_GROUPS,
+  HELPDESK_SYNC_TASK_ID,
   INTAKE_TICKET_TASK_ID,
   REVIEW_TICKET_TASK_ID,
   TRIAGE_TICKET_TASK_ID,
@@ -7,11 +9,17 @@ import { idempotencyKeys, tasks, wait } from "@trigger.dev/sdk";
 import { HttpResponse } from "msw";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { healthcheck } from "../src/trigger/healthcheck.js";
+import { helpdeskSyncIdempotencyKey } from "../src/trigger/helpdesk-enqueue.js";
 import { triageIdempotencyKey, type intakeTicket } from "../src/trigger/intake-ticket.js";
 import type { triageTicket } from "../src/trigger/triage-ticket.js";
 import { egress } from "../test-support/egress.js";
 import { startLocalRunner, type LocalRun, type LocalRunner } from "../test-support/local-runner.js";
 import { mockSensitiveAnswer } from "../test-support/provider-mocks.js";
+import {
+  DEFAULT_CALLER,
+  SERVICENOW_ORIGIN,
+  SYS_USER_LOOKUP_PATH,
+} from "../test-support/servicenow-mock.js";
 import {
   TYPESAFE_ORIGIN,
   createCanaryTicket,
@@ -20,6 +28,7 @@ import {
   questionKeys,
   requestsTo,
   rowCount,
+  sql,
   testRepos,
   testStack,
   ticketStatus,
@@ -84,16 +93,21 @@ describe("local Trigger.dev runner", () => {
     expect(Number(url.port)).toBeGreaterThan(0);
   });
 
-  it("the real SDK trigger of intake-ticket resolves with a run ID and the ticket is triaged within 10 s", async () => {
+  it("the real SDK trigger of intake-ticket resolves with a run ID and the chain reaches the helpdesk within 10 s", async () => {
     const ticketId = await createCanaryTicket();
 
     const handle = await tasks.trigger<typeof intakeTicket>(INTAKE_TICKET_TASK_ID, { ticketId });
 
     expect(handle.id).toMatch(/^run_[0-9a-f]{24}$/);
-    await vi.waitFor(async () => expect(await ticketStatus(ticketId)).toBe("triaged"), {
-      timeout: 10_000,
-      interval: 100,
-    });
+    // Intake chains triage, which chains helpdesk-sync (P5-T5b). The `triaged`
+    // status is passed through at once, so the durable event proves it.
+    await vi.waitFor(
+      async () => expect(await ticketStatus(ticketId)).toBe("incident_skipped_shadow"),
+      {
+        timeout: 10_000,
+        interval: 100,
+      },
+    );
     await runner.idle();
     const types = await eventTypes(ticketId);
     expect(types.indexOf("redacted")).toBeLessThan(types.indexOf("triaged"));
@@ -109,6 +123,9 @@ describe("local Trigger.dev runner", () => {
     expect(runs.filter((run) => run.idempotencyKey === key)).toEqual([
       expect.objectContaining({ taskId: TRIAGE_TICKET_TASK_ID, status: "COMPLETED" }),
     ]);
+    // Shadow mode is this runner's default (SHADOW_MODE unset), so the handoff
+    // ends with the shadow skip.
+    expect(types).toContain("shadow_skipped");
   });
 
   it("the same idempotency key returns the first run ID and starts no second run", async () => {
@@ -174,10 +191,10 @@ describe("local Trigger.dev runner", () => {
     });
     await runner.idle();
 
-    expect(await ticketStatus(ticketId)).toBe("approved");
     expect(runner.runs().find((run) => run.id === review?.id)).toMatchObject({
       status: "COMPLETED",
     });
+    expect(await ticketStatus(ticketId)).toBe("approved");
     expect(runner.broker.get(token!.id)?.output).toEqual({
       reviewId: row!.id,
       decision: "approve",
@@ -205,6 +222,70 @@ describe("local Trigger.dev runner", () => {
     // Settled tokens stay as they are.
     expect(runner.broker.complete(token.id)).toBe(true);
     expect(runner.broker.get(token.id)?.state).toBe("timed_out");
+  });
+
+  // T5.E.03: with the network off (every non-127.0.0.1 host is mocked or
+  // blocked by the egress recorder), an `auto` ticket still ends
+  // `incident_created` against the in-memory ServiceNow.
+  it("T5.E.03: an auto test ticket reaches incident_created with the ServiceNow mock", async () => {
+    // Shadow mode off is the one thing this runner changes: every other test in
+    // this file keeps the safe default (`true`), which skips the create.
+    const own = await startLocalRunner({
+      restStack: testStack(),
+      egress,
+      env: { SHADOW_MODE: "false" },
+    });
+    try {
+      useRunner(own);
+      own.serviceNow.groups.push(
+        ...ASSIGNMENT_GROUPS.map((name, index) => ({ sys_id: `${index + 1}`.repeat(32), name })),
+      );
+      const ticketId = await createCanaryTicket({ isTest: true });
+      // The requester email may leave in the sys_user lookup only (P5-T5a).
+      const { rows } = await sql().query(
+        "select requester_email from itsupport.tickets where id = $1",
+        [ticketId],
+      );
+      const email = (rows[0] as { requester_email: string }).requester_email;
+      egress.allowInQuery(SERVICENOW_ORIGIN, SYS_USER_LOOKUP_PATH, email);
+
+      await tasks.trigger<typeof intakeTicket>(INTAKE_TICKET_TASK_ID, { ticketId });
+      await vi.waitFor(async () => expect(await ticketStatus(ticketId)).toBe("incident_created"), {
+        timeout: 20_000,
+        interval: 100,
+      });
+      await own.idle();
+
+      // One incident, created by the mocked Table API: no real instance is asked.
+      expect(own.serviceNow.incidents).toHaveLength(1);
+      expect(own.serviceNow.incidents[0]).toMatchObject({
+        correlation_id: ticketId,
+        category: "network",
+        caller_id: DEFAULT_CALLER,
+      });
+      expect(own.serviceNow.incidents[0]?.["correlation_display"]).toMatch(/^ITS-\d{6}$/);
+      expect(own.serviceNow.incidents[0]?.["short_description"]).toMatch(/^\[E2E\] /);
+      expect(own.serviceNow.notes).toHaveLength(1);
+
+      const types = await eventTypes(ticketId);
+      expect(types.slice(types.indexOf("triaged") + 1)).toEqual([
+        "helpdesk_sync_started",
+        "caller_defaulted",
+        "incident_created",
+        "helpdesk_note_attempted",
+        "helpdesk_note_added",
+      ]);
+
+      // The sync ran once, under the per-ticket key the triage run passed on.
+      const key = await idempotencyKeys.create(helpdeskSyncIdempotencyKey(ticketId), {
+        scope: "global",
+      });
+      expect(own.runs().filter((run) => run.idempotencyKey === key)).toEqual([
+        expect.objectContaining({ taskId: HELPDESK_SYNC_TASK_ID, status: "COMPLETED" }),
+      ]);
+    } finally {
+      await own.stop();
+    }
   });
 
   it("a trigger for an unknown task ID gets 404", async () => {

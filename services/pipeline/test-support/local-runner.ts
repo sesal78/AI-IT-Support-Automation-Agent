@@ -33,15 +33,16 @@
 // runner with auth.withAuth, so the process env is not touched.
 //
 // Network: the server binds 127.0.0.1 on a random port. TypeSafe, the LLM,
-// Langfuse and the Slack Web API get canned answers through an egress recorder
-// (msw); a request to any other non-127.0.0.1 host is blocked with an error,
-// never sent.
+// Langfuse, the Slack Web API and ServiceNow get canned answers through an
+// egress recorder (msw); a request to any other non-127.0.0.1 host is blocked
+// with an error, never sent.
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { randomBytes } from "node:crypto";
 import { errorClassName } from "@ai-it-support/ai";
 import {
   INTAKE_TICKET_TASK_ID,
+  HELPDESK_SYNC_TASK_ID,
   REVIEW_TICKET_TASK_ID,
   TRIAGE_TICKET_TASK_ID,
 } from "@ai-it-support/shared";
@@ -73,7 +74,15 @@ import {
   runReviewTicket,
   type ReviewWait,
 } from "../src/trigger/review-ticket.js";
+import {
+  createHelpdeskSyncDeps,
+  createHelpdeskSyncFailureDeps,
+  helpdeskSyncPayload,
+  onHelpdeskSyncFailure,
+  runHelpdeskSync,
+} from "../src/trigger/helpdesk-sync.js";
 import { REVIEW_ENV, mockProviders, mockSlack, pipelineEnv } from "./provider-mocks.js";
+import { SERVICENOW_ENV, mockServiceNow, type ServiceNowMock } from "./servicenow-mock.js";
 import { createTokenBroker, type TokenBroker } from "./token-broker.js";
 
 export type LocalRunStatus = "QUEUED" | "EXECUTING" | "WAITING" | "COMPLETED" | "FAILED";
@@ -110,6 +119,8 @@ export interface LocalRunner {
   /** Base URL for TRIGGER_API_URL, built from the bound address. */
   readonly url: string;
   readonly egress: EgressRecorder;
+  /** The in-memory ServiceNow Table API the helpdesk-sync runs talk to. */
+  readonly serviceNow: ServiceNowMock;
   /** The wait tokens of review-ticket runs; a test may time one out. */
   readonly broker: TokenBroker;
   /** Snapshot of every run, oldest first (same as GET /runs). */
@@ -167,6 +178,15 @@ const TASKS: Record<string, TaskDef> = {
     (payload, { env, wait }, attempt) =>
       runReviewTicket(payload, { ...createReviewDeps(env), wait }, attempt),
     (payload, error, env) => onReviewFailure({ payload, error }, createReviewFailureDeps(env)),
+  ),
+  // Started by triage for an `auto` route and by review after `approved`
+  // (P5-T5b). ServiceNow is the runner's mock. SHADOW_MODE unset is `true`, the
+  // safe default; a test that wants an incident passes SHADOW_MODE "false".
+  [HELPDESK_SYNC_TASK_ID]: defineTask(
+    helpdeskSyncPayload,
+    (payload, { env }, attempt) => runHelpdeskSync(payload, createHelpdeskSyncDeps(env), attempt),
+    (payload, error, env) =>
+      onHelpdeskSyncFailure({ payload, error }, createHelpdeskSyncFailureDeps(env)),
   ),
 };
 
@@ -243,8 +263,14 @@ export async function startLocalRunner(options: LocalRunnerOptions): Promise<Loc
   if (owned) egress.start();
   mockProviders(egress);
   mockSlack(egress);
+  const serviceNow = mockServiceNow(egress);
 
-  const env: RunEnv = { ...pipelineEnv(options.restStack, true), ...REVIEW_ENV, ...options.env };
+  const env: RunEnv = {
+    ...pipelineEnv(options.restStack, true),
+    ...REVIEW_ENV,
+    ...SERVICENOW_ENV,
+    ...options.env,
+  };
   const retryDelayMs = options.retryDelayMs ?? 50;
   const broker = createTokenBroker();
   const runs = new Map<string, LocalRun>();
@@ -440,6 +466,7 @@ export async function startLocalRunner(options: LocalRunnerOptions): Promise<Loc
     url,
     egress,
     broker,
+    serviceNow,
     runs: () => [...runs.values()].map((run) => ({ ...run })),
     idle,
     stop,
