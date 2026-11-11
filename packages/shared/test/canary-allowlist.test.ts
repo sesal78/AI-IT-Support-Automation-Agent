@@ -48,3 +48,14 @@ describe(".semgrepignore", () => {
     expect(lines.filter((line) => line.includes("canaries"))).toEqual([canaryPath]);
   });
 });
+
+describe(".gitleaksignore", () => {
+  it("ignores only Seun's approved historical synthetic-marker fingerprint", () => {
+    const entries = read(".gitleaksignore")
+      .split(/\r?\n/)
+      .filter((line) => line && !line.startsWith("#"));
+    expect(entries).toEqual([
+      "e043ed9d30b0c4338b361f1be9cca90a5e3e4811:packages/helpdesk/src/builtin.test.ts:generic-api-key:12",
+    ]);
+  });
+});

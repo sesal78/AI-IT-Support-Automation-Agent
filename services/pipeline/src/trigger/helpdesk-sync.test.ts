@@ -787,9 +787,43 @@ describe("runHelpdeskSync: the helpdeskAsleepMinutes switch", () => {
 });
 
 describe("onHelpdeskSyncFailure", () => {
-  const failureDeps = (h: Harness) => ({ repos: h.repos, alert: h.alert, logger: h.logger });
+  const failureDeps = (h: Harness) => ({
+    repos: h.repos,
+    alert: h.alert,
+    logger: h.logger,
+    helpdesk: h.deps.helpdesk,
+  });
   const hook = (h: Harness, error: unknown, payload: unknown = { ticketId: TICKET }) =>
     onHelpdeskSyncFailure({ payload, error }, failureDeps(h));
+
+  it.each([
+    ["servicenow", "builtin"],
+    ["builtin", "servicenow"],
+    [null, "builtin"],
+  ] as const)(
+    "leaves a mismatched %s ticket unchanged after reporting fails",
+    async (stored, configured) => {
+      const found = {
+        ...ticket("helpdesk_pending"),
+        helpdesk: stored,
+        ...(stored === null ? { servicenow_sys_id: SYS_ID, servicenow_number: INC } : {}),
+      };
+      const h = harness({ found, helpdesk: configured });
+      const error = new Error("report unavailable");
+      h.repos.addEvent.mockRejectedValue(error);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await expect(run(h)).rejects.toBe(error);
+      }
+      h.repos.addEvent.mockClear();
+      await hook(h, error);
+      expect(h.repos.addEvent).not.toHaveBeenCalled();
+      expect(h.repos.listEventTypes).not.toHaveBeenCalled();
+      expect(h.repos.setTicketStatus).not.toHaveBeenCalled();
+      expect(h.alert).not.toHaveBeenCalled();
+      expect(h.createConnector).not.toHaveBeenCalled();
+      expect(h.status.value).toBe("helpdesk_pending");
+    },
+  );
 
   it("keeps one failure event when the run wrote it before a status write failed", async () => {
     const h = harness({
