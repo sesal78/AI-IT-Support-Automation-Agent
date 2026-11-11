@@ -333,6 +333,26 @@ const SLACK_USER_ID = slackUserIdRule();
 const uuidSchema = z.uuid();
 const PROBE_TIMEOUT_MS = 3000;
 
+// The 0007 tables and columns, and the 0008 functions, with arguments that name no row.
+const BUILTIN_PROBE_COLUMNS = [
+  ["staff", "id"],
+  ["helpdesk_tickets", "id"],
+  ["helpdesk_notes", "id"],
+  ["helpdesk_assignments", "id"],
+  ["helpdesk_state_transitions", "from_state"],
+  ["tickets", "helpdesk"],
+  ["reviews", "staff_id"],
+] as const;
+const NO_ROW = "00000000-0000-4000-8000-000000000000";
+const BUILTIN_PROBE_FUNCTIONS: Record<string, Record<string, string>> = {
+  current_staff: {},
+  is_staff: {},
+  is_admin: {},
+  staff_add_note: { helpdesk_ticket_id: NO_ROW, body: "probe" },
+  staff_assign: { helpdesk_ticket_id: NO_ROW, assignee_id: NO_ROW },
+  staff_set_state: { helpdesk_ticket_id: NO_ROW, to_state: "closed" },
+};
+
 export interface SchemaProbe {
   database: boolean;
   migration0003: boolean;
@@ -1134,6 +1154,47 @@ export function createRepositories(client: DbClient) {
         migration0003: Boolean(isTest && kbArticles && aiCalls && securityEvents),
         migration0005: Boolean(reviews),
       };
+    },
+
+    /**
+     * True when the built-in helpdesk's database objects exist: the 0007 tables
+     * and the two columns it adds (a select each), and the 0008 functions. The
+     * functions are called with an all-zero ID: the service role may not run
+     * them (42501 answers before the body, so the function exists) and each
+     * body refuses a caller who is not staff before it writes. Any other answer,
+     * a timeout or a thrown error is false. Never throws, never returns text.
+     */
+    async probeBuiltinHelpdesk(timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
+      const within = async (work: () => PromiseLike<boolean>): Promise<boolean> => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const timeout = new Promise<false>((resolve) => {
+            timer = setTimeout(() => resolve(false), timeoutMs);
+          });
+          return await Promise.race([Promise.resolve(work()), timeout]);
+        } catch {
+          return false;
+        } finally {
+          clearTimeout(timer);
+        }
+      };
+      const reads = BUILTIN_PROBE_COLUMNS.map(([table, column]) =>
+        within(async () => {
+          const result = await client
+            .from(table)
+            .select(column)
+            .limit(1)
+            .abortSignal(AbortSignal.timeout(timeoutMs));
+          return !result.error;
+        }),
+      );
+      const calls = Object.entries(BUILTIN_PROBE_FUNCTIONS).map(([name, args]) =>
+        within(async () => {
+          const result = await client.rpc(name, args).abortSignal(AbortSignal.timeout(timeoutMs));
+          return !result.error || result.error.code === "42501";
+        }),
+      );
+      return (await Promise.all([...reads, ...calls])).every(Boolean);
     },
 
     /**
