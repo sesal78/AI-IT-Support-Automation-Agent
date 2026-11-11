@@ -389,6 +389,7 @@ function createDefaultRoute(
         status: 200,
         json: {
           version: "0.0.0-mock",
+          helpdesk: "servicenow",
           features: {
             database: true,
             migration0003: true,
@@ -400,6 +401,7 @@ function createDefaultRoute(
             slackInteractivity: true,
             helpdeskReachable: true,
             helpdeskAsleep: false,
+            builtinHelpdesk: false,
           },
         },
       };

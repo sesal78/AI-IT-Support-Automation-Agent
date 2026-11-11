@@ -2,9 +2,10 @@ import { healthConfigSchema } from "@ai-it-support/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const probeSchema = vi.hoisted(() => vi.fn());
+const probeBuiltinHelpdesk = vi.hoisted(() => vi.fn());
 vi.mock("@ai-it-support/db", () => ({
   createDbClient: () => ({}),
-  createRepositories: () => ({ probeSchema }),
+  createRepositories: () => ({ probeSchema, probeBuiltinHelpdesk }),
 }));
 
 const runs = vi.hoisted(() => ({ list: vi.fn(), retrieve: vi.fn() }));
@@ -50,6 +51,7 @@ function stubEnv(overrides: Record<string, string | undefined> = {}) {
   vi.stubEnv("SLACK_SIGNING_SECRET", "k".repeat(32));
   vi.stubEnv("SLACK_REVIEWER_IDS", "U0000000001");
   vi.stubEnv("SLACK_CHANNEL_ID", "C0000000001");
+  vi.stubEnv("HELPDESK", "servicenow");
   for (const [key, value] of Object.entries(overrides)) vi.stubEnv(key, value);
 }
 
@@ -63,6 +65,8 @@ beforeEach(() => {
   vi.resetModules();
   probeSchema.mockReset();
   probeSchema.mockResolvedValue({ database: true, migration0003: true, migration0005: true });
+  probeBuiltinHelpdesk.mockReset();
+  probeBuiltinHelpdesk.mockResolvedValue(true);
   runs.list.mockReset();
   runs.retrieve.mockReset();
   latestRun("ok");
@@ -81,6 +85,7 @@ describe("GET /api/health/config", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect(await res.json()).toEqual({
       version: "1.4.2-test",
+      helpdesk: "servicenow",
       features: {
         database: true,
         migration0003: true,
@@ -92,9 +97,31 @@ describe("GET /api/health/config", () => {
         slackInteractivity: true,
         helpdeskReachable: true,
         helpdeskAsleep: false,
+        builtinHelpdesk: false,
       },
     });
+    expect(probeBuiltinHelpdesk).not.toHaveBeenCalled();
   });
+
+  it("HELPDESK=builtin: reports the configured value and builtinHelpdesk from the 0007 and 0008 probe", async () => {
+    const { GET } = await load({ HELPDESK: "builtin" });
+    const body = await (await GET()).json();
+    expect(healthConfigSchema.safeParse(body).success).toBe(true);
+    expect(body.helpdesk).toBe("builtin");
+    expect(body.features.builtinHelpdesk).toBe(true);
+    vi.resetModules();
+    probeBuiltinHelpdesk.mockResolvedValue(false);
+    const missing = await (await (await load({ HELPDESK: "builtin" })).GET()).json();
+    expect(missing.features.builtinHelpdesk).toBe(false);
+    expect(missing.helpdesk).toBe("builtin");
+  });
+
+  it.each([undefined, "", "ServiceNow", "jira"])(
+    "HELPDESK %j stops the route at boot, naming it",
+    async (value) => {
+      await expect(load({ HELPDESK: value })).rejects.toThrow(/HELPDESK/);
+    },
+  );
 
   it("reports slackInteractivity true with the Slack env set, and the schema stays strict", async () => {
     const { GET } = await load();
@@ -139,6 +166,7 @@ describe("GET /api/health/config", () => {
       slackInteractivity: true,
       helpdeskReachable: true,
       helpdeskAsleep: false,
+      builtinHelpdesk: false,
     });
   });
 
@@ -155,14 +183,14 @@ describe("GET /api/health/config", () => {
     const body = JSON.parse(text);
     expect(body.features.database).toBe(false);
     expect(body.features.migration0003).toBe(false);
-    expect(Object.keys(body).sort()).toEqual(["features", "version"]);
+    expect(Object.keys(body).sort()).toEqual(["features", "helpdesk", "version"]);
   });
 
-  it("parses with the strict schema: only version and features, booleans only", async () => {
+  it("parses with the strict schema: version, the helpdesk word and boolean features only", async () => {
     const { GET } = await load();
     const body = await (await GET()).json();
     expect(healthConfigSchema.safeParse(body).success).toBe(true);
-    expect(Object.keys(body).sort()).toEqual(["features", "version"]);
+    expect(Object.keys(body).sort()).toEqual(["features", "helpdesk", "version"]);
     for (const value of Object.values(body.features)) expect(typeof value).toBe("boolean");
   });
 

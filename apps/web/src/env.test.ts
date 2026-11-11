@@ -8,6 +8,7 @@ const valid = {
   SHADOW_MODE: "true",
   ADMIN_HEALTH_TOKEN: "fake-admin-health-token",
   APP_VERSION: "9.9.9-test",
+  HELPDESK: "servicenow",
 };
 
 function stubAll(overrides: Record<string, string | undefined> = {}) {
@@ -95,6 +96,23 @@ describe("web env module", () => {
     const { env } = await import("./env");
     expect(env.SLACK_REVIEWER_IDS).toEqual(["UE2EREVIEWER", "U0000000001"]);
   });
+
+  it.each([undefined, "", "ServiceNow", "jira", "fake"])(
+    "throws at boot naming HELPDESK when it is %j",
+    async (value) => {
+      stubAll({ HELPDESK: value });
+      await expect(import("./env")).rejects.toThrow(/HELPDESK/);
+    },
+  );
+
+  it.each(["servicenow", "builtin"])(
+    "accepts HELPDESK=%s with no ServiceNow variable",
+    async (value) => {
+      stubAll({ HELPDESK: value });
+      const { env } = await import("./env");
+      expect(env.HELPDESK).toBe(value);
+    },
+  );
 
   it("skips validation during next build", async () => {
     vi.stubEnv("NEXT_PHASE", "phase-production-build");

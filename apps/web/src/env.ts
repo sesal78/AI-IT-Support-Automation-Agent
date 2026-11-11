@@ -1,6 +1,7 @@
 import {
   e2eEnvShape,
   formatEnvIssues,
+  helpdeskEnvShape,
   intakeEnvShape,
   internalEnvShape,
   phase1EnvShape,
@@ -18,6 +19,7 @@ export const env = createEnv({
     ...internalEnvShape,
     ...e2eEnvShape,
     ...slackInteractivityEnvShape,
+    ...helpdeskEnvShape,
   },
   experimental__runtimeEnv: {},
   emptyStringAsUndefined: true,
