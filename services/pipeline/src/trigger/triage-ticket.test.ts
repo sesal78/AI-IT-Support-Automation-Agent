@@ -501,6 +501,27 @@ describe("triage-ticket task", () => {
     },
   );
 
+  it("recovers a triaged auto route after an auto status write fails, without repeating AI", async () => {
+    const h = harness({
+      found: ticket("triaged"),
+      triage: { ...triageRow(false), route: "auto" },
+    });
+    const payload = { ticketId, testOverrides: { helpdeskAsleepMinutes: 3 } };
+    vi.mocked(h.deps.repos.setTicketStatus).mockRejectedValueOnce(new Error("status write failed"));
+
+    await expect(runTriageTicket(payload, h.deps)).rejects.toThrow("status write failed");
+    expect(h.deps.triggerHelpdeskSync).not.toHaveBeenCalled();
+    await expect(runTriageTicket(payload, h.deps, 2)).resolves.toEqual({ ticketId, skipped: true });
+
+    expect(h.deps.repos.setTicketStatus).toHaveBeenCalledWith(ticketId, "auto");
+    expect(h.deps.triggerHelpdeskSync).toHaveBeenCalledExactlyOnceWith(payload, {
+      idempotencyKey: `helpdesk-sync:${ticketId}`,
+    });
+    expect(h.aiInputs).toEqual([]);
+    expect(h.events).toEqual([]);
+    expect(h.deps.triggerReview).not.toHaveBeenCalled();
+  });
+
   it("an auto ticket: the sync is enqueued again with the same key, no AI call, no write", async () => {
     const h = harness({ found: ticket("auto") });
 
