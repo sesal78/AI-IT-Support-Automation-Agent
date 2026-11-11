@@ -30,11 +30,12 @@ export type HealthConfig = z.infer<typeof healthConfigSchema>;
 export const HELPDESK_HEALTH_TASK_ID = "helpdesk-health";
 
 /**
- * Output of one `helpdesk-health` run: the connector's answer and when it was
- * asked. Fixed values only, never an error text or a host.
+ * Output of one `helpdesk-health` run: the chosen connector, its answer and
+ * when it was asked. `unknown` means `HELPDESK` itself is missing or invalid.
+ * Fixed values only, never an error text or a host.
  */
 export const helpdeskHealthOutputSchema = z.strictObject({
-  connector: z.literal("servicenow"),
+  connector: z.enum(["servicenow", "builtin", "unknown"]),
   status: z.enum(["ok", "asleep", "down"]),
   checkedAt: z.iso.datetime(),
 });

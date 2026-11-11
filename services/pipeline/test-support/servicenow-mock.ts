@@ -12,6 +12,7 @@ export const DEFAULT_CALLER = "d".repeat(32);
 
 /** The pipeline's ServiceNow env for the mock. The password is built from pieces (gitleaks). */
 export const SERVICENOW_ENV = {
+  HELPDESK: "servicenow",
   SERVICENOW_INSTANCE_URL: SERVICENOW_ORIGIN,
   SERVICENOW_USERNAME: "svc.itsupport",
   SERVICENOW_PASSWORD: ["Mock", "Sn", "Pw", "-0123456789"].join(""),

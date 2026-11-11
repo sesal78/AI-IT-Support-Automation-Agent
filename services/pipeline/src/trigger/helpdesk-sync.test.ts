@@ -1,4 +1,10 @@
-import { IncidentConflictError, type Redaction, type Ticket, type Triage } from "@ai-it-support/db";
+import {
+  HelpdeskConflictError,
+  IncidentConflictError,
+  type Redaction,
+  type Ticket,
+  type Triage,
+} from "@ai-it-support/db";
 import {
   HelpdeskError,
   InstanceAsleepError,
@@ -98,6 +104,9 @@ interface Options {
   e2eMode?: boolean;
   connectorFactoryError?: unknown;
   incidentConflict?: boolean;
+  /** HELPDESK. Default servicenow. */
+  helpdesk?: "servicenow" | "builtin";
+  helpdeskConflict?: boolean;
   /** The fake clock at the start of the run (ISO). Default: the ticket's created_at. */
   clockAt?: string;
 }
@@ -184,6 +193,11 @@ function harness(options: Options = {}) {
       stored.incident = incident;
       return { changed: true };
     }),
+    setTicketHelpdesk: vi.fn(async (_id: string, kind: string) => {
+      calls.push(`helpdesk:${kind}`);
+      if (options.helpdeskConflict) throw new HelpdeskConflictError("setTicketHelpdesk");
+      return { changed: true };
+    }),
     listEventTypes: vi.fn(async (_id: string, types: readonly string[]) => [
       ...new Set(events.map((event) => event.type).filter((type) => types.includes(type))),
     ]),
@@ -203,6 +217,7 @@ function harness(options: Options = {}) {
   const waits: number[] = [];
   const deps: HelpdeskSyncDeps = {
     repos,
+    helpdesk: options.helpdesk ?? "servicenow",
     createConnector,
     wait: {
       for: async ({ minutes }) => {
@@ -335,6 +350,7 @@ describe("runHelpdeskSync: the incident is created", () => {
       "findByExternalRef",
       "createTicket",
       "setTicketIncident",
+      "helpdesk:servicenow",
       "event:incident_created",
       "event:helpdesk_note_attempted",
       "addNote",
@@ -854,6 +870,92 @@ describe("onHelpdeskSyncFailure", () => {
   });
 });
 
+describe("runHelpdeskSync: the chosen helpdesk (G1, G2)", () => {
+  const livesIn = (helpdesk: "servicenow" | "builtin", status = "helpdesk_pending") =>
+    ({ ...ticket(status), helpdesk }) satisfies Ticket;
+
+  it("servicenow stores the incident, then records the helpdesk", async () => {
+    const h = harness({ helpdesk: "servicenow" });
+    await run(h);
+    const order = h.calls.filter((c) => c === "setTicketIncident" || c.startsWith("helpdesk:"));
+    expect(order).toEqual(["setTicketIncident", "helpdesk:servicenow"]);
+  });
+
+  it("builtin never writes the legacy ServiceNow columns, and records the helpdesk", async () => {
+    const h = harness({ helpdesk: "builtin" });
+    await expect(run(h)).resolves.toEqual({
+      ticketId: TICKET,
+      incident: { externalId: SYS_ID, number: INC },
+    });
+    expect(h.repos.setTicketIncident).not.toHaveBeenCalled();
+    expect(h.repos.setTicketHelpdesk).toHaveBeenCalledExactlyOnceWith(TICKET, "builtin");
+    expect(h.status.value).toBe("incident_created");
+    expect(eventTypes(h)).toContain("incident_created");
+  });
+
+  it("records the helpdesk when the ticket is found by a retry, too", async () => {
+    const h = harness({ helpdesk: "builtin", incidentExists: true });
+    await run(h);
+    expect(h.connector.createTicket).not.toHaveBeenCalled();
+    expect(h.repos.setTicketHelpdesk).toHaveBeenCalledExactlyOnceWith(TICKET, "builtin");
+  });
+
+  it("shadow mode with builtin writes no helpdesk flag and ends incident_skipped_shadow", async () => {
+    const h = harness({ helpdesk: "builtin", shadowMode: true });
+    await expect(run(h)).resolves.toEqual({ ticketId: TICKET, shadow: true });
+    expect(h.connector.createTicket).not.toHaveBeenCalled();
+    expect(h.repos.setTicketHelpdesk).not.toHaveBeenCalled();
+    expect(h.repos.setTicketIncident).not.toHaveBeenCalled();
+    expect(eventTypes(h)).toContain("shadow_skipped");
+    expect(h.status.value).toBe("incident_skipped_shadow");
+  });
+
+  it.each([
+    ["servicenow", "builtin"],
+    ["builtin", "servicenow"],
+  ] as const)(
+    "G2: a ticket in %s with HELPDESK=%s is refused before any connector call or status change",
+    async (stored, configured) => {
+      const h = harness({ found: livesIn(stored), helpdesk: configured });
+      await expect(run(h)).resolves.toEqual({ ticketId: TICKET, refused: true });
+      expect(h.events).toEqual([{ type: "helpdesk_mismatch", payload: { stored, configured } }]);
+      expect(h.alert).toHaveBeenCalledExactlyOnceWith("helpdesk_mismatch", { ticketId: TICKET });
+      expect(h.createConnector).not.toHaveBeenCalled();
+      expect(h.repos.setTicketStatus).not.toHaveBeenCalled();
+      expect(h.repos.setTicketIncident).not.toHaveBeenCalled();
+      expect(h.repos.setTicketHelpdesk).not.toHaveBeenCalled();
+      expect(h.status.value).toBe("helpdesk_pending");
+    },
+  );
+
+  it("a ticket with an incident but no helpdesk flag (made before the flag) counts as servicenow", async () => {
+    const legacy = {
+      ...ticket("helpdesk_pending"),
+      servicenow_sys_id: SYS_ID,
+      servicenow_number: INC,
+    };
+    const h = harness({ found: legacy, helpdesk: "builtin" });
+    await expect(run(h)).resolves.toEqual({ ticketId: TICKET, refused: true });
+    expect(payloadOf(h, "helpdesk_mismatch")).toEqual({
+      stored: "servicenow",
+      configured: "builtin",
+    });
+    expect(h.createConnector).not.toHaveBeenCalled();
+  });
+
+  it("a ticket in the configured helpdesk runs as usual", async () => {
+    const h = harness({ found: livesIn("builtin", "auto"), helpdesk: "builtin" });
+    await expect(run(h)).resolves.toMatchObject({ incident: { number: INC } });
+    expect(eventTypes(h)).not.toContain("helpdesk_mismatch");
+  });
+
+  it("a race on the helpdesk flag fails the ticket as a conflict, not as a mismatch", async () => {
+    const h = harness({ helpdesk: "builtin", helpdeskConflict: true });
+    await expect(run(h)).resolves.toEqual({ ticketId: TICKET, failed: true, error: "conflict" });
+    expect(h.alert).toHaveBeenCalledWith("helpdesk_sync_failed", { ticketId: TICKET });
+  });
+});
+
 describe("createHelpdeskSyncDeps", () => {
   const password = ["Mark", "er", "Pw", "-0123456789"].join("");
   const env = {
@@ -866,10 +968,12 @@ describe("createHelpdeskSyncDeps", () => {
     SERVICENOW_DEFAULT_CALLER: "d".repeat(32),
     SHADOW_MODE: "false",
     E2E_MODE: "true",
+    HELPDESK: "servicenow",
   };
 
   it("builds deps with a ServiceNow connector, without a request", () => {
     const deps = createHelpdeskSyncDeps(env);
+    expect(deps.helpdesk).toBe("servicenow");
     expect(deps.shadowMode).toBe(false);
     expect(deps.e2eMode).toBe(true);
     expect(deps.createConnector().kind).toBe("servicenow");
@@ -895,6 +999,22 @@ describe("createHelpdeskSyncDeps", () => {
       expect(String(error)).not.toContain(password);
     }
   });
+
+  it("builtin boots with no ServiceNow variable and builds the built-in connector", () => {
+    const base = Object.fromEntries(
+      Object.entries(env).filter(([name]) => !name.startsWith("SERVICENOW_")),
+    );
+    const deps = createHelpdeskSyncDeps({ ...base, HELPDESK: "builtin" });
+    expect(deps.helpdesk).toBe("builtin");
+    expect(deps.createConnector().kind).toBe("builtin");
+  });
+
+  it.each([undefined, "", "ServiceNow", "jira"])(
+    "HELPDESK %j fails, naming the variable",
+    (value) => {
+      expect(() => createHelpdeskSyncDeps({ ...env, HELPDESK: value })).toThrow(/HELPDESK/);
+    },
+  );
 
   it("rejects a bad SERVICENOW_INSTANCE_URL, naming it", () => {
     expect(() =>

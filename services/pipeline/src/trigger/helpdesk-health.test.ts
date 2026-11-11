@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createAlertSink, type AlertFn, type AlertKind } from "@ai-it-support/ai";
 import {
+  BuiltinConnector,
   FakeConnector,
   ServiceNowConnector,
   createServiceNowClient,
@@ -61,6 +62,7 @@ function setup(over: Partial<HelpdeskHealthDeps> = {}) {
   const alert = vi.fn<AlertFn>(async () => {});
   const error = vi.fn();
   const deps: HelpdeskHealthDeps = {
+    helpdesk: "servicenow",
     createConnector: serviceNow,
     now: () => NOW,
     alert,
@@ -132,6 +134,35 @@ describe("runHelpdeskHealth", () => {
     expect(alert.mock.calls).toEqual([["helpdesk_down"]]);
   });
 
+  it("builtin: reports the chosen connector, ok on a database that answers, no alert", async () => {
+    const store = { getHelpdeskTicketByTicketId: async () => null };
+    const connector = new BuiltinConnector(store as never);
+    const { deps, alert } = setup({ helpdesk: "builtin", createConnector: () => connector });
+    const out = await runHelpdeskHealth(deps);
+    expect(out).toEqual({
+      connector: "builtin",
+      status: "ok",
+      checkedAt: "2026-11-10T10:00:00.000Z",
+    });
+    expect(helpdeskHealthOutputSchema.safeParse(out).success).toBe(true);
+    expect(alert).not.toHaveBeenCalled();
+    expect(recorder.requests()).toHaveLength(0);
+  });
+
+  it("builtin: a database outage is down with one alert:helpdesk_down, never asleep", async () => {
+    const store = {
+      getHelpdeskTicketByTicketId: () => Promise.reject(new Error("MARKER-DB-TEXT")),
+    };
+    const connector = new BuiltinConnector(store as never);
+    const { deps, alert, error } = setup({ helpdesk: "builtin", createConnector: () => connector });
+    await expect(runHelpdeskHealth(deps)).resolves.toMatchObject({
+      connector: "builtin",
+      status: "down",
+    });
+    expect(alert.mock.calls).toEqual([["helpdesk_down"]]);
+    expect(JSON.stringify(error.mock.calls)).not.toContain("MARKER-DB-TEXT");
+  });
+
   it("calls health() once", async () => {
     const fake = new FakeConnector();
     const { deps } = setup({ createConnector: () => fake });
@@ -197,14 +228,46 @@ describe("createHelpdeskHealthDeps and runHelpdeskHealthTask", () => {
     SERVICENOW_USERNAME: "svc.itsupport",
     SERVICENOW_PASSWORD: PASSWORD,
     SERVICENOW_DEFAULT_CALLER: "d".repeat(32),
+    HELPDESK: "servicenow",
   };
 
   it("builds deps without a request; the connector is built when asked", () => {
     const deps = createHelpdeskHealthDeps(env);
+    expect(deps.helpdesk).toBe("servicenow");
     expect(recorder.requests()).toHaveLength(0);
     expect(deps.createConnector().kind).toBe("servicenow");
     expect(deps.now()).toBeGreaterThan(Date.parse("2026-11-01"));
   });
+
+  it("builtin builds deps and a built-in connector with no ServiceNow setting", () => {
+    const { SERVICENOW_INSTANCE_URL, SERVICENOW_USERNAME, SERVICENOW_PASSWORD, ...rest } = {
+      ...env,
+      SERVICENOW_DEFAULT_CALLER: undefined,
+    };
+    void [SERVICENOW_INSTANCE_URL, SERVICENOW_USERNAME, SERVICENOW_PASSWORD];
+    const deps = createHelpdeskHealthDeps({ ...rest, HELPDESK: "builtin" });
+    expect(deps.helpdesk).toBe("builtin");
+    expect(deps.createConnector().kind).toBe("builtin");
+    expect(recorder.requests()).toHaveLength(0);
+  });
+
+  it.each([undefined, "jira"])(
+    "HELPDESK %j: the connector is unknown, down, and the error names the variable",
+    async (value) => {
+      const source = { ...env, HELPDESK: value };
+      const deps = createHelpdeskHealthDeps(source);
+      expect(deps.helpdesk).toBe("unknown");
+      expect(() => deps.createConnector()).toThrow(/HELPDESK/);
+      const out = await runHelpdeskHealthTask(source, { error: () => {} }, () => NOW);
+      expect(out).toMatchObject({ connector: "unknown", status: "down" });
+      const noDatabase = await runHelpdeskHealthTask(
+        { HELPDESK: "builtin" },
+        { error: () => {} },
+        () => NOW,
+      );
+      expect(noDatabase).toMatchObject({ connector: "builtin", status: "down" });
+    },
+  );
 
   it("missing ServiceNow settings fail when the connector is built, not before", () => {
     const deps = createHelpdeskHealthDeps({ ...env, SERVICENOW_PASSWORD: undefined });
@@ -225,7 +288,7 @@ describe("createHelpdeskHealthDeps and runHelpdeskHealthTask", () => {
     const log = vi.fn();
     const out = await runHelpdeskHealthTask({}, { error: log }, () => NOW);
     expect(out).toEqual({
-      connector: "servicenow",
+      connector: "unknown",
       status: "down",
       checkedAt: "2026-11-10T10:00:00.000Z",
     });

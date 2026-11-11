@@ -10,6 +10,7 @@ export type AlertKind =
   | "review_enqueue_failed"
   | "review_failed"
   | "sync_refused"
+  | "helpdesk_mismatch"
   | "helpdesk_auth_failed"
   | "helpdesk_config"
   | "helpdesk_sync_failed"

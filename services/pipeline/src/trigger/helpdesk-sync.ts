@@ -1,5 +1,6 @@
 import { errorClassName, type AlertFn } from "@ai-it-support/ai";
 import {
+  HelpdeskConflictError,
   IncidentConflictError,
   createDbClient,
   createRepositories,
@@ -11,6 +12,7 @@ import {
   InstanceAsleepError,
   ServiceNowConnector,
   createServiceNowClient,
+  selectHelpdeskConnector,
   shadowEnabled,
   withShadowMode,
   type HelpdeskConnector,
@@ -21,8 +23,8 @@ import {
   e2eEnvShape,
   effectiveTestOverrides,
   parseEnv,
+  parseHelpdeskEnv,
   phase1EnvShape,
-  serviceNowEnvShape,
   testOverridesSchema,
   type HelpdeskSyncPayload,
 } from "@ai-it-support/shared";
@@ -59,9 +61,12 @@ export interface HelpdeskSyncDeps {
     | "getKbArticlesByIds"
     | "setTicketStatus"
     | "setTicketIncident"
+    | "setTicketHelpdesk"
     | "listEventTypes"
     | "addEvent"
   >;
+  /** HELPDESK (G1): the helpdesk this deployment writes to. */
+  helpdesk: "servicenow" | "builtin";
   /**
    * Builds the real connector. Called inside the run, so a config error is
    * handled like any other helpdesk error (`alert:helpdesk_config`).
@@ -104,7 +109,7 @@ type FailureAlert =
 
 /** How a non-retryable error is reported: the event `error` value and the alert kind. */
 function classify(error: unknown): { code: string; alert: FailureAlert } | null {
-  if (error instanceof IncidentConflictError) {
+  if (error instanceof IncidentConflictError || error instanceof HelpdeskConflictError) {
     return { code: "conflict", alert: "helpdesk_sync_failed" };
   }
   if (!(error instanceof HelpdeskError) || error.retryable) return null;
@@ -119,11 +124,15 @@ function classify(error: unknown): { code: string; alert: FailureAlert } | null 
  * The task body, exported so tests can call it without the Trigger.dev runtime.
  *
  * Order: load the ticket; the sync guard (`refuse`: event `sync_refused`, alert,
- * no connector; `done`: skip); the triage row and the redaction; status
+ * no connector; `done`: skip); the helpdesk check (G2: a ticket that lives in
+ * the other helpdesk is refused with `helpdesk_mismatch { stored, configured }`
+ * and an alert, before any write, so its status is unchanged); the triage row and the redaction; status
  * `helpdesk_pending` and `helpdesk_sync_started`; the connector (shadow mode
  * wraps it); `findByExternalRef`, else `createTicket`. A `ShadowSkip` ends in
- * `incident_skipped_shadow`. Otherwise the incident is stored
- * (`setTicketIncident`), then `caller_defaulted` (when flagged),
+ * `incident_skipped_shadow`. Otherwise, with ServiceNow, the incident is
+ * stored (`setTicketIncident`); then the helpdesk is recorded on the ticket
+ * (`setTicketHelpdesk`; the built-in ticket lives in its own tables and never
+ * uses the ServiceNow columns), then `caller_defaulted` (when flagged),
  * `incident_created`, the triage work note, `helpdesk_note_added`, and the
  * status `incident_created`.
  *
@@ -161,6 +170,15 @@ export async function runHelpdeskSync(
   if (decision === "done") {
     log.info("helpdesk-sync: skipped", { ticketId, status: ticket.status });
     return { ticketId, skipped: true };
+  }
+
+  // G2: a ticket made before the flag existed has one only if it has an incident.
+  const stored = ticket.helpdesk ?? (ticket.servicenow_sys_id === null ? null : "servicenow");
+  if (stored !== null && stored !== deps.helpdesk) {
+    await repos.addEvent(ticketId, "helpdesk_mismatch", { stored, configured: deps.helpdesk });
+    await deps.alert("helpdesk_mismatch", { ticketId });
+    log.warn("helpdesk-sync: helpdesk mismatch", { ticketId, stored, configured: deps.helpdesk });
+    return { ticketId, refused: true };
   }
 
   const triage = await repos.getTriage(ticketId);
@@ -231,7 +249,11 @@ export async function runHelpdeskSync(
       callerDefaulted = created.callerDefaulted;
     }
 
-    await repos.setTicketIncident(ticketId, { sysId: ref.externalId, number: ref.number });
+    if (deps.helpdesk === "servicenow") {
+      await repos.setTicketIncident(ticketId, { sysId: ref.externalId, number: ref.number });
+    }
+    // Only now does a real helpdesk ticket exist (G2).
+    await repos.setTicketHelpdesk(ticketId, deps.helpdesk);
     if (callerDefaulted) await once("caller_defaulted");
     await once("incident_created", { externalId: ref.externalId, number: ref.number });
     if (!written.has("helpdesk_note_added")) {
@@ -311,7 +333,6 @@ export async function runHelpdeskSync(
 
 const helpdeskSyncDepsEnvShape = {
   ...dbEnvShape,
-  ...serviceNowEnvShape,
   ...e2eEnvShape,
   // Unset means `true`: shadow mode is the safe default.
   SHADOW_MODE: phase1EnvShape.SHADOW_MODE,
@@ -322,17 +343,27 @@ export function createHelpdeskSyncDeps(
   source: Record<string, string | undefined>,
 ): HelpdeskSyncDeps {
   const env = parseEnv(helpdeskSyncDepsEnvShape, source);
+  const helpdesk = parseHelpdeskEnv(source);
   const repos = createRepositories(createDbClient(source));
   return {
     repos,
+    helpdesk: helpdesk.HELPDESK,
+    // Not createHelpdeskConnector: shadow mode is decided per ticket in the run
+    // (test switches), so the run wraps the chosen connector itself.
     createConnector: () =>
-      new ServiceNowConnector({
-        client: createServiceNowClient({
-          instanceUrl: env.SERVICENOW_INSTANCE_URL,
-          username: env.SERVICENOW_USERNAME,
-          password: env.SERVICENOW_PASSWORD,
-        }),
-        defaultCaller: env.SERVICENOW_DEFAULT_CALLER,
+      selectHelpdeskConnector(helpdesk, {
+        store: repos,
+        serviceNow: () => {
+          if (helpdesk.HELPDESK !== "servicenow") throw new HelpdeskError("config", "select");
+          return new ServiceNowConnector({
+            client: createServiceNowClient({
+              instanceUrl: helpdesk.SERVICENOW_INSTANCE_URL,
+              username: helpdesk.SERVICENOW_USERNAME,
+              password: helpdesk.SERVICENOW_PASSWORD,
+            }),
+            defaultCaller: helpdesk.SERVICENOW_DEFAULT_CALLER,
+          });
+        },
       }),
     wait: { for: (options) => wait.for(options) },
     now: () => Date.now(),
