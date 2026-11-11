@@ -118,6 +118,8 @@ function reviewDeps(wait: ReviewWait = broker): ReviewDeps {
       createClient: (options) => createSlackClient({ ...options, sleep: fakeSleep }),
       logger: { error: () => undefined },
     }),
+    // P5-T5b: the helpdesk handoff is recorded, not sent.
+    triggerHelpdeskSync: async () => undefined,
     logger: quiet,
   };
 }
@@ -148,6 +150,7 @@ async function triagedForReview() {
   const result = await runTriageTicket(await intake(ticketId), {
     ...createTriageDeps(testEnv()),
     triggerReview: async (payload) => void triggers.push(payload),
+    triggerHelpdeskSync: async () => undefined,
     logger: quiet,
   });
   expect(result).toMatchObject({ ticketId, skipped: false, route: "review" });
