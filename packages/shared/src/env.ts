@@ -351,3 +351,27 @@ export function parseEnv<T extends z.ZodRawShape>(
   }
   return result.data;
 }
+
+/**
+ * Which helpdesk the agent writes to (plan §6.3.1 G1, P5-T14; pipeline and
+ * web). Required, with no default, so a missing or misspelled value fails at
+ * boot instead of sending tickets to the wrong place.
+ */
+export const helpdeskEnvShape = {
+  HELPDESK: z.enum(["servicenow", "builtin"]),
+};
+
+export type HelpdeskEnv =
+  | { HELPDESK: "builtin" }
+  | ({ HELPDESK: "servicenow" } & z.output<z.ZodObject<typeof serviceNowEnvShape>>);
+
+/**
+ * `HELPDESK`, and the ServiceNow variables only when it is `servicenow`. The
+ * built-in helpdesk boots without any of them, and a ServiceNow variable that
+ * is set badly is not read then. Throws an Error naming every invalid variable.
+ */
+export function parseHelpdeskEnv(source: Record<string, string | undefined>): HelpdeskEnv {
+  const { HELPDESK } = parseEnv(helpdeskEnvShape, source);
+  if (HELPDESK === "builtin") return { HELPDESK };
+  return { HELPDESK, ...parseEnv(serviceNowEnvShape, source) };
+}
