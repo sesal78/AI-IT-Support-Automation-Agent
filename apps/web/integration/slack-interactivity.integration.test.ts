@@ -60,6 +60,7 @@ async function load(e2eMode = true): Promise<Route> {
   vi.stubEnv("SLACK_SIGNING_SECRET", SECRET);
   vi.stubEnv("SLACK_REVIEWER_IDS", REVIEWER);
   vi.stubEnv("SLACK_CHANNEL_ID", CHANNEL);
+  vi.stubEnv("HELPDESK", "servicenow");
   vi.stubEnv("E2E_MODE", e2eMode ? "true" : "false");
   return import("../src/app/api/slack/interactivity/route");
 }

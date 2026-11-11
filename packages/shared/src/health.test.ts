@@ -7,6 +7,7 @@ import {
 
 const valid = {
   version: "1.0.0",
+  helpdesk: "builtin",
   features: {
     database: true,
     migration0003: false,
@@ -18,6 +19,7 @@ const valid = {
     slackInteractivity: true,
     helpdeskReachable: true,
     helpdeskAsleep: false,
+    builtinHelpdesk: true,
   },
 };
 
@@ -57,6 +59,32 @@ describe("healthConfigSchema", () => {
       const body = { ...valid, features: { ...valid.features, [name]: value } };
       expect(healthConfigSchema.safeParse(body).success).toBe(false);
     }
+  });
+
+  it.each(["servicenow", "builtin"])("accepts the configured helpdesk %s", (helpdesk) => {
+    expect(healthConfigSchema.parse({ ...valid, helpdesk }).helpdesk).toBe(helpdesk);
+  });
+
+  it.each(["jira", "ServiceNow", "", true, null, "https://x.service-now.com"])(
+    "rejects the helpdesk value %j, and a missing one",
+    (helpdesk) => {
+      expect(healthConfigSchema.safeParse({ ...valid, helpdesk }).success).toBe(false);
+    },
+  );
+
+  it("requires helpdesk at the top level and builtinHelpdesk as a boolean feature", () => {
+    const withoutHelpdesk: Partial<typeof valid> = { ...valid };
+    delete withoutHelpdesk.helpdesk;
+    expect(healthConfigSchema.safeParse(withoutHelpdesk).success).toBe(false);
+    const features: Partial<typeof valid.features> = { ...valid.features };
+    delete features.builtinHelpdesk;
+    expect(healthConfigSchema.safeParse({ ...valid, features }).success).toBe(false);
+    for (const value of ["true", "builtin", 1, null]) {
+      const body = { ...valid, features: { ...valid.features, builtinHelpdesk: value } };
+      expect(healthConfigSchema.safeParse(body).success).toBe(false);
+    }
+    const misplaced = { ...valid, features: { ...valid.features, helpdesk: "builtin" } };
+    expect(healthConfigSchema.safeParse(misplaced).success).toBe(false);
   });
 
   it("rejects a non-string version", () => {

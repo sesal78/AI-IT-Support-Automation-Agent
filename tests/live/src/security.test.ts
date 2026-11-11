@@ -218,7 +218,7 @@ describe("T3.S.03", () => {
     const h = await setup();
     const { code, entry } = await h.one("T3.S.03");
     expect(code).toBe(0);
-    expect(entry).toMatchObject({ status: "pass", evidence: { status: 200, features: 10 } });
+    expect(entry).toMatchObject({ status: "pass", evidence: { status: 200, features: 11 } });
   });
 
   it("fails when the mock adds a string field under features", async () => {
@@ -230,6 +230,7 @@ describe("T3.S.03", () => {
                 status: 200,
                 json: {
                   version: "0.0.0-mock",
+                  helpdesk: "servicenow",
                   features: {
                     database: true,
                     migration0003: true,
@@ -241,6 +242,7 @@ describe("T3.S.03", () => {
                     slackInteractivity: true,
                     helpdeskReachable: true,
                     helpdeskAsleep: false,
+                    builtinHelpdesk: false,
                     region: "eu",
                   },
                 },

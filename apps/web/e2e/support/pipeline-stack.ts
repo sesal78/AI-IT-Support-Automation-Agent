@@ -111,6 +111,7 @@ export async function startPipelineStack(baseURL: string): Promise<PipelineStack
         SLACK_SIGNING_SECRET: "f".repeat(32),
         SLACK_REVIEWER_IDS: "U0000000000",
         SLACK_CHANNEL_ID: "C0000000000",
+        HELPDESK: "servicenow",
       },
     });
     // Kept for the error message only; the app never logs request data.

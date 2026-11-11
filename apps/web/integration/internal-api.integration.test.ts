@@ -77,6 +77,7 @@ async function load(target: RestStack, e2eMode: boolean): Promise<Handlers> {
   vi.stubEnv("SLACK_SIGNING_SECRET", "f".repeat(32));
   vi.stubEnv("SLACK_REVIEWER_IDS", "U0000000000");
   vi.stubEnv("SLACK_CHANNEL_ID", "C0000000000");
+  vi.stubEnv("HELPDESK", "servicenow");
   vi.stubEnv("E2E_MODE", e2eMode ? "true" : "false");
   return {
     form: await import("../src/app/api/tickets/route"),

@@ -23,6 +23,8 @@ function health() {
   provider ??= createHealthConfigProvider({
     probe: () => repos().probeSchema(),
     helpdesk: getHelpdeskHealth,
+    configured: env.HELPDESK,
+    probeBuiltin: () => repos().probeBuiltinHelpdesk(),
     flags: {
       version: env.APP_VERSION,
       pipelineTrigger: Boolean(env.TRIGGER_SECRET_KEY),
@@ -39,7 +41,7 @@ function health() {
 
 const HEADERS = { "Cache-Control": "no-store" };
 
-/** Public, no token: the body is a version string and booleans only (helpdesk flags come from the Trigger.dev SDK, never from ServiceNow). */
+/** Public, no token: the body is a version string, the configured helpdesk word and booleans only (helpdesk flags come from the Trigger.dev SDK, never from ServiceNow). */
 export async function GET() {
   return Response.json(await health().get(), { headers: HEADERS });
 }

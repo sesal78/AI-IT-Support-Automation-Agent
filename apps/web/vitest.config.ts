@@ -28,6 +28,7 @@ export default defineProject({
       SLACK_SIGNING_SECRET: "f".repeat(32),
       SLACK_REVIEWER_IDS: "U0000000000",
       SLACK_CHANNEL_ID: "C0000000000",
+      HELPDESK: "servicenow",
     },
   },
 });

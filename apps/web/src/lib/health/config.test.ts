@@ -16,9 +16,22 @@ type Probe = () => Promise<SchemaProbeResult>;
 
 const helpdeskUp = () => Promise.resolve({ reachable: true, asleep: false });
 
-function setup(probe: Probe, helpdesk: () => Promise<HelpdeskHealth> = helpdeskUp) {
+const builtinOk = () => Promise.resolve(true);
+
+function setup(
+  probe: Probe,
+  helpdesk: () => Promise<HelpdeskHealth> = helpdeskUp,
+  extra: { configured?: "servicenow" | "builtin"; probeBuiltin?: () => Promise<boolean> } = {},
+) {
   let time = 1_000_000;
-  const provider = createHealthConfigProvider({ probe, helpdesk, flags, now: () => time });
+  const provider = createHealthConfigProvider({
+    probe,
+    helpdesk,
+    configured: extra.configured ?? "servicenow",
+    probeBuiltin: extra.probeBuiltin ?? builtinOk,
+    flags,
+    now: () => time,
+  });
   return { provider, advance: (ms: number) => (time += ms), set: (t: number) => (time = t) };
 }
 const allOk: Probe = () =>
@@ -29,6 +42,7 @@ describe("createHealthConfigProvider", () => {
     const { provider } = setup(allOk);
     expect(healthConfigSchema.parse(await provider.get())).toEqual({
       version: "1.2.3",
+      helpdesk: "servicenow",
       features: {
         database: true,
         migration0003: true,
@@ -40,8 +54,57 @@ describe("createHealthConfigProvider", () => {
         slackInteractivity: true,
         helpdeskReachable: true,
         helpdeskAsleep: false,
+        builtinHelpdesk: false,
       },
     });
+  });
+
+  it("servicenow: builtinHelpdesk is false and the built-in database is never asked", async () => {
+    const probeBuiltin = vi.fn(builtinOk);
+    const { provider } = setup(allOk, helpdeskUp, { probeBuiltin });
+    expect((await provider.get()).features.builtinHelpdesk).toBe(false);
+    expect(probeBuiltin).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    "builtin: reports the configured value and builtinHelpdesk %s",
+    async (present) => {
+      const { provider } = setup(allOk, helpdeskUp, {
+        configured: "builtin",
+        probeBuiltin: () => Promise.resolve(present),
+      });
+      const body = await provider.get();
+      expect(healthConfigSchema.safeParse(body).success).toBe(true);
+      expect(body.helpdesk).toBe("builtin");
+      expect(body.features.builtinHelpdesk).toBe(present);
+    },
+  );
+
+  it("builtin: asks once inside 60 seconds and again after, and a failing or odd answer is false", async () => {
+    const probeBuiltin = vi.fn(builtinOk);
+    const { provider, advance } = setup(allOk, helpdeskUp, { configured: "builtin", probeBuiltin });
+    await provider.get();
+    advance(59_999);
+    await provider.get();
+    expect(probeBuiltin).toHaveBeenCalledTimes(1);
+    advance(1);
+    await provider.get();
+    expect(probeBuiltin).toHaveBeenCalledTimes(2);
+
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failing = setup(allOk, helpdeskUp, {
+      configured: "builtin",
+      probeBuiltin: () => Promise.reject(new RangeError("marker-builtin-text")),
+    });
+    expect((await failing.provider.get()).features.builtinHelpdesk).toBe(false);
+    const odd = setup(allOk, helpdeskUp, {
+      configured: "builtin",
+      probeBuiltin: () => Promise.resolve("yes" as never),
+    });
+    expect((await odd.provider.get()).features.builtinHelpdesk).toBe(false);
+    expect(JSON.stringify(spy.mock.calls)).toContain("RangeError");
+    expect(JSON.stringify(spy.mock.calls)).not.toContain("marker-builtin-text");
+    spy.mockRestore();
   });
 
   it.each([

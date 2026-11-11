@@ -7,6 +7,8 @@ import { z } from "zod";
  */
 export const healthConfigSchema = z.strictObject({
   version: z.string(),
+  // The configured HELPDESK (P5-T14): one of two fixed words, never an env value.
+  helpdesk: z.enum(["servicenow", "builtin"]),
   features: z.strictObject({
     database: z.boolean(),
     migration0003: z.boolean(),
@@ -18,6 +20,9 @@ export const healthConfigSchema = z.strictObject({
     slackInteractivity: z.boolean(),
     helpdeskReachable: z.boolean(),
     helpdeskAsleep: z.boolean(),
+    // The built-in helpdesk's database objects (0007 and 0008) are present.
+    // Checked only when HELPDESK=builtin; false otherwise.
+    builtinHelpdesk: z.boolean(),
   }),
 });
 

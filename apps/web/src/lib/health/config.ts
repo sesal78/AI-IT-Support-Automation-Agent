@@ -21,6 +21,10 @@ export interface EnvFlags {
 
 interface Options {
   probe: () => Promise<SchemaProbeResult>;
+  /** HELPDESK: the configured helpdesk, reported as is. */
+  configured: HealthConfig["helpdesk"];
+  /** True when the built-in helpdesk's 0007 and 0008 objects exist. Asked only when `configured` is builtin. */
+  probeBuiltin: () => Promise<boolean>;
   /** Cached by the reader itself, so it is asked on every request. */
   helpdesk: () => Promise<HelpdeskHealth>;
   flags: EnvFlags;
@@ -37,8 +41,25 @@ const errorName = (error: unknown) => (error instanceof Error ? error.name : "un
  * that is down. Concurrent callers during a miss share one in-flight probe. A
  * clock that goes backwards counts as an expired entry.
  */
-export function createHealthConfigProvider({ probe, helpdesk, flags, now = Date.now }: Options) {
-  let cached: { at: number; result: Promise<SchemaProbeResult> } | undefined;
+export function createHealthConfigProvider({
+  probe,
+  helpdesk,
+  configured,
+  probeBuiltin,
+  flags,
+  now = Date.now,
+}: Options) {
+  /** Runs `run` at most once per 60 seconds; concurrent callers share one run. */
+  function memo<T>(run: () => Promise<T>): () => Promise<T> {
+    let cached: { at: number; result: Promise<T> } | undefined;
+    return () => {
+      const t = now();
+      if (cached === undefined || t < cached.at || t - cached.at >= CACHE_TTL_MS) {
+        cached = { at: t, result: run() };
+      }
+      return cached.result;
+    };
+  }
 
   async function runProbe(): Promise<SchemaProbeResult> {
     try {
@@ -54,6 +75,18 @@ export function createHealthConfigProvider({ probe, helpdesk, flags, now = Date.
     }
   }
 
+  async function runBuiltinProbe(): Promise<boolean> {
+    try {
+      return (await probeBuiltin()) === true;
+    } catch (error) {
+      console.error(`[health-config] builtin helpdesk probe failed: ${errorName(error)}`);
+      return false;
+    }
+  }
+
+  const probed = memo(runProbe);
+  const builtinProbed = memo(runBuiltinProbe);
+
   async function readHelpdesk(): Promise<HelpdeskHealth> {
     try {
       const read = await helpdesk();
@@ -65,19 +98,21 @@ export function createHealthConfigProvider({ probe, helpdesk, flags, now = Date.
   }
 
   async function get(): Promise<HealthConfig> {
-    const t = now();
-    if (cached === undefined || t < cached.at || t - cached.at >= CACHE_TTL_MS) {
-      cached = { at: t, result: runProbe() };
-    }
-    const [probed, desk] = await Promise.all([cached.result, readHelpdesk()]);
+    const [schema, desk, builtin] = await Promise.all([
+      probed(),
+      readHelpdesk(),
+      configured === "builtin" ? builtinProbed() : false,
+    ]);
     const { version, ...envFlags } = flags;
     return {
       version,
+      helpdesk: configured,
       features: {
-        ...probed,
+        ...schema,
         ...envFlags,
         helpdeskReachable: desk.reachable,
         helpdeskAsleep: desk.asleep,
+        builtinHelpdesk: builtin,
       },
     };
   }
