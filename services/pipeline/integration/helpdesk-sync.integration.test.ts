@@ -414,7 +414,7 @@ describe("helpdesk-sync on the local REST stack", () => {
 
       await onHelpdeskSyncFailure(
         { payload: { ticketId }, error: lastError },
-        { repos: testRepos(), alert: deps.alert, logger: quiet },
+        { repos: testRepos(), helpdesk: deps.helpdesk, alert: deps.alert, logger: quiet },
       );
 
       expect(await ticketStatus(ticketId)).toBe("failed");

@@ -22,6 +22,7 @@ import {
   HELPDESK_SYNC_TASK_ID,
   e2eEnvShape,
   effectiveTestOverrides,
+  helpdeskEnvShape,
   parseEnv,
   parseHelpdeskEnv,
   phase1EnvShape,
@@ -375,6 +376,7 @@ export function createHelpdeskSyncDeps(
 }
 
 export interface HelpdeskSyncFailureDeps {
+  helpdesk: "servicenow" | "builtin";
   repos: Pick<Repositories, "getTicket" | "addEvent" | "listEventTypes" | "setTicketStatus">;
   alert: AlertFn;
   logger: { info: LogFn; warn: LogFn; error: LogFn };
@@ -386,7 +388,12 @@ export function createHelpdeskSyncFailureDeps(
   repos: HelpdeskSyncFailureDeps["repos"] &
     Pick<Repositories, "recordSecurityEvent"> = createRepositories(createDbClient(source)),
 ): HelpdeskSyncFailureDeps {
-  return { repos, alert: createFailureAlert("helpdesk-sync", source, repos), logger };
+  return {
+    repos,
+    helpdesk: parseEnv(helpdeskEnvShape, source).HELPDESK,
+    alert: createFailureAlert("helpdesk-sync", source, repos),
+    logger,
+  };
 }
 
 /**
@@ -418,10 +425,15 @@ export async function onHelpdeskSyncFailure(
       return;
     }
     const { ticketId } = parsed.data;
-    const { repos, alert } = deps ?? createHelpdeskSyncFailureDeps(process.env);
+    const { repos, alert, helpdesk } = deps ?? createHelpdeskSyncFailureDeps(process.env);
     const ticket = await repos.getTicket(ticketId);
     if (!ticket || checkSync(ticket.status) !== "run") {
       safeLog("helpdesk-sync: failed run, ticket unchanged", { ticketId, error });
+      return;
+    }
+    const stored = ticket.helpdesk ?? (ticket.servicenow_sys_id === null ? null : "servicenow");
+    if (stored !== null && stored !== helpdesk) {
+      safeLog("helpdesk-sync: failed run, helpdesk mismatch", { ticketId, stored, helpdesk });
       return;
     }
     const written = await repos.listEventTypes(ticketId, ["helpdesk_sync_failed"]);
