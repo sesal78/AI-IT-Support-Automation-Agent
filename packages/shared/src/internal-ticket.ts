@@ -25,6 +25,7 @@ export const internalReviewSchema = z.strictObject({
  * PII boundary, so it has no key for the raw title, raw description, requester
  * name, requester email or department, and an unknown key is an error.
  * `notifications` and `autofix` stay empty lists until their tables exist.
+ * `incident` is the helpdesk pair or null (P5-T5b).
  */
 export const internalTicketViewSchema = z.strictObject({
   id: z.uuid(),
@@ -59,6 +60,9 @@ export const internalTicketViewSchema = z.strictObject({
   reviews: z.array(internalReviewSchema),
   notifications: z.array(z.never()),
   autofix: z.array(z.never()),
+  // P5-T5b: the helpdesk incident, or null. Both fields or neither: the
+  // database holds them as a pair, and a stray key here is an error.
+  incident: nullable(z.strictObject({ number: z.string().min(1), sysId: z.string().min(1) })),
 });
 
 export type InternalTicketView = z.infer<typeof internalTicketViewSchema>;

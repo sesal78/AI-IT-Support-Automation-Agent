@@ -34,6 +34,7 @@ const valid = {
   reviews: [],
   notifications: [],
   autofix: [],
+  incident: null,
 };
 
 describe("internalTicketViewSchema", () => {
@@ -75,6 +76,30 @@ describe("internalTicketViewSchema", () => {
   it("rejects an unknown status and a non-empty reviews list", () => {
     expect(internalTicketViewSchema.safeParse({ ...valid, status: "weird" }).success).toBe(false);
     expect(internalTicketViewSchema.safeParse({ ...valid, reviews: [1] }).success).toBe(false);
+  });
+});
+
+describe("internalTicketViewSchema incident (P5-T5b)", () => {
+  const incident = { number: "INC0010001", sysId: "1".repeat(32) };
+  const parse = (value: unknown) =>
+    internalTicketViewSchema.safeParse({ ...valid, incident: value }).success;
+
+  it("accepts the helpdesk number with its sys_id, and null", () => {
+    expect(parse(incident)).toBe(true);
+    expect(parse(null)).toBe(true);
+  });
+
+  it("rejects an extra key in the incident", () => {
+    expect(parse({ ...incident, short_description: "marker" })).toBe(false);
+    expect(parse({ ...incident, externalId: incident.sysId })).toBe(false);
+  });
+
+  it("rejects a missing or empty field, and a value that is not an object", () => {
+    expect(parse({ number: incident.number })).toBe(false);
+    expect(parse({ sysId: incident.sysId })).toBe(false);
+    expect(parse({ ...incident, number: "" })).toBe(false);
+    expect(parse({ ...incident, sysId: "" })).toBe(false);
+    expect(parse(incident.number)).toBe(false);
   });
 });
 

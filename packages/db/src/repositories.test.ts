@@ -709,6 +709,8 @@ describe("getTicketView", () => {
     is_test: false,
     source: "web",
     created_at: now,
+    servicenow_number: null,
+    servicenow_sys_id: null,
   };
   const viewTriage = {
     sensitive: false,
@@ -770,7 +772,7 @@ describe("getTicketView", () => {
     }
     const tickets = calls.find((c) => c.url.pathname.endsWith("/tickets"));
     expect(tickets?.url.searchParams.get("select")).toBe(
-      "id,ticket_number,status,is_test,source,created_at",
+      "id,ticket_number,status,is_test,source,created_at,servicenow_number,servicenow_sys_id",
     );
   });
 
@@ -791,6 +793,7 @@ describe("getTicketView", () => {
       reviews: [],
       notifications: [],
       autofix: [],
+      incident: null,
     });
     expect(view?.triage).toMatchObject({
       assignmentGroup: "Network",
@@ -829,6 +832,41 @@ describe("getTicketView", () => {
     const calls = database({ tickets: ok(null, 200) });
     expect(await repos.getTicketView(ticketId)).toBeNull();
     expect(calls.length).toBe(1);
+  });
+
+  it("maps a stored incident to incident { number, sysId }", async () => {
+    const sysId = "a".repeat(32);
+    database({
+      ...full(),
+      tickets: ok({
+        ...viewTicket,
+        servicenow_number: "INC0010001",
+        servicenow_sys_id: sysId,
+      }),
+    });
+    expect((await repos.getTicketView(ticketId))?.incident).toEqual({
+      number: "INC0010001",
+      sysId,
+    });
+  });
+
+  it("throws DbError when only one of the two incident columns is set", async () => {
+    database({
+      ...full(),
+      tickets: ok({ ...viewTicket, servicenow_number: "INC0010001" }),
+    });
+    const error = await expectDbError(repos.getTicketView(ticketId), "getTicketView");
+    expect(error.message).toContain("incident");
+  });
+
+  it("throws DbError when the stored incident values are malformed", async () => {
+    for (const stored of [
+      { servicenow_number: "not a number", servicenow_sys_id: "a".repeat(32) },
+      { servicenow_number: "INC0010001", servicenow_sys_id: "A".repeat(32) },
+    ]) {
+      database({ ...full(), tickets: ok({ ...viewTicket, ...stored }) });
+      await expectDbError(repos.getTicketView(ticketId), "getTicketView");
+    }
   });
 
   it("asks for events oldest first", async () => {
@@ -1427,6 +1465,8 @@ describe("reviews", () => {
       is_test: true,
       source: "web",
       created_at: now,
+      servicenow_number: null,
+      servicenow_sys_id: null,
     };
     const viewReview = {
       id: reviewId,

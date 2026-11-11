@@ -275,6 +275,8 @@ function ticketView(ticket: MockTicketInput, outcome: MockTicketOutcome, at: num
     reviews: [],
     notifications: [],
     autofix: [],
+    // P5-T5b: a mock ticket has no helpdesk incident yet.
+    incident: null,
   };
 }
 
@@ -472,6 +474,7 @@ function createDefaultRoute(
           reviews: [],
           notifications: [],
           autofix: [],
+          incident: null,
         },
       };
     }
