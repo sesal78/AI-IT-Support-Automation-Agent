@@ -2,6 +2,7 @@
 # the allow-list below: a single file, matched by its exact path. No rule is
 # disabled, and no other path, regex, commit or stopword is allow-listed.
 # packages/shared/test/canary-allowlist.test.ts fails on any wider entry.
+# Separate historical fingerprint exception: .gitleaksignore (Seun, 2026-11-11).
 
 [extend]
 useDefault = true
