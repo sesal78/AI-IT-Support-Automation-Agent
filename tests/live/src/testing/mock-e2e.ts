@@ -396,6 +396,8 @@ function createDefaultRoute(
             internalApi: true,
             e2eMode: true,
             slackInteractivity: true,
+            helpdeskReachable: true,
+            helpdeskAsleep: false,
           },
         },
       };

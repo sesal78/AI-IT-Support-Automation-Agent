@@ -1,4 +1,5 @@
 import type { HealthConfig } from "@ai-it-support/shared";
+import type { HelpdeskHealth } from "./helpdesk";
 
 export const CACHE_TTL_MS = 60_000;
 
@@ -20,6 +21,8 @@ export interface EnvFlags {
 
 interface Options {
   probe: () => Promise<SchemaProbeResult>;
+  /** Cached by the reader itself, so it is asked on every request. */
+  helpdesk: () => Promise<HelpdeskHealth>;
   flags: EnvFlags;
   now?: () => number;
 }
@@ -34,7 +37,7 @@ const errorName = (error: unknown) => (error instanceof Error ? error.name : "un
  * that is down. Concurrent callers during a miss share one in-flight probe. A
  * clock that goes backwards counts as an expired entry.
  */
-export function createHealthConfigProvider({ probe, flags, now = Date.now }: Options) {
+export function createHealthConfigProvider({ probe, helpdesk, flags, now = Date.now }: Options) {
   let cached: { at: number; result: Promise<SchemaProbeResult> } | undefined;
 
   async function runProbe(): Promise<SchemaProbeResult> {
@@ -51,14 +54,32 @@ export function createHealthConfigProvider({ probe, flags, now = Date.now }: Opt
     }
   }
 
+  async function readHelpdesk(): Promise<HelpdeskHealth> {
+    try {
+      const read = await helpdesk();
+      return { reachable: read.reachable === true, asleep: read.asleep === true };
+    } catch (error) {
+      console.error(`[health-config] helpdesk read failed: ${errorName(error)}`);
+      return { reachable: false, asleep: false };
+    }
+  }
+
   async function get(): Promise<HealthConfig> {
     const t = now();
     if (cached === undefined || t < cached.at || t - cached.at >= CACHE_TTL_MS) {
       cached = { at: t, result: runProbe() };
     }
-    const probed = await cached.result;
+    const [probed, desk] = await Promise.all([cached.result, readHelpdesk()]);
     const { version, ...envFlags } = flags;
-    return { version, features: { ...probed, ...envFlags } };
+    return {
+      version,
+      features: {
+        ...probed,
+        ...envFlags,
+        helpdeskReachable: desk.reachable,
+        helpdeskAsleep: desk.asleep,
+      },
+    };
   }
 
   return { get };

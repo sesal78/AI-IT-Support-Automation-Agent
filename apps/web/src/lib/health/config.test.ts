@@ -1,6 +1,7 @@
 import { healthConfigSchema } from "@ai-it-support/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createHealthConfigProvider, type EnvFlags, type SchemaProbeResult } from "./config";
+import type { HelpdeskHealth } from "./helpdesk";
 
 const flags: EnvFlags = {
   version: "1.2.3",
@@ -13,9 +14,11 @@ const flags: EnvFlags = {
 
 type Probe = () => Promise<SchemaProbeResult>;
 
-function setup(probe: Probe) {
+const helpdeskUp = () => Promise.resolve({ reachable: true, asleep: false });
+
+function setup(probe: Probe, helpdesk: () => Promise<HelpdeskHealth> = helpdeskUp) {
   let time = 1_000_000;
-  const provider = createHealthConfigProvider({ probe, flags, now: () => time });
+  const provider = createHealthConfigProvider({ probe, helpdesk, flags, now: () => time });
   return { provider, advance: (ms: number) => (time += ms), set: (t: number) => (time = t) };
 }
 const allOk: Probe = () =>
@@ -35,7 +38,52 @@ describe("createHealthConfigProvider", () => {
         internalApi: true,
         e2eMode: false,
         slackInteractivity: true,
+        helpdeskReachable: true,
+        helpdeskAsleep: false,
       },
+    });
+  });
+
+  it.each([
+    [{ reachable: true, asleep: false }],
+    [{ reachable: false, asleep: true }],
+    [{ reachable: false, asleep: false }],
+  ])("reports the helpdesk flags as given: %j", async (flagsIn) => {
+    const { provider } = setup(allOk, () => Promise.resolve(flagsIn));
+    const body = await provider.get();
+    expect(healthConfigSchema.safeParse(body).success).toBe(true);
+    expect(body.features).toMatchObject({
+      helpdeskReachable: flagsIn.reachable,
+      helpdeskAsleep: flagsIn.asleep,
+    });
+  });
+
+  it("keeps the helpdesk flags out of the database probe cache", async () => {
+    const helpdesk = vi.fn(helpdeskUp);
+    const { provider } = setup(allOk, helpdesk);
+    await provider.get();
+    await provider.get();
+    expect(helpdesk).toHaveBeenCalledTimes(2);
+  });
+
+  it("treats a rejecting helpdesk reader as both false, still a valid body, class name only", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { provider } = setup(allOk, () => Promise.reject(new RangeError("marker-helpdesk-text")));
+    const body = await provider.get();
+    expect(healthConfigSchema.safeParse(body).success).toBe(true);
+    expect(body.features).toMatchObject({ helpdeskReachable: false, helpdeskAsleep: false });
+    expect(body.features.database).toBe(true);
+    expect(JSON.stringify(spy.mock.calls)).toContain("RangeError");
+    expect(JSON.stringify(spy.mock.calls)).not.toContain("marker-helpdesk-text");
+    spy.mockRestore();
+  });
+
+  it("treats anything but the boolean true as false", async () => {
+    const odd = { reachable: "true", asleep: 1 } as unknown as HelpdeskHealth;
+    const { provider } = setup(allOk, () => Promise.resolve(odd));
+    expect((await provider.get()).features).toMatchObject({
+      helpdeskReachable: false,
+      helpdeskAsleep: false,
     });
   });
 
