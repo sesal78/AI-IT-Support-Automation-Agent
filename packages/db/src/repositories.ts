@@ -868,6 +868,18 @@ export function createRepositories(client: DbClient) {
       return parseRow(op, helpdeskTicketSchema.nullable(), result);
     },
 
+    /** Returns the helpdesk ticket with this row id, or null when there is none. Non-UUID: TypeError. */
+    async getHelpdeskTicket(id: string): Promise<HelpdeskTicket | null> {
+      const op = "getHelpdeskTicket";
+      assertUuid(op, "id", id);
+      const result = await client
+        .from("helpdesk_tickets")
+        .select(HELPDESK_TICKET_COLUMNS)
+        .eq("id", id)
+        .maybeSingle();
+      return parseRow(op, helpdeskTicketSchema.nullable(), result);
+    },
+
     /**
      * Appends a note written by the system (author_kind `system`, no staff).
      * `body` is 1 to 5000 characters, counted as the database counts them;

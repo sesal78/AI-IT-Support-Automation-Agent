@@ -175,6 +175,24 @@ describe("getHelpdeskTicketByTicketId", () => {
   });
 });
 
+describe("getHelpdeskTicket", () => {
+  it("reads by id and returns the row, or null when there is none", async () => {
+    const calls = respond(ok(row), ok(null));
+    expect(await repos.getHelpdeskTicket(helpdeskId)).toEqual(row);
+    expect(calls[0]?.url.searchParams.get("id")).toBe(`eq.${helpdeskId}`);
+    expect(selectOf(calls[0])).toBe(COLUMNS);
+    expect(await repos.getHelpdeskTicket(helpdeskId)).toBeNull();
+  });
+
+  it("rejects a non-UUID before any request and wraps errors and bad rows in DbError", async () => {
+    const calls = respond(pgError("42501", 403), ok({ ...row, state: "bogus" }));
+    await expect(repos.getHelpdeskTicket("nope")).rejects.toThrow(TypeError);
+    expect(calls).toHaveLength(0);
+    await expectDbError(repos.getHelpdeskTicket(helpdeskId), "getHelpdeskTicket");
+    await expectDbError(repos.getHelpdeskTicket(helpdeskId), "getHelpdeskTicket");
+  });
+});
+
 describe("addSystemNote", () => {
   it("inserts a system note and returns it", async () => {
     const calls = respond(ok(noteRow, 201));
