@@ -9,7 +9,7 @@ import type { CreateHelpdeskTicketInput } from "./types.js";
 // A store with the semantics of the db repositories: one row per ticket, a
 // duplicate create returns the existing row, a compare-and-set state move and
 // an unknown helpdesk ticket id breaks the foreign key (code 23503).
-const SECRET = "SECRET-DB-DETAIL-4f2a";
+const ERROR_DETAIL = ["private", "database", "detail"].join("-");
 
 class FkError extends Error {
   readonly code = "23503";
@@ -56,7 +56,7 @@ function memoryStore() {
     },
     async addSystemNote(id, body) {
       enter("note");
-      if (!byId(id)) throw new FkError(SECRET);
+      if (!byId(id)) throw new FkError(ERROR_DETAIL);
       notes.push({ id, body });
       return { id: randomUUID() };
     },
@@ -64,7 +64,7 @@ function memoryStore() {
       enter("state");
       assertHelpdeskTransition(from, to);
       const row = byId(id);
-      if (!row) throw new Error(SECRET);
+      if (!row) throw new Error(ERROR_DETAIL);
       if (row.state !== from) return { changed: false, helpdeskTicket: row };
       row.state = to;
       return { changed: true, helpdeskTicket: row };
@@ -72,7 +72,7 @@ function memoryStore() {
     async setTicketHelpdesk(ticketId, kind) {
       enter("flag");
       const stored = flags.get(ticketId);
-      if (stored !== undefined && stored !== kind) throw new ConflictError(SECRET);
+      if (stored !== undefined && stored !== kind) throw new ConflictError(ERROR_DETAIL);
       flags.set(ticketId, kind);
       return { changed: stored === undefined };
     },
@@ -155,7 +155,7 @@ describe("BuiltinConnector", () => {
       expect(error).toBeInstanceOf(HelpdeskError);
       expect((error as HelpdeskError).code).toBe("not_found");
       expect(JSON.stringify({ ...(error as object), m: (error as Error).message })).not.toContain(
-        SECRET,
+        ERROR_DETAIL,
       );
     }
   });
@@ -240,7 +240,7 @@ describe("BuiltinConnector", () => {
     mem.flags.set(body.ticketId, "servicenow");
     const error = await failure(new BuiltinConnector(mem.store).createTicket(body));
     expect((error as HelpdeskError).code).toBe("bad_request");
-    expect((error as Error).message).not.toContain(SECRET);
+    expect((error as Error).message).not.toContain(ERROR_DETAIL);
   });
 
   it("health is ok on one cheap read and down on any failure, never asleep", async () => {
@@ -248,7 +248,7 @@ describe("BuiltinConnector", () => {
     const connector = new BuiltinConnector(mem.store);
     expect(await connector.health()).toEqual({ status: "ok" });
     expect(mem.calls).toEqual(["getByTicket"]);
-    mem.setDown(new Error(SECRET));
+    mem.setDown(new Error(ERROR_DETAIL));
     expect(await connector.health()).toEqual({ status: "down" });
   });
 
@@ -257,7 +257,7 @@ describe("BuiltinConnector", () => {
     const connector = new BuiltinConnector(mem.store);
     const ref = await connector.createTicket(input());
     if ("skipped" in ref) throw new Error("unexpected skip");
-    mem.setDown(new Error(SECRET));
+    mem.setDown(new Error(ERROR_DETAIL));
     const attempts = [
       connector.createTicket(input()),
       connector.findByExternalRef(randomUUID()),
@@ -270,7 +270,7 @@ describe("BuiltinConnector", () => {
       expect((error as HelpdeskError).code).toBe("unavailable");
       expect((error as HelpdeskError).retryable).toBe(true);
       expect(JSON.stringify({ ...(error as object), m: (error as Error).message })).not.toContain(
-        SECRET,
+        ERROR_DETAIL,
       );
     }
   });
