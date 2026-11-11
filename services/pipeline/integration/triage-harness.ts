@@ -223,6 +223,8 @@ export const triage = (
       ...createTriageDeps({ ...testEnv(), ...envOverrides }),
       // The review run is not part of these suites (P4-B7 adds it).
       triggerReview: async () => undefined,
+      // The helpdesk sync is not part of these suites (P5-T5b adds it).
+      triggerHelpdeskSync: async () => undefined,
       logger: quiet,
     },
     attempt,

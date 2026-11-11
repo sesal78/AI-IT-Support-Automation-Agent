@@ -168,6 +168,8 @@ interface Options {
   draftError?: (input: { capOverride?: number }) => Error | undefined;
   /** Thrown by triggerReview. */
   triggerError?: Error;
+  /** Thrown by triggerHelpdeskSync. */
+  syncTriggerError?: Error;
   /** Milliseconds each call waits on the (fake) clock: a step name, or `event` for every event. */
   latency?: Partial<Record<string, number>>;
 }
@@ -319,6 +321,10 @@ function harness(options: Options = {}) {
       step("triggerReview");
       if (options.triggerError) throw options.triggerError;
     }),
+    triggerHelpdeskSync: vi.fn(async () => {
+      step("triggerHelpdeskSync");
+      if (options.syncTriggerError) throw options.syncTriggerError;
+    }),
     setTraceSinkDown: vi.fn(),
     logger: { info: log, warn: log, error: log },
   };
@@ -373,6 +379,9 @@ describe("triage-ticket task", () => {
       "event:policy_decided",
       "event:triaged",
       "status:triaged",
+      // P5-T5b: the auto route hands the ticket to the helpdesk.
+      "status:auto",
+      "triggerHelpdeskSync",
     ]);
   });
 
@@ -474,7 +483,7 @@ describe("triage-ticket task", () => {
     expect(result).toMatchObject({ route: "review", reasons: ["sensitive", "ungrounded_fix"] });
   });
 
-  it.each(["triaged", "review_pending", "auto"])(
+  it.each(["triaged", "review_pending"])(
     "skips a ticket with status %s: no AI call, no event, no write",
     async (status) => {
       const h = harness({ found: ticket(status) });
@@ -488,8 +497,45 @@ describe("triage-ticket task", () => {
       expect(h.calls).toEqual(status === "triaged" ? ["getTicket", "getTriage"] : ["getTicket"]);
       expect(h.aiInputs).toEqual([]);
       expect(h.deps.triggerReview).not.toHaveBeenCalled();
+      expect(h.deps.triggerHelpdeskSync).not.toHaveBeenCalled();
     },
   );
+
+  it("recovers a triaged auto route after an auto status write fails, without repeating AI", async () => {
+    const h = harness({
+      found: ticket("triaged"),
+      triage: { ...triageRow(false), route: "auto" },
+    });
+    const payload = { ticketId, testOverrides: { helpdeskAsleepMinutes: 3 } };
+    vi.mocked(h.deps.repos.setTicketStatus).mockRejectedValueOnce(new Error("status write failed"));
+
+    await expect(runTriageTicket(payload, h.deps)).rejects.toThrow("status write failed");
+    expect(h.deps.triggerHelpdeskSync).not.toHaveBeenCalled();
+    await expect(runTriageTicket(payload, h.deps, 2)).resolves.toEqual({ ticketId, skipped: true });
+
+    expect(h.deps.repos.setTicketStatus).toHaveBeenCalledWith(ticketId, "auto");
+    expect(h.deps.triggerHelpdeskSync).toHaveBeenCalledExactlyOnceWith(payload, {
+      idempotencyKey: `helpdesk-sync:${ticketId}`,
+    });
+    expect(h.aiInputs).toEqual([]);
+    expect(h.events).toEqual([]);
+    expect(h.deps.triggerReview).not.toHaveBeenCalled();
+  });
+
+  it("an auto ticket: the sync is enqueued again with the same key, no AI call, no write", async () => {
+    const h = harness({ found: ticket("auto") });
+
+    await expect(runTriageTicket({ ticketId }, h.deps)).resolves.toEqual({
+      ticketId,
+      skipped: true,
+    });
+
+    expect(h.calls).toEqual(["getTicket", "triggerHelpdeskSync"]);
+    expect(h.aiInputs).toEqual([]);
+    expect(h.statuses).toEqual([]);
+    expect(h.events).toEqual([]);
+    expect(h.deps.triggerReview).not.toHaveBeenCalled();
+  });
 
   it("aborts naming the ID for an unknown ticket and writes nothing", async () => {
     const h = harness({ found: null });
@@ -613,11 +659,11 @@ describe("triage-ticket starts the review (P4-T4c)", () => {
     expect(h.deps.triggerReview).toHaveBeenCalledWith({ ticketId }, { idempotencyKey: key });
   });
 
-  it("an auto ticket: no trigger, the status stays triaged", async () => {
+  it("an auto ticket: no review trigger; the status moves on to auto", async () => {
     const h = harness();
     await expect(runTriageTicket({ ticketId }, h.deps)).resolves.toMatchObject({ route: "auto" });
     expect(h.deps.triggerReview).not.toHaveBeenCalled();
-    expect(h.statuses).toEqual(["triaged"]);
+    expect(h.statuses).toEqual(["triaged", "auto"]);
   });
 
   it("a failed trigger: review_enqueue_failed { error }, failed, one alert, abort naming the ID", async () => {
@@ -663,6 +709,74 @@ describe("triage-ticket starts the review (P4-T4c)", () => {
       skipped: true,
     });
     expect(h.deps.triggerReview).not.toHaveBeenCalled();
+  });
+});
+
+describe("triage-ticket starts the helpdesk sync (P5-T5b)", () => {
+  const key = `helpdesk-sync:${ticketId}`;
+
+  it("an auto ticket: status auto after triaged, then one trigger with the switches unchanged", async () => {
+    const h = harness({ e2eMode: true, isTest: true });
+    const testOverrides = { helpdeskAsleepMinutes: 3, langfuseDown: false };
+
+    await expect(runTriageTicket({ ticketId, testOverrides }, h.deps)).resolves.toMatchObject({
+      route: "auto",
+    });
+
+    expect(h.statuses).toEqual(["triaged", "auto"]);
+    expect(h.calls.slice(-2)).toEqual(["status:auto", "triggerHelpdeskSync"]);
+    expect(h.deps.triggerHelpdeskSync).toHaveBeenCalledTimes(1);
+    expect(h.deps.triggerHelpdeskSync).toHaveBeenCalledWith(
+      { ticketId, testOverrides },
+      { idempotencyKey: key },
+    );
+    expect(h.deps.triggerReview).not.toHaveBeenCalled();
+  });
+
+  it("an auto ticket without switches gets { ticketId } only", async () => {
+    const h = harness();
+    await runTriageTicket({ ticketId }, h.deps);
+    expect(h.deps.triggerHelpdeskSync).toHaveBeenCalledWith({ ticketId }, { idempotencyKey: key });
+  });
+
+  it("a review ticket: no helpdesk sync, the status stays triaged", async () => {
+    const h = harness({ triage: triageRow(true) });
+    await runTriageTicket({ ticketId }, h.deps);
+    expect(h.deps.triggerHelpdeskSync).not.toHaveBeenCalled();
+    expect(h.statuses).toEqual(["triaged"]);
+  });
+
+  it("a failed trigger: helpdesk_enqueue_failed { error }, failed, one alert, abort naming the ID", async () => {
+    const h = harness({ syncTriggerError: new TypeError("MARKER-sync-trigger-detail") });
+
+    const error = await runTriageTicket({ ticketId }, h.deps).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(AbortTaskRunError);
+    expect(String((error as Error).message)).toContain(ticketId);
+    expect(h.events.at(-1)).toEqual({
+      type: "helpdesk_enqueue_failed",
+      payload: { error: "TypeError" },
+    });
+    expect(h.statuses).toEqual(["triaged", "auto", "failed"]);
+    expect(h.alerts).toEqual([["helpdesk_sync_failed", { ticketId }]]);
+    expect(JSON.stringify(h.logs)).not.toContain("MARKER-sync-trigger-detail");
+  });
+
+  it("crash recovery: an auto ticket is enqueued again, same key, no AI call, no event, skipped", async () => {
+    const h = harness({
+      found: ticket("auto"),
+      triage: { ...triageRow(false), route: "auto", triaged_at: now },
+    });
+
+    await expect(runTriageTicket({ ticketId }, h.deps)).resolves.toEqual({
+      ticketId,
+      skipped: true,
+    });
+
+    expect(h.deps.triggerHelpdeskSync).toHaveBeenCalledWith({ ticketId }, { idempotencyKey: key });
+    expect(h.aiCalls()).toBe(0);
+    expect(h.events).toEqual([]);
+    expect(h.statuses).toEqual([]);
   });
 });
 
@@ -729,7 +843,7 @@ describe("triage-ticket retry after a failed write", () => {
       "policy_decided",
       "triaged",
     ]);
-    expect(h.statuses).toEqual(["triaged"]);
+    expect(h.statuses).toEqual(["triaged", "auto"]);
   });
 
   it("a saved row with a missing probability throws on resume and writes nothing", async () => {
@@ -1217,7 +1331,7 @@ describe("triage-ticket test switch langfuseDown (real runtime and sink)", () =>
     const { h, upSpans, fetchSpy } = wired({ e2eMode: true, isTest: true });
 
     await expect(runTriageTicket(payload, h.deps)).resolves.toMatchObject({ skipped: false });
-    expect(h.statuses).toEqual(["triaged"]);
+    expect(h.statuses).toEqual(["triaged", "auto"]);
     expect(types(h).filter((t) => t === "trace_export_failed").length).toBeGreaterThanOrEqual(1);
     expect(h.events.find((e) => e.type === "trace_export_failed")!.payload).toEqual({
       kind: "triage",
@@ -1236,7 +1350,7 @@ describe("triage-ticket test switch langfuseDown (real runtime and sink)", () =>
     expect(h.deps.setTraceSinkDown).not.toHaveBeenCalled();
     expect(types(h)).not.toContain("trace_export_failed");
     expect(upSpans).toHaveLength(1);
-    expect(h.statuses).toEqual(["triaged"]);
+    expect(h.statuses).toEqual(["triaged", "auto"]);
   });
 });
 
@@ -1638,10 +1752,11 @@ describe("triage-ticket latency (P3-T10k)", () => {
         kbMs: 200 + 1000,
         draftMs: 2000,
         groundingMs: 800,
-        // saveTriageResult, four events, the status.
-        writeMs: 100 + 4 * 50 + 50,
+        // saveTriageResult, four events, the triaged status, then the auto
+        // status the helpdesk handoff writes (P5-T5b).
+        writeMs: 100 + 4 * 50 + 50 + 50,
         // The KB match is hidden behind the slower judgments.
-        totalMs: 400 + 1500 + 2000 + 800 + 350,
+        totalMs: 400 + 1500 + 2000 + 800 + 400,
       });
     });
   });

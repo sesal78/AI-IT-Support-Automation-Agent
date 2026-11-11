@@ -110,16 +110,18 @@ async function viewOf(request: APIRequestContext, id: string): Promise<InternalT
 
 let ticketId = "";
 
-test("T3.E.01: the form creates a ticket that reaches triaged within 30 s", async ({
+test("T3.E.01: the form creates a ticket that is triaged and handed to the helpdesk within 30 s", async ({
   page,
   request,
 }) => {
   test.setTimeout(90_000);
   ticketId = await submitForm(page);
 
+  // P5-T5b: triage's auto route now hands the ticket to helpdesk-sync. This
+  // stack keeps the safe default SHADOW_MODE, so the end state is the shadow skip.
   await expect
     .poll(async () => (await viewOf(request, ticketId)).status, { timeout: 30_000 })
-    .toBe("triaged");
+    .toBe("incident_skipped_shadow");
 
   const res = await getView(request, ticketId, getStack().internalToken);
   const text = await res.text();
@@ -158,7 +160,7 @@ test("submitting the same form again the same day returns the same ticket, triag
 
   await getStack().runner.idle();
   const view = await viewOf(request, ticketId);
-  expect(view.status).toBe("triaged");
+  expect(view.status).toBe("incident_skipped_shadow");
   expect(view.events.filter((event) => event.type === "triaged")).toHaveLength(1);
   expect(
     getStack()

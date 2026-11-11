@@ -50,6 +50,11 @@ import {
 import { AbortTaskRunError, idempotencyKeys, logger, schemaTask, tasks } from "@trigger.dev/sdk";
 import { z } from "zod";
 import { createFailureAlert, createPipelineAlert } from "../pipeline-alert.js";
+import {
+  enqueueHelpdeskSync,
+  triggerHelpdeskSyncTask,
+  type TriggerHelpdeskSyncFn,
+} from "./helpdesk-enqueue.js";
 import type { reviewTicket } from "./review-ticket.js";
 
 // Payload type is shared with the intake task that triggers it (packages/shared).
@@ -104,6 +109,8 @@ export interface TriageDeps {
   /** Never throws (createAlertSink). */
   alert: AlertFn;
   triggerReview: TriggerReviewFn;
+  /** Starts helpdesk-sync for an `auto` route (P5-T5b). Replaced in tests. */
+  triggerHelpdeskSync: TriggerHelpdeskSyncFn;
   /** Test switch `langfuseDown`: every later trace export of this run fails. */
   setTraceSinkDown(down: boolean): void;
   logger: { info: LogFn; warn: LogFn; error: LogFn };
@@ -182,6 +189,7 @@ export function createTriageDeps(source: Record<string, string | undefined>): Tr
     e2eMode: env.E2E_MODE,
     alert,
     triggerReview: triggerReviewTask,
+    triggerHelpdeskSync: triggerHelpdeskSyncTask,
     setTraceSinkDown: traceSink.setDown,
     logger,
   };
@@ -213,6 +221,11 @@ const statusLabel = (status: string) =>
  * switches unchanged. A run that finds the ticket already `triaged` with the
  * saved route `review` (a crash after the status write) triggers again with
  * the same key, which returns the first review run, and is skipped.
+ *
+ * Route `auto` (P5-T5b): after the status `triaged`, the status becomes `auto`
+ * and helpdesk-sync is triggered with the key `helpdesk-sync:<ticketId>` and
+ * the same switches. A run that finds the ticket already `auto` triggers again
+ * with that key, runs no AI step and is skipped.
  *
  * Latency (P3-T10k): the judgments and the KB match (search, then rerank)
  * read only the redacted text, so they run in parallel. Both settle before
@@ -278,11 +291,28 @@ export async function runTriageTicket(
     log.error("triage-ticket: ticket not found", { ticketId });
     throw new AbortTaskRunError(`triage-ticket: ticket ${ticketId} not found`);
   }
-  if (ticket.status === "triaged" && (await repos.getTriage(ticketId))?.route === "review") {
+  const savedRoute =
+    ticket.status === "triaged" ? (await repos.getTriage(ticketId))?.route : undefined;
+  if (savedRoute === "review") {
     // Crash recovery: the run stopped after the status write. The trigger is
     // idempotent (same key), so this returns the first review run if one started.
     await enqueueReview(payload, deps);
     log.info("triage-ticket: already triaged, review enqueued", { ticketId });
+    return { ticketId, skipped: true };
+  }
+  if (savedRoute === "auto") await repos.setTicketStatus(ticketId, "auto");
+  if (ticket.status === "auto" || savedRoute === "auto") {
+    // Crash recovery (P5-T5b): the run stopped after the status write, so the
+    // sync is enqueued again with the same key. It returns the first run, if one
+    // started, and no AI step runs a second time.
+    await enqueueHelpdeskSync(payload, {
+      task: "triage-ticket",
+      repos,
+      triggerHelpdeskSync: deps.triggerHelpdeskSync,
+      alert: deps.alert,
+      logger: log,
+    });
+    log.info("triage-ticket: already auto, helpdesk sync enqueued", { ticketId });
     return { ticketId, skipped: true };
   }
   if (TRIAGED_OR_LATER.has(ticket.status)) {
@@ -359,6 +389,18 @@ export async function runTriageTicket(
   }
   await repos.setTicketStatus(ticketId, "triaged");
   if (route === "review") await enqueueReview(payload, deps);
+  if (route === "auto") {
+    // P5-T5b: the status is written before the trigger, so a crash between the
+    // two is recovered by the `auto` branch above with the same key.
+    await repos.setTicketStatus(ticketId, "auto");
+    await enqueueHelpdeskSync(payload, {
+      task: "triage-ticket",
+      repos,
+      triggerHelpdeskSync: deps.triggerHelpdeskSync,
+      alert: deps.alert,
+      logger: log,
+    });
+  }
   timings.writeMs = clock() - writesStart;
   timings.totalMs = clock() - started;
   log.info("triage-ticket: triaged", {

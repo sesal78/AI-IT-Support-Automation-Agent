@@ -93,7 +93,8 @@ describe("triage failures on the local REST stack", () => {
     const result = await triage(payload, 1);
 
     expect(result).toMatchObject({ ticketId, skipped: false });
-    expect(await ticketStatus(ticketId)).toBe("triaged");
+    // P5-T5b: an auto route moves on to `auto`; the sync is stubbed here.
+    expect(await ticketStatus(ticketId)).toBe("auto");
     expect(typesafeKinds(from).filter((kind) => kind === "triage_judgments")).toHaveLength(2);
     const judgmentRows = (await aiCalls(ticketId)).filter((c) => c.kind === "triage_judgments");
     expect(judgmentRows).toHaveLength(1);
@@ -242,7 +243,7 @@ describe("triage failures on the local REST stack", () => {
     });
 
     expect(result).toMatchObject({ ticketId, skipped: false });
-    expect(await ticketStatus(ticketId)).toBe("triaged");
+    expect(await ticketStatus(ticketId)).toBe("auto");
     expect(await eventTypes(ticketId)).toContain("trace_export_failed");
     // The forced-down sink sends nothing.
     expect(requestsTo(ORIGINS.langfuse, from)).toHaveLength(0);
