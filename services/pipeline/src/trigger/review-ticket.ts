@@ -33,6 +33,11 @@ import {
 import { AbortTaskRunError, logger, schemaTask, wait } from "@trigger.dev/sdk";
 import { z } from "zod";
 import { createFailureAlert, createPipelineAlert } from "../pipeline-alert.js";
+import {
+  enqueueHelpdeskSync,
+  triggerHelpdeskSyncTask,
+  type TriggerHelpdeskSyncFn,
+} from "./helpdesk-enqueue.js";
 
 // Payload type is shared with the caller that triggers it (packages/shared).
 export const reviewTicketPayload = z.object({
@@ -85,6 +90,8 @@ export interface ReviewDeps {
   e2eMode: boolean;
   /** Never throws (createAlertSink). */
   alert: AlertFn;
+  /** Starts helpdesk-sync after `approved` (P5-T5b). Replaced in tests. */
+  triggerHelpdeskSync: TriggerHelpdeskSyncFn;
   logger: { info: LogFn; warn: LogFn; error: LogFn };
 }
 
@@ -111,12 +118,13 @@ export function createReviewDeps(source: Record<string, string | undefined>): Re
     reviewTimeout: env.SLACK_REVIEW_TIMEOUT,
     e2eMode: env.E2E_MODE,
     alert: createPipelineAlert(source, repos),
+    triggerHelpdeskSync: triggerHelpdeskSyncTask,
     logger,
   };
 }
 
 /** Statuses after the review: a run on one of them is a no-op. */
-const DONE: ReadonlySet<string> = new Set(["approved", "rejected", "escalated_manual", "failed"]);
+const DONE: ReadonlySet<string> = new Set(["rejected", "escalated_manual", "failed"]);
 
 const fixStepsSchema = z.object({ steps: z.array(z.string()), caveats: z.array(z.string()) });
 
@@ -137,14 +145,13 @@ const fixStepsSchema = z.object({ steps: z.array(z.string()), caveats: z.array(z
  *
  * After the wait the review row decides; the token's output is ignored.
  * `approve` / `reject`: the event review_decided (once), the status
- * `approved` / `rejected`, then the decided card (best effort). A timed-out
- * token on an undecided row stores `timeout` (compare-and-set: a decision
- * stored at the last moment wins and takes the path above). A `timeout`:
- * the thread note, the event review_timed_out (both once), the status
- * `escalated_manual`, then the timed-out card (best effort). The note comes
- * before the status, so a failed note is posted by the next attempt. A token
- * that completed on an undecided row aborts and writes nothing. Nothing is
- * triggered after a decision in phase 4.
+ * `approved` / `rejected`, then the decided card (best effort). An `approve`
+ * also starts helpdesk-sync (P5-T5b) with the key `helpdesk-sync:<ticketId>`;
+ * a `reject` and a timeout start nothing. A `timeout`: the thread note, the
+ * event review_timed_out (both once), the status `escalated_manual`, then the
+ * timed-out card (best effort). The note comes before the status, so a failed
+ * note is posted by the next attempt. A token that completed on an undecided
+ * row aborts and writes nothing.
  */
 export async function runReviewTicket(
   payload: ReviewTicketPayload,
@@ -156,6 +163,17 @@ export async function runReviewTicket(
 
   const ticket = await repos.getTicket(ticketId);
   if (!ticket) throw new AbortTaskRunError(`review-ticket: ticket ${ticketId} not found`);
+  if (ticket.status === "approved") {
+    // Retry the handoff after a crash between the approval write and enqueue.
+    await enqueueHelpdeskSync(payload, {
+      task: "review-ticket",
+      repos,
+      triggerHelpdeskSync: deps.triggerHelpdeskSync,
+      alert: deps.alert,
+      logger: log,
+    });
+    return { ticketId, skipped: true };
+  }
   if (DONE.has(ticket.status)) {
     log.info("review-ticket: skipped", { ticketId, status: ticket.status });
     return { ticketId, skipped: true };
@@ -195,6 +213,17 @@ export async function runReviewTicket(
       await repos.addEvent(ticketId, "review_decided", { reviewId: stored.id, decision });
     }
     await repos.setTicketStatus(ticketId, decision === "approve" ? "approved" : "rejected");
+    // P5-T5b: only an approval hands the ticket to the helpdesk; a rejection
+    // and a timeout start nothing.
+    if (decision === "approve") {
+      await enqueueHelpdeskSync(payload, {
+        task: "review-ticket",
+        repos,
+        triggerHelpdeskSync: deps.triggerHelpdeskSync,
+        alert: deps.alert,
+        logger: log,
+      });
+    }
   }
   await updateCard(deps, ticket, triage, stored, timeout);
   log.info("review-ticket: decided", { ticketId, reviewId: stored.id, attempt, decision });

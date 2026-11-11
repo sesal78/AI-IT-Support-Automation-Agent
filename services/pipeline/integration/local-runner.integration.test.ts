@@ -194,7 +194,16 @@ describe("local Trigger.dev runner", () => {
     expect(runner.runs().find((run) => run.id === review?.id)).toMatchObject({
       status: "COMPLETED",
     });
-    expect(await ticketStatus(ticketId)).toBe("approved");
+    // P5-T5b: the approval hands the ticket to helpdesk-sync, which shadow-skips
+    // on this runner (SHADOW_MODE unset is `true`), so the status after `approved`
+    // is the shadow skip.
+    expect(await ticketStatus(ticketId)).toBe("incident_skipped_shadow");
+    const types = await eventTypes(ticketId);
+    expect(types.slice(types.indexOf("review_decided"))).toEqual([
+      "review_decided",
+      "helpdesk_sync_started",
+      "shadow_skipped",
+    ]);
     expect(runner.broker.get(token!.id)?.output).toEqual({
       reviewId: row!.id,
       decision: "approve",

@@ -121,6 +121,8 @@ interface Options {
   /** The first timeout note post throws. */
   noteError?: unknown;
   updateError?: unknown;
+  /** Thrown by triggerHelpdeskSync. */
+  syncTriggerError?: Error;
 }
 
 function harness(options: Options = {}) {
@@ -132,6 +134,7 @@ function harness(options: Options = {}) {
       return impl(...args);
     };
   let posts = 0;
+  const statuses: string[] = [];
   let row = options.review ?? review();
   let decision = options.decision === undefined ? "approve" : options.decision;
   const events = [...(options.events ?? [])];
@@ -156,6 +159,7 @@ function harness(options: Options = {}) {
           statusError = undefined;
           throw new Error("status write failed");
         }
+        statuses.push(to);
         return { changed: true };
       }),
     ),
@@ -236,8 +240,13 @@ function harness(options: Options = {}) {
     e2eMode: options.e2eMode ?? false,
     alert,
     logger,
+    triggerHelpdeskSync: vi.fn(
+      track("triggerHelpdeskSync", async () => {
+        if (options.syncTriggerError) throw options.syncTriggerError;
+      }),
+    ),
   };
-  return { deps, calls, repos, slack, wait, alert, logger, events };
+  return { deps, calls, repos, slack, wait, alert, logger, events, statuses };
 }
 
 const run = (h: ReturnType<typeof harness>, testOverrides?: Record<string, unknown>) =>
@@ -427,7 +436,33 @@ describe("runReviewTicket", () => {
     expect(h.wait.createToken).not.toHaveBeenCalled();
   });
 
-  it.each(["approved", "rejected", "escalated_manual", "failed"])(
+  it("recovers an approved ticket, including a DB failure while recording a failed enqueue", async () => {
+    const h = harness({ found: ticket("approved") });
+    vi.mocked(h.deps.triggerHelpdeskSync).mockRejectedValueOnce(new TypeError("enqueue failed"));
+    h.repos.addEvent.mockRejectedValueOnce(new Error("event write failed"));
+    const switches = { shadowMode: true };
+
+    await expect(run(h, switches)).rejects.toThrow("event write failed");
+    await expect(run(h, switches)).resolves.toEqual({ ticketId: TICKET, skipped: true });
+
+    expect(vi.mocked(h.deps.triggerHelpdeskSync).mock.calls).toEqual([
+      [
+        { ticketId: TICKET, testOverrides: switches },
+        { idempotencyKey: `helpdesk-sync:${TICKET}` },
+      ],
+      [
+        { ticketId: TICKET, testOverrides: switches },
+        { idempotencyKey: `helpdesk-sync:${TICKET}` },
+      ],
+    ]);
+    expect(h.repos.setTicketStatus).not.toHaveBeenCalled();
+    expect(h.repos.getTriage).not.toHaveBeenCalled();
+    expect(h.slack.postMessage).not.toHaveBeenCalled();
+    expect(h.wait.createToken).not.toHaveBeenCalled();
+    expect(h.wait.forToken).not.toHaveBeenCalled();
+  });
+
+  it.each(["rejected", "escalated_manual", "failed"])(
     "skips a %s ticket with no further call",
     async (status) => {
       const h = harness({ found: ticket(status) });
@@ -521,7 +556,8 @@ describe("runReviewTicket after the wait (P4-T4b)", () => {
         "updateMessage",
       ]),
     );
-    expect(Object.keys(h.deps).some((key) => key.startsWith("trigger"))).toBe(false);
+    expect(Object.keys(h.deps).some((key) => key.startsWith("trigger"))).toBe(true);
+    expect(h.deps.triggerHelpdeskSync).not.toHaveBeenCalled();
   });
 
   it("the row decides: token output says reject, the row says approve -> approved", async () => {
@@ -633,6 +669,68 @@ describe("runReviewTicket on a timeout (P4-T5)", () => {
     expect(note?.text).toBe("No decision within 30m: sent to the manual queue");
     const text = JSON.stringify(note);
     for (const marker of [...ALL_MARKERS, "VPN", "redacted"]) expect(text).not.toContain(marker);
+  });
+});
+
+describe("review-ticket starts the helpdesk sync (P5-T5b)", () => {
+  const key = `helpdesk-sync:${TICKET}`;
+
+  it("approve: one trigger, after the approved status write", async () => {
+    const h = harness({ decision: "approve" });
+
+    await expect(run(h)).resolves.toMatchObject({ decision: "approve" });
+
+    expect(h.statuses).toEqual(["review_pending", "approved"]);
+    const last = h.calls.lastIndexOf("setTicketStatus");
+    expect(h.calls.slice(last, last + 2)).toEqual(["setTicketStatus", "triggerHelpdeskSync"]);
+    expect(h.deps.triggerHelpdeskSync).toHaveBeenCalledTimes(1);
+    expect(h.deps.triggerHelpdeskSync).toHaveBeenCalledWith(
+      { ticketId: TICKET },
+      { idempotencyKey: key },
+    );
+  });
+
+  it("approve passes the payload's test switches on unchanged", async () => {
+    const h = harness({ e2eMode: true, found: ticket("triaged", true) });
+
+    await run(h, { helpdeskAsleepMinutes: 3 });
+
+    expect(h.deps.triggerHelpdeskSync).toHaveBeenCalledWith(
+      { ticketId: TICKET, testOverrides: { helpdeskAsleepMinutes: 3 } },
+      { idempotencyKey: key },
+    );
+  });
+
+  it("reject: no trigger", async () => {
+    const h = harness({ decision: "reject" });
+    await expect(run(h)).resolves.toMatchObject({ decision: "reject" });
+    expect(h.deps.triggerHelpdeskSync).not.toHaveBeenCalled();
+    expect(h.statuses).toEqual(["review_pending", "rejected"]);
+  });
+
+  it("a timeout: no trigger", async () => {
+    const h = harness({ decision: null, tokenOk: false });
+    await expect(run(h)).resolves.toMatchObject({ decision: "timeout" });
+    expect(h.deps.triggerHelpdeskSync).not.toHaveBeenCalled();
+    expect(h.statuses).toEqual(["review_pending", "escalated_manual"]);
+  });
+
+  it("a failed trigger: helpdesk_enqueue_failed { error }, failed, one alert, abort naming the ID", async () => {
+    const h = harness({ syncTriggerError: new TypeError("MARKER-sync-trigger-detail") });
+
+    const error = await run(h).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(AbortTaskRunError);
+    expect(String((error as Error).message)).toContain(TICKET);
+    expect(h.repos.addEvent).toHaveBeenCalledWith(TICKET, "helpdesk_enqueue_failed", {
+      error: "TypeError",
+    });
+    expect(h.statuses).toEqual(["review_pending", "approved", "failed"]);
+    expect(h.alert).toHaveBeenCalledTimes(1);
+    expect(h.alert).toHaveBeenCalledWith("helpdesk_sync_failed", { ticketId: TICKET });
+    expect(JSON.stringify(Object.values(h.logger).flatMap((fn) => fn.mock.calls))).not.toContain(
+      "MARKER-sync-trigger-detail",
+    );
   });
 });
 

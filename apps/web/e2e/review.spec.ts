@@ -139,7 +139,7 @@ function click(options: {
 const statusWithin10s = (request: APIRequestContext, id: string) =>
   expect.poll(async () => (await viewOf(request, id)).status, { timeout: 10_000 });
 
-test("T4.E.01: a sensitive test ticket reaches review_pending; a signed approve → approved within 10 s", async ({
+test("T4.E.01: a sensitive test ticket reaches review_pending; a signed approve → approved, then the helpdesk handoff", async ({
   request,
 }) => {
   test.setTimeout(90_000);
@@ -153,7 +153,9 @@ test("T4.E.01: a sensitive test ticket reaches review_pending; a signed approve 
   expect(res.status()).toBe(200);
   expect(await res.json()).toEqual({ outcome: "recorded" });
 
-  await statusWithin10s(request, ticketId).toBe("approved");
+  // P5-T5b: an approval hands the ticket to helpdesk-sync, which shadow-skips on
+  // this stack, so the ticket does not stay `approved`.
+  await statusWithin10s(request, ticketId).toBe("incident_skipped_shadow");
   const view = await viewOf(request, ticketId);
   expect(view.reviews).toEqual([
     expect.objectContaining({
@@ -163,7 +165,12 @@ test("T4.E.01: a sensitive test ticket reaches review_pending; a signed approve 
     }),
   ]);
   const types = view.events.map((event) => event.type);
-  expect(types.slice(types.indexOf("triaged") + 1)).toEqual(["review_requested", "review_decided"]);
+  expect(types.slice(types.indexOf("triaged") + 1)).toEqual([
+    "review_requested",
+    "review_decided",
+    "helpdesk_sync_started",
+    "shadow_skipped",
+  ]);
   // The web app completed the run's token through the runner; the run is done.
   await getStack().runner.idle();
   expect(getStack().runner.broker.tokens()).toEqual([
