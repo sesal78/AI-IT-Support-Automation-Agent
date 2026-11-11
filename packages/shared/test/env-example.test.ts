@@ -6,6 +6,7 @@ import {
   aiBudgetEnvShape,
   e2eEnvShape,
   groundingEnvShape,
+  helpdeskEnvShape,
   intakeEnvShape,
   internalEnvShape,
   langfuseEnvShape,
@@ -44,6 +45,7 @@ const allEnvShapes = {
   ...slackInteractivityEnvShape,
   ...slackClientEnvShape,
   ...reviewEnvShape,
+  ...helpdeskEnvShape,
   ...serviceNowEnvShape,
   ...replyEnvShape,
   // Every value the bot token rule accepts starts with xoxb-, which the secret

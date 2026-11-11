@@ -16,6 +16,7 @@ export {
   e2eEnvShape,
   formatEnvIssues,
   groundingEnvShape,
+  helpdeskEnvShape,
   intakeEnvShape,
   langfuseEnvShape,
   internalEnvShape,
@@ -24,6 +25,7 @@ export {
   liveServiceNowEnvShape,
   liveSlackEnvShape,
   parseEnv,
+  parseHelpdeskEnv,
   phase1EnvShape,
   policyEnvShape,
   slackBotToken,
@@ -38,6 +40,7 @@ export {
   reviewEnvShape,
   triggerProjectEnvShape,
   type EnvIssue,
+  type HelpdeskEnv,
 } from "./env.js";
 export {
   EVAL_SENSITIVE_TOPICS,

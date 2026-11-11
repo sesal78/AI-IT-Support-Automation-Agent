@@ -2,6 +2,12 @@ export { BuiltinConnector, type BuiltinHelpdeskStore } from "./builtin.js";
 export { HelpdeskError, InstanceAsleepError, type HelpdeskErrorCode } from "./errors.js";
 export { FakeConnector, type FakeCall } from "./fake.js";
 export {
+  createHelpdeskConnector,
+  selectHelpdeskConnector,
+  type HelpdeskFactoryDeps,
+  type HelpdeskSelectorDeps,
+} from "./select.js";
+export {
   withShadowMode,
   shadowEnabled,
   type ShadowOperation,
