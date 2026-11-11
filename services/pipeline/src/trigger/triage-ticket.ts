@@ -291,14 +291,17 @@ export async function runTriageTicket(
     log.error("triage-ticket: ticket not found", { ticketId });
     throw new AbortTaskRunError(`triage-ticket: ticket ${ticketId} not found`);
   }
-  if (ticket.status === "triaged" && (await repos.getTriage(ticketId))?.route === "review") {
+  const savedRoute =
+    ticket.status === "triaged" ? (await repos.getTriage(ticketId))?.route : undefined;
+  if (savedRoute === "review") {
     // Crash recovery: the run stopped after the status write. The trigger is
     // idempotent (same key), so this returns the first review run if one started.
     await enqueueReview(payload, deps);
     log.info("triage-ticket: already triaged, review enqueued", { ticketId });
     return { ticketId, skipped: true };
   }
-  if (ticket.status === "auto") {
+  if (savedRoute === "auto") await repos.setTicketStatus(ticketId, "auto");
+  if (ticket.status === "auto" || savedRoute === "auto") {
     // Crash recovery (P5-T5b): the run stopped after the status write, so the
     // sync is enqueued again with the same key. It returns the first run, if one
     // started, and no AI step runs a second time.
