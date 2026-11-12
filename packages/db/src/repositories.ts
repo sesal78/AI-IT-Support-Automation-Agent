@@ -402,6 +402,7 @@ export interface SchemaProbe {
   database: boolean;
   migration0003: boolean;
   migration0005: boolean;
+  migration0006: boolean;
 }
 // The kb_search RPC clamps p_limit to this range; searchKb does the same.
 const KB_SEARCH_MIN_LIMIT = 1;
@@ -1276,7 +1277,8 @@ export function createRepositories(client: DbClient) {
      * never returns error text: any failure, timeout included, is `false`.
      * `database` is a select on tickets; `migration0003` needs selects on
      * tickets.is_test, kb_articles, ai_calls and security_events to work;
-     * `migration0005` needs a select on reviews.id.
+     * `migration0005` needs a select on reviews.id; `migration0006` needs a
+     * select on notifications.id.
      */
     async probeSchema(timeoutMs = PROBE_TIMEOUT_MS): Promise<SchemaProbe> {
       const works = async (table: string, column: string): Promise<boolean> => {
@@ -1300,7 +1302,12 @@ export function createRepositories(client: DbClient) {
       };
 
       if (!(await works("tickets", "id"))) {
-        return { database: false, migration0003: false, migration0005: false };
+        return {
+          database: false,
+          migration0003: false,
+          migration0005: false,
+          migration0006: false,
+        };
       }
       const results = await Promise.all([
         works("tickets", "is_test"),
@@ -1308,12 +1315,14 @@ export function createRepositories(client: DbClient) {
         works("ai_calls", "id"),
         works("security_events", "id"),
         works("reviews", "id"),
+        works("notifications", "id"),
       ]);
-      const [isTest, kbArticles, aiCalls, securityEvents, reviews] = results;
+      const [isTest, kbArticles, aiCalls, securityEvents, reviews, notifications] = results;
       return {
         database: true,
         migration0003: Boolean(isTest && kbArticles && aiCalls && securityEvents),
         migration0005: Boolean(reviews),
+        migration0006: Boolean(notifications),
       };
     },
 

@@ -74,6 +74,7 @@ export {
 } from "./kb-query.js";
 
 export {
+  internalNotificationSchema,
   internalReviewSchema,
   internalTicketViewSchema,
   type InternalTicketView,

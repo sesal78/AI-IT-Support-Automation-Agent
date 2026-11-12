@@ -453,14 +453,23 @@ describe("probeSchema", () => {
   const tableOf = (call: Captured | undefined) => call?.url.pathname.split("/").pop();
 
   it("reports both true when every probe succeeds, selecting only one row", async () => {
-    const calls = respond(ok([]), ok([]), ok([]), ok([]), ok([]), ok([]));
+    const calls = respond(ok([]), ok([]), ok([]), ok([]), ok([]), ok([]), ok([]));
     expect(await repos.probeSchema()).toEqual({
       database: true,
       migration0003: true,
       migration0005: true,
+      migration0006: true,
     });
     expect(calls.map(tableOf).sort()).toEqual(
-      ["ai_calls", "kb_articles", "reviews", "security_events", "tickets", "tickets"].sort(),
+      [
+        "ai_calls",
+        "kb_articles",
+        "notifications",
+        "reviews",
+        "security_events",
+        "tickets",
+        "tickets",
+      ].sort(),
     );
     expect(calls.some((c) => c.url.searchParams.get("select") === "is_test")).toBe(true);
     for (const call of calls) expect(call.url.searchParams.get("limit")).toBe("1");
@@ -475,6 +484,7 @@ describe("probeSchema", () => {
       database: true,
       migration0003: false,
       migration0005: true,
+      migration0006: true,
     });
   });
 
@@ -487,6 +497,20 @@ describe("probeSchema", () => {
       database: true,
       migration0003: true,
       migration0005: false,
+      migration0006: true,
+    });
+  });
+
+  it("reports migration0006 false, and the rest true, when only the notifications probe fails", async () => {
+    vi.stubGlobal("fetch", async (input: string | URL) => {
+      const url = new URL(String(input));
+      return url.pathname.endsWith("/notifications") ? pgError("42P01", 404) : ok([]);
+    });
+    expect(await repos.probeSchema()).toEqual({
+      database: true,
+      migration0003: true,
+      migration0005: true,
+      migration0006: false,
     });
   });
 
@@ -499,6 +523,7 @@ describe("probeSchema", () => {
       database: true,
       migration0003: false,
       migration0005: true,
+      migration0006: true,
     });
   });
 
@@ -510,6 +535,7 @@ describe("probeSchema", () => {
       database: false,
       migration0003: false,
       migration0005: false,
+      migration0006: false,
     });
   });
 
@@ -519,6 +545,7 @@ describe("probeSchema", () => {
       database: false,
       migration0003: false,
       migration0005: false,
+      migration0006: false,
     });
   });
 
@@ -531,15 +558,21 @@ describe("probeSchema", () => {
     vi.stubGlobal("fetch", async (input: string | URL) => {
       const url = new URL(String(input));
       started.push(`${url.pathname.split("/").pop()}:${url.searchParams.get("select")}`);
-      // The first (tickets.id) probe answers at once; the rest wait until all five have started.
+      // The first (tickets.id) probe answers at once; the rest wait until all six have started.
       if (started.length > 1) await gate;
       return ok([]);
     });
     const pending = repos.probeSchema();
-    await vi.waitFor(() => expect(started).toHaveLength(6));
+    await vi.waitFor(() => expect(started).toHaveLength(7));
     release?.();
-    expect(await pending).toEqual({ database: true, migration0003: true, migration0005: true });
+    expect(await pending).toEqual({
+      database: true,
+      migration0003: true,
+      migration0005: true,
+      migration0006: true,
+    });
     expect(started).toContain("reviews:id");
+    expect(started).toContain("notifications:id");
   });
 
   it("times out a hanging probe and counts it as false", async () => {
@@ -549,6 +582,7 @@ describe("probeSchema", () => {
       database: false,
       migration0003: false,
       migration0005: false,
+      migration0006: false,
     });
     expect(Date.now() - started).toBeLessThan(2000);
   });

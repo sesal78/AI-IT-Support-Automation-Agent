@@ -13,6 +13,8 @@ export const healthConfigSchema = z.strictObject({
     database: z.boolean(),
     migration0003: z.boolean(),
     migration0005: z.boolean(),
+    // The notifications table (P5-T8b): a select on notifications.id works.
+    migration0006: z.boolean(),
     pipelineTrigger: z.boolean(),
     turnstile: z.boolean(),
     internalApi: z.boolean(),

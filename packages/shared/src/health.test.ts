@@ -12,6 +12,7 @@ const valid = {
     database: true,
     migration0003: false,
     migration0005: true,
+    migration0006: true,
     pipelineTrigger: true,
     turnstile: true,
     internalApi: true,
@@ -34,6 +35,14 @@ describe("healthConfigSchema", () => {
 
   it("rejects an extra feature key", () => {
     const body = { ...valid, features: { ...valid.features, secret: true } };
+    expect(healthConfigSchema.safeParse(body).success).toBe(false);
+  });
+
+  it.each(["true", 1, null])("rejects a missing or non-boolean migration0006 (%j)", (value) => {
+    const features: Partial<typeof valid.features> = { ...valid.features };
+    delete features.migration0006;
+    expect(healthConfigSchema.safeParse({ ...valid, features }).success).toBe(false);
+    const body = { ...valid, features: { ...valid.features, migration0006: value } };
     expect(healthConfigSchema.safeParse(body).success).toBe(false);
   });
 

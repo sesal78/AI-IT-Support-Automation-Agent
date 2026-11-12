@@ -35,7 +35,12 @@ function setup(
   return { provider, advance: (ms: number) => (time += ms), set: (t: number) => (time = t) };
 }
 const allOk: Probe = () =>
-  Promise.resolve({ database: true, migration0003: true, migration0005: true });
+  Promise.resolve({
+    database: true,
+    migration0003: true,
+    migration0005: true,
+    migration0006: true,
+  });
 
 describe("createHealthConfigProvider", () => {
   it("combines the probe with the env flags", async () => {
@@ -47,6 +52,7 @@ describe("createHealthConfigProvider", () => {
         database: true,
         migration0003: true,
         migration0005: true,
+        migration0006: true,
         pipelineTrigger: true,
         turnstile: true,
         internalApi: true,
@@ -152,7 +158,12 @@ describe("createHealthConfigProvider", () => {
 
   it("reports probe results as given", async () => {
     const { provider } = setup(() =>
-      Promise.resolve({ database: true, migration0003: false, migration0005: true }),
+      Promise.resolve({
+        database: true,
+        migration0003: false,
+        migration0005: true,
+        migration0006: true,
+      }),
     );
     const body = await provider.get();
     expect(body.features.database).toBe(true);
@@ -189,7 +200,7 @@ describe("createHealthConfigProvider", () => {
     const probe = vi.fn<Probe>(() => new Promise((resolve) => (release = resolve)));
     const { provider } = setup(probe);
     const all = Promise.all([provider.get(), provider.get(), provider.get()]);
-    release({ database: true, migration0003: true, migration0005: true });
+    release({ database: true, migration0003: true, migration0005: true, migration0006: true });
     const bodies = await all;
     expect(probe).toHaveBeenCalledTimes(1);
     expect(bodies[0]).toEqual(bodies[2]);
@@ -206,6 +217,46 @@ describe("createHealthConfigProvider", () => {
     await provider.get();
     expect(probe).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(spy.mock.calls)).not.toContain("marker-secret-text");
+    spy.mockRestore();
+  });
+
+  it("reports migration0006 false and the other flags as probed when only that probe fails", async () => {
+    const { provider } = setup(() =>
+      Promise.resolve({
+        database: true,
+        migration0003: true,
+        migration0005: true,
+        migration0006: false,
+      }),
+    );
+    const { features } = await provider.get();
+    expect(features).toMatchObject({
+      database: true,
+      migration0003: true,
+      migration0005: true,
+      migration0006: false,
+    });
+  });
+
+  it.each([undefined, "true", 1, null])(
+    "counts a non-true migration0006 answer (%j) as false",
+    async (value) => {
+      // A faulty probe returning a non-boolean: the cast is the point of the test.
+      const faulty = {
+        database: true,
+        migration0003: true,
+        migration0005: true,
+        migration0006: value,
+      } as unknown as Awaited<ReturnType<Probe>>;
+      const { provider } = setup(() => Promise.resolve(faulty));
+      expect((await provider.get()).features.migration0006).toBe(false);
+    },
+  );
+
+  it("reports migration0006 false when the probe rejects", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { provider } = setup(() => Promise.reject(new Error("down")));
+    expect((await provider.get()).features.migration0006).toBe(false);
     spy.mockRestore();
   });
 
@@ -232,8 +283,18 @@ describe("createHealthConfigProvider", () => {
   it("recovers in the next window after a failed probe", async () => {
     const probe = vi
       .fn<Probe>()
-      .mockResolvedValueOnce({ database: false, migration0003: false, migration0005: false })
-      .mockResolvedValueOnce({ database: true, migration0003: true, migration0005: true });
+      .mockResolvedValueOnce({
+        database: false,
+        migration0003: false,
+        migration0005: false,
+        migration0006: false,
+      })
+      .mockResolvedValueOnce({
+        database: true,
+        migration0003: true,
+        migration0005: true,
+        migration0006: true,
+      });
     const { provider, advance } = setup(probe);
     expect((await provider.get()).features.database).toBe(false);
     advance(60_000);

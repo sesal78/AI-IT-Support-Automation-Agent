@@ -30,6 +30,7 @@ const FEATURES = {
     "SERVICENOW_PASSWORD",
     "SERVICENOW_DEFAULT_CALLER",
   ],
+  resend: ["RESEND_API_KEY", "REPLY_FROM", "REPLY_ALLOWED_RECIPIENTS"],
 } as const;
 
 const ALL_NAMES = Object.values(FEATURES).flat();
@@ -41,6 +42,7 @@ const allTrue = {
   caps: true,
   slack: true,
   servicenow: true,
+  resend: true,
 };
 const allFalse = {
   supabase: false,
@@ -50,6 +52,7 @@ const allFalse = {
   caps: false,
   slack: false,
   servicenow: false,
+  resend: false,
 };
 
 /** Every listed name set to a harmless value. */
@@ -72,11 +75,11 @@ afterEach(() => {
 // missing or blank name is reported as `false`, which is the point of the
 // task. The payload's failure path is covered in healthcheck.test.ts.
 describe("healthcheck configured map", () => {
-  it("lists 18 env names", () => {
-    expect(new Set(ALL_NAMES).size).toBe(18);
+  it("lists 21 env names", () => {
+    expect(new Set(ALL_NAMES).size).toBe(21);
   });
 
-  it("reports every feature true when all 18 names are set", async () => {
+  it("reports every feature true when all 21 names are set", async () => {
     expect(await configuredFor(fullEnv())).toEqual({ ...allTrue, e2eMode: false });
   });
 
@@ -95,7 +98,7 @@ describe("healthcheck configured map", () => {
     expect(new Date(result.at).toISOString()).toBe(result.at);
   });
 
-  it("has exactly the eight keys, each a boolean, whatever the env holds", async () => {
+  it("has exactly the nine keys, each a boolean, whatever the env holds", async () => {
     for (const env of [{}, fullEnv(), { ...fullEnv(), E2E_MODE: "true" }]) {
       const configured = await configuredFor(env);
       expect(Object.keys(configured).sort()).toEqual(
@@ -104,6 +107,7 @@ describe("healthcheck configured map", () => {
           "e2eMode",
           "langfuse",
           "llm",
+          "resend",
           "servicenow",
           "slack",
           "supabase",
@@ -173,6 +177,15 @@ describe("healthcheck configured map", () => {
         servicenow: false,
         e2eMode: false,
       });
+    }
+  });
+
+  it("resend is true only when all three names are set", async () => {
+    expect((await configuredFor(fullEnv())).resend).toBe(true);
+    for (const name of FEATURES.resend) {
+      const partial: Record<string, string | undefined> = fullEnv();
+      delete partial[name];
+      expect(await configuredFor(partial)).toEqual({ ...allTrue, resend: false, e2eMode: false });
     }
   });
 

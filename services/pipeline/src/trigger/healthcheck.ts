@@ -21,6 +21,7 @@ const FEATURE_ENV_NAMES = {
     "SERVICENOW_PASSWORD",
     "SERVICENOW_DEFAULT_CALLER",
   ],
+  resend: ["RESEND_API_KEY", "REPLY_FROM", "REPLY_ALLOWED_RECIPIENTS"],
 } as const;
 
 type Feature = keyof typeof FEATURE_ENV_NAMES;
@@ -55,6 +56,7 @@ function readConfigured(env: EnvSource): HealthcheckConfigured {
     caps: feature("caps"),
     slack: feature("slack"),
     servicenow: feature("servicenow"),
+    resend: feature("resend"),
     e2eMode: env.E2E_MODE === "true",
   };
 }

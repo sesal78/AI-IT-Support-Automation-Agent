@@ -269,11 +269,12 @@ describe("getTicketView and probeSchema with reviews", () => {
     expect(view?.reviews).toEqual([]);
   });
 
-  it("probeSchema reports migration0005 true on the full stack", async () => {
+  it("probeSchema reports migration0005 and migration0006 true on the full stack", async () => {
     expect(await repos.probeSchema()).toEqual({
       database: true,
       migration0003: true,
       migration0005: true,
+      migration0006: true,
     });
   });
 });
