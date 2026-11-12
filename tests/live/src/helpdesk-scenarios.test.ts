@@ -7,9 +7,12 @@ import {
   duplicateSubmitScenario,
   L02_TICKETS,
   printerFaultScenario,
+  reconciliationScenario,
   shadowModeScenario,
 } from "./helpdesk-scenarios.ts";
 import type { Scenario } from "./runner.ts";
+import { createRegistry, selectScenarios } from "./runner.ts";
+import { scenarios } from "./scenarios.ts";
 import { startHelpdeskHarness, type HelpdeskHarness } from "./testing/helpdesk-harness.ts";
 import type { MockHelpdeskFaults } from "./testing/mock-helpdesk.ts";
 import { sysId } from "./testing/mock-servicenow.ts";
@@ -310,5 +313,167 @@ describe("T5.L.05 shadow mode", () => {
     expect(evidenceOf(report)["incidents"]).toBe(1);
     // The leaked incident is closed anyway.
     expect(h.data.incidents[0]!["state"]).toBe("7");
+  });
+});
+
+describe("T5.F.01 asleep instance and T5.O.01 reconciliation", () => {
+  it("T5.F.01 passes when the instance sleeps for 3 minutes and then creates one incident", async () => {
+    const h = await harness();
+    const { code, report } = await h.run(["--only", "T5.F.01"]);
+    expect(code).toBe(0);
+    expect(evidenceOf(report)).toMatchObject({
+      status: "incident_created",
+      incidents: 1,
+      createdAtMs: 181_000,
+      cleanupClosed: 1,
+      cleanupOpen: 0,
+      failedChecks: [],
+    });
+    expect(evidenceOf(report)["asleepEvents"]).toBe(3);
+    expect(h.data.incidents.every((i) => i["state"] === "7")).toBe(true);
+  });
+
+  it("T5.F.01 fails when no helpdesk_asleep event is written", async () => {
+    const h = await harness({ faults: { asleepWithoutEvent: true } });
+    const { code, report } = await h.run(["--only", "T5.F.01"]);
+    expect(code).toBe(1);
+    expect(failedChecks(report)).toContain("helpdesk-asleep-event");
+    expect(evidenceOf(report)["asleepEvents"]).toBe(0);
+  });
+
+  it("T5.F.01 fails when the ticket has no incident at the 10-minute limit", async () => {
+    const h = await harness({ faults: { asleepExtraMs: () => 480_000 } });
+    const { code, report } = await h.run(["--only", "T5.F.01"]);
+    expect(code).toBe(1);
+    expect(failedChecks(report)).toContain("incident-created-within-10m");
+    expect(evidenceOf(report)["status"]).not.toBe("incident_created");
+  });
+
+  it("T5.O.01 passes after the default scenarios and closes nothing itself", async () => {
+    const h = await harness();
+    const { code, report } = await h.run(["--phase", "5"]);
+    expect(code).toBe(0);
+    const reconciliation = report.scenarios.find((s) => s.id === "T5.O.01")!;
+    expect(reconciliation.status).toBe("pass");
+    expect(reconciliation.evidence).toMatchObject({
+      tickets: 6,
+      withIncident: 3,
+      ticketIncidents: 3,
+      wrongCount: [],
+      orphans: [],
+      truncated: false,
+    });
+    // Every incident of the run, including the contract suite's, is closed.
+    expect(h.data.incidents.every((i) => i["state"] === "7")).toBe(true);
+  });
+
+  it("T5.O.01 fails when an incident has no matching ticket", async () => {
+    const h = await harness({ faults: { orphan: (id) => id.endsWith(":L01:1") } });
+    const { code, report } = await h.run(["--only", "T5.L.01,T5.O.01"]);
+    expect(code).toBe(1);
+    const reconciliation = report.scenarios.find((s) => s.id === "T5.O.01")!;
+    expect(reconciliation.evidence["failedChecks"]).toEqual(["orphans"]);
+    expect(reconciliation.evidence["orphans"]).toHaveLength(1);
+  });
+
+  it("T5.O.01 finds an orphan created before the first helpdesk ticket", async () => {
+    const h = await harness();
+    const earlier: Scenario = {
+      id: "T9.L.01",
+      async run(context) {
+        await context.sleep(10_000);
+        h.data.incidents.push({
+          sys_id: sysId(9_001),
+          number: "INC0009001",
+          category: "software",
+          caller_id: sysId(1),
+          assignment_group: "",
+          short_description: "[E2E] orphan",
+          description: "d",
+          state: "7",
+          correlation_id: "11111111-2222-3333-4444-555555555555",
+          correlation_display: "ITS-000999",
+          sys_created_on: "2026-11-13 00:00:10",
+        });
+        await context.sleep(110_000);
+        return { status: "pass" };
+      },
+    };
+    const { report } = await h.run([], [earlier, printerFaultScenario, reconciliationScenario]);
+    expect(report.scenarios[2]!.status).toBe("fail");
+    expect(report.scenarios[2]!.evidence["orphans"]).toEqual(["INC0009001"]);
+  });
+
+  it("T5.O.01 refuses an incident on a ticket without an incident_created event", async () => {
+    const h = await harness({ faults: { syncRejected: () => true } });
+    const { report } = await h.run([], [approveRejectTimeoutScenario, reconciliationScenario]);
+    expect(report.scenarios[1]!.status).toBe("fail");
+    expect(report.scenarios[1]!.evidence["failedChecks"]).toContain("orphans");
+    expect(report.scenarios[1]!.evidence["orphans"]).toHaveLength(2);
+  });
+
+  it("T5.O.01 fails when a ticket has two incidents", async () => {
+    const h = await harness({ faults: { incidents: () => 2 } });
+    const { code, report } = await h.run(["--only", "T5.L.01,T5.O.01"]);
+    expect(code).toBe(1);
+    const reconciliation = report.scenarios.find((s) => s.id === "T5.O.01")!;
+    expect(reconciliation.evidence["failedChecks"]).toEqual(["ticket-incidents"]);
+    expect(reconciliation.evidence["wrongCount"]).toHaveLength(1);
+  });
+
+  it("T5.O.01 reports a full page instead of trusting it", async () => {
+    const h = await harness();
+    const page = Array.from({ length: 1_000 }, (_, i) => ({
+      sys_id: sysId(2_000 + i),
+      number: `INC${String(2_000 + i).padStart(7, "0")}`,
+      category: "software",
+      caller_id: sysId(1),
+      assignment_group: "",
+      short_description: "[E2E] page filler",
+      description: "d",
+      state: "7",
+      correlation_id: "11111111-2222-3333-4444-555555555555",
+      correlation_display: "ITS-000999",
+      sys_created_on: "2026-11-13 00:00:00",
+    }));
+    h.data.incidents.push(...page);
+    const { report } = await h.run(["--only", "T5.O.01"]);
+    expect(report.scenarios[0]!.evidence["truncated"]).toBe(true);
+    expect(report.scenarios[0]!.evidence["failedChecks"]).toContain("not-truncated");
+  });
+});
+
+describe("the phase 5 selection", () => {
+  const registry = createRegistry(scenarios);
+  const ids = (argv: string[]) => selectScenarios(registry, argv).map((s) => s.id);
+
+  it("--phase 5 selects the six light phase 5 scenarios, with T5.O.01 last", () => {
+    expect(ids(["--phase", "5"])).toEqual([
+      "T5.C.02",
+      "T5.L.01",
+      "T5.L.03",
+      "T5.L.04",
+      "T5.L.05",
+      "T5.O.01",
+    ]);
+  });
+
+  it("the three heavy phase 5 scenarios are left out unless named", () => {
+    for (const id of ["T5.L.02", "T5.L.08", "T5.F.01"]) {
+      expect(registry.get(id)?.heavy).toBe(true);
+      expect(ids(["--phase", "5"])).not.toContain(id);
+      expect(ids([])).not.toContain(id);
+      expect(ids(["--only", id])).toEqual([id]);
+    }
+  });
+
+  it("--phase 5 creates 6 tickets with 7 test-ticket requests and no form submit", async () => {
+    const h = await harness();
+    const { code } = await h.run(["--phase", "5"]);
+    expect(code).toBe(0);
+    // The spec's "6 requests" counts tickets; T5.L.03 sends its testId twice.
+    expect(h.helpdesk.tickets.size).toBe(6);
+    expect(h.count("POST", "/api/internal/test-tickets")).toBe(7);
+    expect(h.count("POST", "/api/tickets")).toBe(0);
   });
 });

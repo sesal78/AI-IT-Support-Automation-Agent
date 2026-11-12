@@ -95,6 +95,7 @@ describe("selectScenarios", () => {
       "T4.F.01:finish",
       "T5.L.02",
       "T5.L.08",
+      "T5.F.01",
     ]);
   });
 });

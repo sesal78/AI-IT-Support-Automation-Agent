@@ -28,6 +28,12 @@ export interface MockHelpdeskFaults {
   readonly assignmentGroup?: (testId: string) => string;
   /** The triage route instead of the text's (T5.L.02: a live triage miss). */
   readonly route?: (testId: string) => "auto" | "review";
+  /** Writes no `helpdesk_asleep` event (T5.F.01 negative). */
+  readonly asleepWithoutEvent?: boolean;
+  /** Wakes the instance this much later than the override says (T5.F.01 negative). */
+  readonly asleepExtraMs?: (testId: string) => number;
+  /** Adds one incident with a correlation_id no ticket owns (T5.O.01 negative). */
+  readonly orphan?: (testId: string) => boolean;
   /** Creates the incident although the ticket is in shadow mode (T5.L.05 negative). */
   readonly createInShadow?: boolean;
   /** Creates an incident for a rejected or timed-out ticket (T5.L.04 negative). */
@@ -64,6 +70,8 @@ export interface MockHelpdeskTicket {
   readonly triage: MockTriage;
   readonly shadowMode: boolean;
   readonly reviewTimeoutMs: number;
+  /** From `testOverrides.helpdeskAsleepMinutes`: the instance sleeps this long. */
+  readonly asleepMinutes: number | null;
   status: string;
   events: Array<{ type: string; at: number }>;
   review: {
@@ -78,6 +86,7 @@ export interface MockHelpdeskTicket {
   syncAt: number | null;
   syncStartedAt: number | null;
   pendingDecision: { decision: "approve" | "reject"; at: number } | null;
+  asleepAttempts: number;
   incident: { number: string; sysId: string } | null;
 }
 
@@ -174,6 +183,24 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
     }
   }
 
+  /** Adds one incident with a correlation_id no ticket owns, at `at`. */
+  function createOrphan(at: number): void {
+    const n = data.incidents.length + 1;
+    data.incidents.push({
+      sys_id: sysId(900 + n),
+      number: `INC${String(n).padStart(7, "0")}`,
+      category: "software",
+      caller_id: sysId(1),
+      assignment_group: "",
+      short_description: `${E2E_PREFIX} orphan`,
+      description: "Orphan incident",
+      state: "1",
+      correlation_id: randomUUID(),
+      correlation_display: `ITS-${String(n).padStart(6, "0")}`,
+      sys_created_on: snStamp(at),
+    });
+  }
+
   /** Moves every ticket on to `at`, writing each step at its own time. */
   function advance(at: number): void {
     for (const t of tickets.values()) {
@@ -248,6 +275,31 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
       }
       if (t.status !== "helpdesk_pending" || t.syncStartedAt === null) continue;
 
+      // While the instance sleeps, the ticket waits at helpdesk_pending and the
+      // sync writes helpdesk_asleep on each attempt (resolved point 9).
+      if (t.asleepMinutes !== null) {
+        const wakeAt =
+          t.createdAt + t.asleepMinutes * 60_000 + (faults.asleepExtraMs?.(t.testId) ?? 0);
+        let attempts = t.asleepAttempts;
+        for (
+          let attemptAt = t.syncStartedAt + attempts * 60_000;
+          attemptAt < wakeAt && attemptAt <= at;
+          attemptAt += 60_000
+        ) {
+          attempts += 1;
+          if (faults.asleepWithoutEvent !== true) push(t, "helpdesk_asleep", attemptAt);
+        }
+        t.asleepAttempts = attempts;
+        const incidentAt = wakeAt + INCIDENT_MS;
+        if (at < incidentAt) continue;
+        createIncidents(t, incidentAt, faults.incidents?.(t.testId) ?? 1);
+        if (faults.orphan?.(t.testId) === true) createOrphan(incidentAt);
+        push(t, "incident_created", incidentAt);
+        push(t, "helpdesk_note_added", incidentAt);
+        t.status = "incident_created";
+        continue;
+      }
+
       const doneAt = t.syncStartedAt + (faults.incidentAfterMs?.(t.testId) ?? INCIDENT_MS);
       if (at < doneAt) continue;
       if (t.shadowMode) {
@@ -256,6 +308,7 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
         t.status = "incident_skipped_shadow";
       } else {
         createIncidents(t, doneAt, faults.incidents?.(t.testId) ?? 1);
+        if (faults.orphan?.(t.testId) === true) createOrphan(doneAt);
         push(t, "incident_created", doneAt);
         push(t, "helpdesk_note_added", doneAt);
         t.status = "incident_created";
@@ -277,7 +330,10 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
         },
       };
     }
-    const overrides = (body.testOverrides ?? {}) as { shadowMode?: unknown };
+    const overrides = (body.testOverrides ?? {}) as {
+      shadowMode?: unknown;
+      helpdeskAsleepMinutes?: unknown;
+    };
     const title = redact(String(body.title)).text;
     const description = redact(String(body.description)).text;
     const triage = defaultHelpdeskTriage(title, description);
@@ -292,6 +348,10 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
       triage: { ...triage, route: faults.route?.(testId) ?? triage.route },
       shadowMode: overrides.shadowMode === true,
       reviewTimeoutMs: options.reviewTimeoutMs ?? REVIEW_TIMEOUT_MS,
+      asleepMinutes:
+        typeof overrides.helpdeskAsleepMinutes === "number"
+          ? overrides.helpdeskAsleepMinutes
+          : null,
       status: "new",
       events: [],
       review: null,
@@ -299,6 +359,7 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
       syncAt: null,
       syncStartedAt: null,
       pendingDecision: null,
+      asleepAttempts: 0,
       incident: null,
     };
     tickets.set(testId, ticket);

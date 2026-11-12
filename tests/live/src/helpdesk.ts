@@ -31,7 +31,7 @@ export interface HelpdeskTicketOptions {
 }
 
 const tickets = new WeakMap<ScenarioContext, HelpdeskTicket[]>();
-const runStarted = new WeakMap<ScenarioContext, number>();
+const foreign = new WeakMap<ScenarioContext, Set<string>>();
 // One counter per scenario: two creations in flight must not take one number.
 const counters = new WeakMap<ScenarioContext, Map<string, number>>();
 
@@ -49,15 +49,25 @@ export const createdHelpdeskTickets = (context: ScenarioContext): readonly Helpd
   tickets.get(context) ?? [];
 
 /**
- * When this run first created a helpdesk ticket, in ms. It is read once, at
- * the start, so T5.O.01 reconciles the whole run and not only its own part.
+ * Records ticket IDs another scenario of this run owns without an app ticket
+ * (the T5.C.02 contract incidents). T5.O.01 reports them as foreign, not as
+ * orphans: the contract scenario created and closed them itself.
+ */
+export function noteForeignTickets(context: ScenarioContext, ids: readonly string[]): void {
+  const set = foreign.get(context) ?? new Set<string>();
+  for (const id of ids) set.add(id);
+  foreign.set(context, set);
+}
+
+/** The ticket IDs a scenario of this run owns without an app ticket. */
+export const foreignTickets = (context: ScenarioContext): ReadonlySet<string> =>
+  foreign.get(context) ?? new Set<string>();
+
+/**
+ * The runner's start time, before any scenario or helpdesk ticket, in ms.
  */
 export function runStartMs(context: ScenarioContext): number {
-  const started = runStarted.get(context);
-  if (started !== undefined) return started;
-  const now = context.now();
-  runStarted.set(context, now);
-  return now;
+  return context.startedAt;
 }
 
 /**
@@ -71,7 +81,6 @@ export async function createHelpdeskTicket(
   scenarioId: string,
   options: HelpdeskTicketOptions,
 ): Promise<HelpdeskTicket> {
-  runStartMs(context);
   const n = options.n ?? nextNumber(context, scenarioId);
   const testId = `${context.runId}:${scenarioId}:${n}`;
   const { ticketId } = await context.client.createTestTicket({

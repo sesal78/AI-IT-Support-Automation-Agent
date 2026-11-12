@@ -46,6 +46,8 @@ export interface Incident {
   readonly short_description: string;
   readonly description: string;
   readonly state: string;
+  /** The ticket ID the connector copied in; the reconciliation key. */
+  readonly correlation_id: string;
   /** The ticket number the connector copied into `correlation_display` (P5-T5c). */
   readonly correlation_display: string;
   /** Display time, `YYYY-MM-DD HH:MM:SS`, for the run-start window (P5-T5c, T5.O.01). */
@@ -62,6 +64,7 @@ const INCIDENT_FIELDS = [
   "short_description",
   "description",
   "state",
+  "correlation_id",
   "correlation_display",
   "sys_created_on",
 ] as const;

@@ -8,11 +8,13 @@ import {
   closeIncidents,
   createHelpdeskTicket,
   createdHelpdeskTickets,
+  foreignTickets,
   incidentCreatedAt,
   type IncidentCleanup,
   PERSONAS,
   personaEmail,
   POLL_MS,
+  runStartMs,
   serviceNowNotRun,
   serviceNowOf,
   waitForIncident,
@@ -493,6 +495,144 @@ export const triageGroupScenario: Scenario = {
   },
 };
 
+/** An incident must appear within this time after the instance wakes (T5.F.01). */
+export const ASLEEP_INCIDENT_LIMIT_MS = 600_000;
+/** A ticket still without an incident after this is also reported as late. */
+export const ASLEEP_WAIT_MS = 660_000;
+
+/**
+ * T5.F.01 (DoD 7, resolved points 9-10): with `helpdeskAsleepMinutes: 3` the
+ * instance reports asleep, the ticket waits at `helpdesk_pending`, at least one
+ * `helpdesk_asleep` event is written, and one incident appears within 10
+ * minutes.
+ */
+export const asleepInstanceScenario: Scenario = {
+  id: "T5.F.01",
+  heavy: true,
+  async run(context) {
+    const notRun = serviceNowNotRun(context);
+    if (notRun) return notRun;
+    const sn = serviceNowOf(context);
+    return withCleanup(context, sn, async (ticketIds) => {
+      const checks: string[] = [];
+      const evidence: Evidence = {};
+      const ticket = await createHelpdeskTicket(context, "F01", {
+        persona: PERSONAS.carol,
+        text: PRINTER_FAULT,
+        testOverrides: { helpdeskAsleepMinutes: 3 },
+      });
+      ticketIds.push(ticket.ticketId);
+
+      const asleepEvents = (view: InternalTicketView) =>
+        view.events.filter((e) => e.type === "helpdesk_asleep").length;
+      let sawPendingWhileAsleep = false;
+      let asleepCount = 0;
+      const start = context.now();
+      let view = await context.client.ticket(ticket.ticketId);
+      for (;;) {
+        asleepCount = Math.max(asleepCount, asleepEvents(view));
+        if (view.status === "helpdesk_pending" && asleepEvents(view) > 0) {
+          sawPendingWhileAsleep = true;
+        }
+        const done =
+          view.status === "incident_created" ||
+          view.status === "incident_skipped_shadow" ||
+          view.status === "failed";
+        if (done || context.now() - start >= ASLEEP_WAIT_MS) break;
+        await context.sleep(POLL_MS);
+        view = await context.client.ticket(ticket.ticketId);
+      }
+
+      const createdAt = Date.parse(view.createdAt);
+      const created = incidentCreatedAt(view);
+      const incidents = await sn.incidentsByCorrelationId(ticket.ticketId);
+      if (asleepCount === 0) checks.push("helpdesk-asleep-event");
+      if (!sawPendingWhileAsleep) checks.push("helpdesk-pending-while-asleep");
+      if (view.status !== "incident_created") checks.push("status-incident-created");
+      if (created === null || created - createdAt > ASLEEP_INCIDENT_LIMIT_MS) {
+        checks.push("incident-created-within-10m");
+      }
+      if (incidents.length !== 1) checks.push("one-incident");
+      Object.assign(evidence, {
+        ticketId: ticket.ticketId,
+        incidentNumber: incidents[0]?.number ?? null,
+        status: view.status,
+        asleepEvents: asleepCount,
+        createdAtMs: created === null ? null : created - createdAt,
+        incidents: incidents.length,
+        aiCallCount: view.aiCallCount,
+      });
+      return { checks, evidence };
+    });
+  },
+};
+
+/**
+ * T5.O.01 (runs last): every ticket of this run with an `incident_created`
+ * event has exactly one incident whose `correlation_id` is the ticket ID, and
+ * every `[E2E]` incident created since the run started has such a ticket. It
+ * reads the closed incidents too, reports a truncated read instead of trusting
+ * a partial list, and closes nothing.
+ */
+export const reconciliationScenario: Scenario = {
+  id: "T5.O.01",
+  async run(context) {
+    const notRun = serviceNowNotRun(context);
+    if (notRun) return notRun;
+    const sn = serviceNowOf(context);
+    const checks: string[] = [];
+    const tickets = createdHelpdeskTickets(context);
+    const owned = new Set<string>();
+    const foreign = foreignTickets(context);
+    const withoutIncident: string[] = [];
+    const wrongCount: string[] = [];
+    let withIncident = 0;
+    let incidentCount = 0;
+    let aiCallCount = 0;
+
+    for (const ticket of tickets) {
+      const view = await context.client.ticket(ticket.ticketId);
+      aiCallCount += view.aiCallCount;
+      if (!view.events.some((e) => e.type === "incident_created")) {
+        withoutIncident.push(ticket.ticketId);
+        continue;
+      }
+      withIncident += 1;
+      owned.add(ticket.ticketId);
+      const incidents = await sn.incidentsByCorrelationId(ticket.ticketId);
+      incidentCount += incidents.length;
+      if (incidents.length !== 1) wrongCount.push(ticket.ticketId);
+    }
+    if (wrongCount.length > 0) checks.push("ticket-incidents");
+
+    let orphans: string[] = [];
+    let truncated = false;
+    try {
+      const page = await sn.e2eIncidentsSince(runStartMs(context));
+      truncated = page.truncated;
+      orphans = page.incidents
+        .filter((i) => !owned.has(i.correlation_id) && !foreign.has(i.correlation_id))
+        .map((i) => i.number);
+    } catch {
+      checks.push("incident-read");
+    }
+    if (truncated) checks.push("not-truncated");
+    if (orphans.length > 0) checks.push("orphans");
+
+    return result(checks, {
+      tickets: tickets.length,
+      withIncident,
+      withoutIncident,
+      ticketIncidents: incidentCount,
+      wrongCount,
+      orphans,
+      foreign: foreign.size,
+      truncated,
+      aiCallCount,
+    });
+  },
+};
+
 export const helpdeskScenarios: readonly Scenario[] = [
   printerFaultScenario,
   duplicateSubmitScenario,
@@ -500,4 +640,6 @@ export const helpdeskScenarios: readonly Scenario[] = [
   shadowModeScenario,
   autoIncidentLatencyScenario,
   triageGroupScenario,
+  asleepInstanceScenario,
+  reconciliationScenario,
 ];
