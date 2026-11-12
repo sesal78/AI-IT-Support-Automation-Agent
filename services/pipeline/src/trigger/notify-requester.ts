@@ -1,14 +1,32 @@
 import { errorClassName } from "@ai-it-support/ai";
-import type { Repositories, Ticket, Triage } from "@ai-it-support/db";
-import type { NotificationKind, NotifyRequesterPayload } from "@ai-it-support/shared";
-import { AbortTaskRunError } from "@trigger.dev/sdk";
+import {
+  createDbClient,
+  createRepositories,
+  dbEnvShape,
+  type Repositories,
+  type Ticket,
+  type Triage,
+} from "@ai-it-support/db";
+import {
+  NOTIFY_REQUESTER_TASK_ID,
+  notifyRequesterPayloadSchema,
+  parseEnv,
+  replyEnvShape,
+  type NotificationKind,
+  type NotifyRequesterPayload,
+} from "@ai-it-support/shared";
+import { AbortTaskRunError, logger, schemaTask } from "@trigger.dev/sdk";
 import { z } from "zod";
 import {
   buildReplyEmail,
+  createResendClient,
+  EmailProviderError,
   isAllowedRecipient,
   parseRecipient,
   type ResendClient,
 } from "../email/index.js";
+
+export type { NotifyRequesterPayload };
 
 export type NotifyRequesterResult = {
   ticketId: string;
@@ -46,7 +64,7 @@ const fixStepsSchema = z.object({ steps: z.array(z.string()) });
  * the triage flag. The run aborts without it; the failure hook records
  * nothing without it, so a refused trigger can never fill the ticket's slot.
  */
-export function isEligible(kind: NotificationKind, ticket: Ticket, triage: Triage | null): boolean {
+function isEligible(kind: NotificationKind, ticket: Ticket, triage: Triage | null): boolean {
   if (["rejected", "escalated_manual", "failed"].includes(ticket.status)) return false;
   return kind === "incident_reply"
     ? ticket.status === "incident_created"
@@ -85,7 +103,7 @@ async function storedNumber(
  * network and timeout, waiting 1 s then 2 s); the task makes up to 3 attempts.
  * A repeated key makes the provider return its first result, which bridges a
  * lost reply or a failed row write inside the provider's key window (24 hours).
- The event follows the
+ * Provider errors follow the task's three-attempt rule. The event follows the
  * row and is written only by the run that created the row, so a crash between
  * the two leaves the row (the proof) without its event.
  *
@@ -145,7 +163,7 @@ export async function runNotifyRequester(
       ? fixStepsSchema.safeParse(triage.suggested_fix)
       : null;
   if (fix !== null && !fix.success) {
-    throw new Error("notify-requester: the saved fix steps have an unexpected shape");
+    throw new AbortTaskRunError("notify-requester: the saved fix steps have an unexpected shape");
   }
   let email: ReturnType<typeof buildReplyEmail>;
   try {
@@ -185,3 +203,40 @@ export async function runNotifyRequester(
   log.info("notify-requester: sent", { ticketId, kind });
   return done("sent");
 }
+
+const notifyRequesterDepsEnvShape = { ...dbEnvShape, ...replyEnvShape };
+
+/** Validates env and builds the real deps. Invalid variables throw, naming the variable. */
+export function createNotifyRequesterDeps(
+  source: Record<string, string | undefined>,
+): NotifyRequesterDeps {
+  const env = parseEnv(notifyRequesterDepsEnvShape, source);
+  return {
+    repos: createRepositories(createDbClient(source)),
+    resend: createResendClient({ apiKey: env.RESEND_API_KEY }),
+    from: env.REPLY_FROM,
+    allowedRecipients: env.REPLY_ALLOWED_RECIPIENTS,
+    logger,
+  };
+}
+
+/**
+ * Task options, exported so a test can assert the wiring. Sends the requester
+ * one reply email per ticket and kind. Three attempts with exponential backoff;
+ * env is validated at the start of each run.
+ */
+export const notifyRequesterOptions = {
+  id: NOTIFY_REQUESTER_TASK_ID,
+  schema: notifyRequesterPayloadSchema,
+  retry: {
+    maxAttempts: 3,
+    factor: 2,
+    minTimeoutInMs: 1000,
+    maxTimeoutInMs: 10_000,
+    randomize: true,
+  },
+  run: async (payload: NotifyRequesterPayload) =>
+    runNotifyRequester(payload, createNotifyRequesterDeps(process.env)),
+};
+
+export const notifyRequester = schemaTask(notifyRequesterOptions);

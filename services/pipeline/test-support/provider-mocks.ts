@@ -121,6 +121,18 @@ export const REVIEW_ENV = {
   SLACK_REVIEW_TIMEOUT: "24h",
 };
 
+/**
+ * The reply-email env of notify-requester: a test-shaped Resend key and an
+ * allow-list of one fake address. The Resend origin is mocked by the caller
+ * that wants a run to send.
+ */
+export const REPLY_RECIPIENT = "allowed.requester@example.test";
+export const REPLY_ENV = {
+  RESEND_API_KEY: ["re", "x".repeat(24)].join("_"),
+  REPLY_FROM: "help@example.test",
+  REPLY_ALLOWED_RECIPIENTS: REPLY_RECIPIENT,
+};
+
 /** The Slack Web API: chat.postMessage answers a new ts each time, chat.update ok. */
 export function mockSlack(recorder: EgressRecorder): void {
   let posted = 0;
