@@ -174,6 +174,8 @@ function harness(options: DepsOptions = {}) {
     },
     now: () => clock,
     alert: createPipelineAlert(env, testRepos(), { logger: { error: () => undefined } }),
+    // P5-T8b: the reply email trigger is not sent here (the runner tests cover it).
+    triggerNotify: async () => undefined,
     logger: quiet,
   };
   return { deps, waits };
@@ -238,6 +240,7 @@ function builtinDeps(options: { shadow?: boolean } = {}): HelpdeskSyncDeps {
   return {
     ...createHelpdeskSyncDeps(env),
     alert: createPipelineAlert(env, testRepos(), { logger: { error: () => undefined } }),
+    triggerNotify: async () => undefined,
     logger: quiet,
   };
 }

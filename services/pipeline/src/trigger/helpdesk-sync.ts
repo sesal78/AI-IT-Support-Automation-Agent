@@ -35,6 +35,11 @@ import { asleepUntil, withAsleepSwitch } from "../helpdesk/asleep-switch.js";
 import { checkSync } from "../helpdesk/sync-guard.js";
 import { buildSyncNote } from "../helpdesk/sync-note.js";
 import { createFailureAlert, createPipelineAlert } from "../pipeline-alert.js";
+import {
+  enqueueNotify,
+  triggerNotifyRequesterTask,
+  type TriggerNotifyFn,
+} from "./notify-enqueue.js";
 
 // Payload type is shared with the caller that triggers it (packages/shared).
 export const helpdeskSyncPayload = z.object({
@@ -83,6 +88,8 @@ export interface HelpdeskSyncDeps {
   e2eMode: boolean;
   /** Never throws (createAlertSink). */
   alert: AlertFn;
+  /** Starts the reply email after `incident_created` (P5-T8b). Replaced in tests. */
+  triggerNotify: TriggerNotifyFn;
   logger: { info: LogFn; warn: LogFn; error: LogFn };
 }
 
@@ -135,7 +142,11 @@ function classify(error: unknown): { code: string; alert: FailureAlert } | null 
  * (`setTicketHelpdesk`; the built-in ticket lives in its own tables and never
  * uses the ServiceNow columns), then `caller_defaulted` (when flagged),
  * `incident_created`, the triage work note, `helpdesk_note_added`, and the
- * status `incident_created`.
+ * status `incident_created`, then the reply email: `notify-requester
+ * { kind: "incident_reply" }` with the key `notify-requester:<ticketId>:incident_reply`
+ * (never after shadow mode). A failed trigger is `notify_enqueue_failed` and an
+ * alert, never a failed run. A retry that finds the ticket already
+ * `incident_created` starts the email again with the same key and does nothing else.
  *
  * Every event is written once: a retried attempt reads the event types first.
  * `InstanceAsleepError` writes `helpdesk_asleep { attempt }`, keeps
@@ -158,6 +169,17 @@ export async function runHelpdeskSync(
 ): Promise<HelpdeskSyncResult> {
   const { ticketId } = payload;
   const { repos, logger: log } = deps;
+  const notify = () =>
+    enqueueNotify(
+      { ticketId, kind: "incident_reply" },
+      {
+        task: "helpdesk-sync",
+        repos,
+        triggerNotify: deps.triggerNotify,
+        alert: deps.alert,
+        logger: log,
+      },
+    );
 
   const ticket = await repos.getTicket(ticketId);
   if (!ticket) throw new AbortTaskRunError(`helpdesk-sync: ticket ${ticketId} not found`);
@@ -169,6 +191,9 @@ export async function runHelpdeskSync(
     return { ticketId, refused: true };
   }
   if (decision === "done") {
+    // Retry recovery (P5-T8b): the status was saved, but the reply email may not
+    // have been started. The same key makes this a no-op when it was.
+    if (ticket.status === "incident_created") await notify();
     log.info("helpdesk-sync: skipped", { ticketId, status: ticket.status });
     return { ticketId, skipped: true };
   }
@@ -275,6 +300,8 @@ export async function runHelpdeskSync(
     }
     await repos.setTicketStatus(ticketId, "incident_created");
     log.info("helpdesk-sync: incident created", { ticketId, attempt });
+    // P5-T8b: never fails the run; a failed trigger is an event and an alert.
+    await notify();
     return { ticketId, incident: ref };
   };
 
@@ -371,6 +398,7 @@ export function createHelpdeskSyncDeps(
     shadowMode: env.SHADOW_MODE,
     e2eMode: env.E2E_MODE,
     alert: createPipelineAlert(source, repos),
+    triggerNotify: triggerNotifyRequesterTask,
     logger,
   };
 }

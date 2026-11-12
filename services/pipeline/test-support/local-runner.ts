@@ -89,7 +89,14 @@ import {
   onNotifyRequesterFailure,
   runNotifyRequester,
 } from "../src/trigger/notify-requester.js";
-import { REPLY_ENV, REVIEW_ENV, mockProviders, mockSlack, pipelineEnv } from "./provider-mocks.js";
+import {
+  REPLY_ENV,
+  REVIEW_ENV,
+  mockProviders,
+  mockResend,
+  mockSlack,
+  pipelineEnv,
+} from "./provider-mocks.js";
 import { SERVICENOW_ENV, mockServiceNow, type ServiceNowMock } from "./servicenow-mock.js";
 import { createTokenBroker, type TokenBroker } from "./token-broker.js";
 
@@ -280,6 +287,7 @@ export async function startLocalRunner(options: LocalRunnerOptions): Promise<Loc
   if (owned) egress.start();
   mockProviders(egress);
   mockSlack(egress);
+  mockResend(egress);
   const serviceNow = mockServiceNow(egress);
 
   const env: RunEnv = {

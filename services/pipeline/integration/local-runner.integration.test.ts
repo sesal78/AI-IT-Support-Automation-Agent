@@ -2,6 +2,7 @@ import {
   ASSIGNMENT_GROUPS,
   HELPDESK_SYNC_TASK_ID,
   INTAKE_TICKET_TASK_ID,
+  NOTIFY_REQUESTER_TASK_ID,
   REVIEW_TICKET_TASK_ID,
   TRIAGE_TICKET_TASK_ID,
 } from "@ai-it-support/shared";
@@ -10,6 +11,7 @@ import { HttpResponse } from "msw";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { healthcheck } from "../src/trigger/healthcheck.js";
 import { helpdeskSyncIdempotencyKey } from "../src/trigger/helpdesk-enqueue.js";
+import { notifyRequesterIdempotencyKey } from "../src/trigger/notify-enqueue.js";
 import { triageIdempotencyKey, type intakeTicket } from "../src/trigger/intake-ticket.js";
 import type { triageTicket } from "../src/trigger/triage-ticket.js";
 import { egress } from "../test-support/egress.js";
@@ -283,6 +285,29 @@ describe("local Trigger.dev runner", () => {
         "incident_created",
         "helpdesk_note_attempted",
         "helpdesk_note_added",
+        // P5-T8b: the requester is not on REPLY_ALLOWED_RECIPIENTS, so the reply
+        // email run records a skip and sends nothing.
+        "notification_skipped",
+      ]);
+      expect(requestsTo("api.resend.com")).toEqual([]);
+      const notifyKey = await idempotencyKeys.create(
+        notifyRequesterIdempotencyKey(ticketId, "incident_reply"),
+        { scope: "global" },
+      );
+      expect(own.runs().filter((run) => run.idempotencyKey === notifyKey)).toEqual([
+        expect.objectContaining({ taskId: NOTIFY_REQUESTER_TASK_ID, status: "COMPLETED" }),
+      ]);
+      const notifications = await sql().query(
+        "select kind, status, reason, provider_id from itsupport.notifications where ticket_id = $1",
+        [ticketId],
+      );
+      expect(notifications.rows).toEqual([
+        {
+          kind: "incident_reply",
+          status: "skipped",
+          reason: "not_allow_listed",
+          provider_id: null,
+        },
       ]);
 
       // The sync ran once, under the per-ticket key the triage run passed on.
