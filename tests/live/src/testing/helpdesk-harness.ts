@@ -28,6 +28,8 @@ export interface HelpdeskHarnessOptions {
   readonly delayMs?: number;
   /** False leaves the three ServiceNow variables unset (a `not_run` case). */
   readonly withServiceNow?: boolean;
+  /** False leaves the four Slack variables unset (a `not_run` case). */
+  readonly withSlack?: boolean;
 }
 
 export interface HelpdeskHarness {
@@ -81,6 +83,7 @@ export async function startHelpdeskHarness(
   const helpdesk = createMockHelpdesk({
     now,
     data,
+    channelId: TEST_SLACK.channelId,
     ...(options.faults === undefined ? {} : { faults: options.faults }),
   });
   const e2e = await startMockE2e({
@@ -94,7 +97,7 @@ export async function startHelpdeskHarness(
   });
   const env = {
     ...values,
-    ...slackVars,
+    ...(options.withSlack === false ? {} : slackVars),
     ...(options.withServiceNow === false ? {} : snVars),
     E2E_BASE_URL: e2e.origin,
   };

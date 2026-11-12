@@ -11,12 +11,16 @@ import {
   type IncidentCleanup,
   PERSONAS,
   personaEmail,
+  POLL_MS,
   serviceNowNotRun,
   serviceNowOf,
   waitForIncident,
 } from "./helpdesk.ts";
 import { result } from "./pipeline.ts";
+import { SIGN, slackNotRun } from "./review-flow.ts";
 import { E2E_PREFIX, type E2eServiceNow } from "./servicenow.ts";
+import { createSlackSigner, type Decision, type SendResult } from "./slack-signer.ts";
+import type { InternalTicketView } from "@ai-it-support/shared";
 
 /** DoD table entry 1 and 2: a printer fault reaches its incident this fast. */
 export const INCIDENT_DEADLINE_MS = 60_000;
@@ -151,7 +155,204 @@ export const duplicateSubmitScenario: Scenario = {
   },
 };
 
+/** A ready review: the review with a card ts, or undefined when it never came. */
+interface ReadyReview {
+  readonly view: InternalTicketView;
+  readonly review: InternalTicketView["reviews"][number] | undefined;
+}
+
+async function waitForReview(context: ScenarioContext, ticketId: string): Promise<ReadyReview> {
+  const start = context.now();
+  for (;;) {
+    const view = await context.client.ticket(ticketId);
+    const review = view.reviews.find((r) => r.kind === "triage" && r.slackTs !== null);
+    if (view.status === "review_pending" && review !== undefined) return { view, review };
+    if (view.status === "failed" || context.now() - start >= INCIDENT_WAIT_MS) {
+      return { view, review };
+    }
+    await context.sleep(POLL_MS);
+  }
+}
+
+async function waitForStatus(
+  context: ScenarioContext,
+  ticketId: string,
+  status: string,
+  limitMs: number,
+): Promise<InternalTicketView> {
+  const start = context.now();
+  for (;;) {
+    const view = await context.client.ticket(ticketId);
+    if (view.status === status || view.status === "failed") return view;
+    if (context.now() - start >= limitMs) return view;
+    await context.sleep(POLL_MS);
+  }
+}
+
+const eventAt = (view: InternalTicketView, type: string): number | null => {
+  const event = view.events.find((e) => e.type === type);
+  return event === undefined ? null : Date.parse(event.at);
+};
+
+/** Signs one decision as the e2e reviewer (P4-T6 helper) and sends it. */
+async function sendDecision(
+  context: ScenarioContext,
+  review: { readonly id: string; readonly slackTs: string | null },
+  decision: Decision,
+): Promise<SendResult> {
+  const signer = createSlackSigner(context.config, { client: context.client, now: context.now });
+  return signer.send(
+    signer.signedDecision({ reviewId: review.id, slackTs: review.slackTs!, decision }),
+  );
+}
+
+/** How long a recorded decision may take to show in the view (P4 live value). */
+export const DECISION_LIMIT_MS = 15_000;
+/** How long an undecided review may take to reach `escalated_manual` (2m e2e + lag). */
+export const ESCALATION_LIMIT_MS = 240_000;
+/** After `rejected` or `escalated_manual`, incidents are checked after this wait. */
+export const QUIET_MS = 60_000;
+
+/** An HR complaint from demo.erin goes to review (plan §4.2). */
+export const HR_COMPLAINT = {
+  title: "Complaint about my manager",
+  description:
+    "I want to raise an HR complaint about repeated comments from my line manager. " +
+    "Please handle this confidentially.",
+};
+
+/**
+ * T5.L.04 (DoD 4): three HR tickets from demo.erin. A signed approve gets one
+ * incident within 60 s of the decision; a signed reject and a ticket left to
+ * the 2-minute timeout get none, checked 60 s after each end state.
+ */
+export const approveRejectTimeoutScenario: Scenario = {
+  id: "T5.L.04",
+  async run(context) {
+    const notRun = slackNotRun(context, SIGN) ?? serviceNowNotRun(context);
+    if (notRun) return notRun;
+    const sn = serviceNowOf(context);
+    return withCleanup(context, sn, async (ticketIds) => {
+      const checks: string[] = [];
+      const evidence: Evidence = {};
+      const create = () =>
+        createHelpdeskTicket(context, "L04", { persona: PERSONAS.erin, text: HR_COMPLAINT });
+      const [a, b, c] = [await create(), await create(), await create()];
+      ticketIds.push(a.ticketId, b.ticketId, c.ticketId);
+
+      const readyA = await waitForReview(context, a.ticketId);
+      const readyB = await waitForReview(context, b.ticketId);
+      const readyC = await waitForReview(context, c.ticketId);
+      if (
+        readyA.review === undefined ||
+        readyB.review === undefined ||
+        readyC.review === undefined
+      ) {
+        return { checks: [...checks, "review-ready"], evidence };
+      }
+
+      // A: a signed approve, then one incident within 60 s of the decision.
+      const sentA = await sendDecision(context, readyA.review, "approve");
+      const approved = await waitForStatus(context, a.ticketId, "approved", DECISION_LIMIT_MS);
+      const aView = await waitForIncident(context, a.ticketId, INCIDENT_WAIT_MS);
+      const approvedAt = eventAt(approved, "review_decided");
+      const createdA = incidentCreatedAt(aView);
+      const incidentsA = await sn.incidentsByCorrelationId(a.ticketId);
+      if (sentA.status !== 200 || sentA.outcome !== "recorded") checks.push("approved-recorded");
+      if (aView.status !== "incident_created") checks.push("approved-incident");
+      if (
+        approvedAt === null ||
+        createdA === null ||
+        createdA - approvedAt > INCIDENT_DEADLINE_MS
+      ) {
+        checks.push("approved-within-60s");
+      }
+      if (incidentsA.length !== 1) checks.push("approved-one-incident");
+
+      // B: a signed reject, then no incident 60 s later.
+      const sentB = await sendDecision(context, readyB.review, "reject");
+      const rejected = await waitForStatus(context, b.ticketId, "rejected", DECISION_LIMIT_MS);
+      const rejectedAt = eventAt(rejected, "review_decided");
+      if (rejectedAt !== null && rejectedAt + QUIET_MS > context.now()) {
+        await context.sleep(rejectedAt + QUIET_MS - context.now());
+      }
+      const incidentsB = await sn.incidentsByCorrelationId(b.ticketId);
+      if (sentB.status !== 200 || sentB.outcome !== "recorded") checks.push("rejected-recorded");
+      if (rejected.status !== "rejected") checks.push("rejected-status");
+      if (incidentsB.length !== 0) checks.push("rejected-no-incident");
+
+      // C: no decision, so the 2-minute timeout escalates it; no incident 60 s later.
+      const escalated = await waitForStatus(
+        context,
+        c.ticketId,
+        "escalated_manual",
+        ESCALATION_LIMIT_MS,
+      );
+      const timeoutAt = eventAt(escalated, "review_timed_out");
+      if (timeoutAt !== null && timeoutAt + QUIET_MS > context.now()) {
+        await context.sleep(timeoutAt + QUIET_MS - context.now());
+      }
+      const incidentsC = await sn.incidentsByCorrelationId(c.ticketId);
+      if (escalated.status !== "escalated_manual") checks.push("timeout-escalated");
+      if (incidentsC.length !== 0) checks.push("timeout-no-incident");
+
+      Object.assign(evidence, {
+        approvedTicketId: a.ticketId,
+        rejectedTicketId: b.ticketId,
+        timedOutTicketId: c.ticketId,
+        approvedIncident: incidentsA[0]?.number ?? null,
+        approvedMs: approvedAt === null || createdA === null ? null : createdA - approvedAt,
+        incidentsApproved: incidentsA.length,
+        incidentsRejected: incidentsB.length,
+        incidentsTimedOut: incidentsC.length,
+        aiCallCount: aView.aiCallCount + rejected.aiCallCount + escalated.aiCallCount,
+        decisionOutcomes: `${sentA.outcome ?? sentA.status}/${sentB.outcome ?? sentB.status}`,
+      });
+      return { checks, evidence };
+    });
+  },
+};
+
+/**
+ * T5.L.05 (DoD 6): `testOverrides: { shadowMode: true }` gives
+ * `incident_skipped_shadow`, a `shadow_skipped` event and no incident.
+ */
+export const shadowModeScenario: Scenario = {
+  id: "T5.L.05",
+  async run(context) {
+    const notRun = serviceNowNotRun(context);
+    if (notRun) return notRun;
+    const sn = serviceNowOf(context);
+    return withCleanup(context, sn, async (ticketIds) => {
+      const checks: string[] = [];
+      const evidence: Evidence = {};
+      const ticket = await createHelpdeskTicket(context, "L05", {
+        persona: PERSONAS.carol,
+        text: PRINTER_FAULT,
+        testOverrides: { shadowMode: true },
+      });
+      ticketIds.push(ticket.ticketId);
+      const view = await waitForIncident(context, ticket.ticketId, INCIDENT_WAIT_MS);
+      const incidents = await sn.incidentsByCorrelationId(ticket.ticketId);
+      const shadowEvent = view.events.some((e) => e.type === "shadow_skipped");
+      if (view.status !== "incident_skipped_shadow") checks.push("status-incident-skipped-shadow");
+      if (!shadowEvent) checks.push("shadow-skipped-event");
+      if (incidents.length !== 0) checks.push("no-incidents");
+      Object.assign(evidence, {
+        ticketId: ticket.ticketId,
+        status: view.status,
+        shadowEvent,
+        incidents: incidents.length,
+        aiCallCount: view.aiCallCount,
+      });
+      return { checks, evidence };
+    });
+  },
+};
+
 export const helpdeskScenarios: readonly Scenario[] = [
   printerFaultScenario,
   duplicateSubmitScenario,
+  approveRejectTimeoutScenario,
+  shadowModeScenario,
 ];

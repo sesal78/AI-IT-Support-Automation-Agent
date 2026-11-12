@@ -1,7 +1,12 @@
 // T5.L.01 and T5.L.03 (P5-T5c) through runLive, against the mocks only: the
 // positive case, and every acceptance negative with the check it must name.
 import { afterEach, describe, expect, it } from "vitest";
-import { duplicateSubmitScenario, printerFaultScenario } from "./helpdesk-scenarios.ts";
+import {
+  approveRejectTimeoutScenario,
+  duplicateSubmitScenario,
+  printerFaultScenario,
+  shadowModeScenario,
+} from "./helpdesk-scenarios.ts";
 import type { Scenario } from "./runner.ts";
 import { startHelpdeskHarness, type HelpdeskHarness } from "./testing/helpdesk-harness.ts";
 import type { MockHelpdeskFaults } from "./testing/mock-helpdesk.ts";
@@ -123,5 +128,78 @@ describe("T5.L.03 duplicate submit", () => {
     expect(evidenceOf(report)["incidents"]).toBe(2);
     // Both are closed: cleanup covers an unexpected duplicate.
     expect(evidenceOf(report)["cleanupClosed"]).toBe(2);
+  });
+});
+
+describe("T5.L.04 approve, reject and timeout", () => {
+  it("passes for 1 incident from the approve and 0 from the reject and the timeout", async () => {
+    const h = await harness();
+    const { code, report } = await h.run([], [approveRejectTimeoutScenario]);
+    expect(code).toBe(0);
+    expect(evidenceOf(report)).toMatchObject({
+      incidentsApproved: 1,
+      incidentsRejected: 0,
+      incidentsTimedOut: 0,
+      decisionOutcomes: "recorded/recorded",
+      cleanupClosed: 1,
+      cleanupOpen: 0,
+      failedChecks: [],
+    });
+    expect(evidenceOf(report)["approvedMs"]).toBe(2_000);
+    expect(h.count("POST", "/api/slack/interactivity")).toBe(2);
+    expect(h.data.incidents).toHaveLength(1);
+    expect(h.data.incidents[0]!["state"]).toBe("7");
+  });
+
+  it("fails, naming the check, when the rejected ticket gets an incident", async () => {
+    const h = await harness({ faults: { syncRejected: (id) => id.endsWith(":L04:2") } });
+    const { code, report } = await h.run([], [approveRejectTimeoutScenario]);
+    expect(code).toBe(1);
+    expect(failedChecks(report)).toEqual(["rejected-no-incident"]);
+    expect(evidenceOf(report)["incidentsRejected"]).toBe(1);
+    // The unexpected incident is still closed.
+    expect(h.data.incidents.every((i) => i["state"] === "7")).toBe(true);
+  });
+
+  it("fails, naming the check, when the timed-out ticket gets an incident", async () => {
+    const h = await harness({ faults: { syncRejected: (id) => id.endsWith(":L04:3") } });
+    const { code, report } = await h.run([], [approveRejectTimeoutScenario]);
+    expect(code).toBe(1);
+    expect(failedChecks(report)).toEqual(["timeout-no-incident"]);
+    expect(evidenceOf(report)["incidentsTimedOut"]).toBe(1);
+  });
+
+  it("is not_run, with no ticket, when a Slack signer variable is unset", async () => {
+    const h = await harness({ withSlack: false });
+    const { code, report } = await h.run([], [approveRejectTimeoutScenario]);
+    expect(code).toBe(2);
+    expect(report.scenarios[0]).toMatchObject({ status: "not_run" });
+    expect(h.count("POST", "/api/internal/test-tickets")).toBe(0);
+  });
+});
+
+describe("T5.L.05 shadow mode", () => {
+  it("passes for no incident, the skipped status and the shadow event", async () => {
+    const h = await harness();
+    const { code, report } = await h.run([], [shadowModeScenario]);
+    expect(code).toBe(0);
+    expect(evidenceOf(report)).toMatchObject({
+      status: "incident_skipped_shadow",
+      shadowEvent: true,
+      incidents: 0,
+      cleanupClosed: 0,
+      failedChecks: [],
+    });
+    expect(h.data.incidents).toEqual([]);
+  });
+
+  it("fails, naming the check, when the mock creates an incident", async () => {
+    const h = await harness({ faults: { createInShadow: true } });
+    const { code, report } = await h.run([], [shadowModeScenario]);
+    expect(code).toBe(1);
+    expect(failedChecks(report)).toEqual(["no-incidents"]);
+    expect(evidenceOf(report)["incidents"]).toBe(1);
+    // The leaked incident is closed anyway.
+    expect(h.data.incidents[0]!["state"]).toBe("7");
   });
 });
