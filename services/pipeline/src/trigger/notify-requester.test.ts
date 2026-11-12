@@ -10,7 +10,6 @@ const FROM = "help@example.test";
 const EMAIL = "marker.requester@example.test";
 const RAW = { title: "MARKER-RAW-TITLE", description: "MARKER-RAW-DESCRIPTION" };
 const INC = "INC0010001";
-const HD = "HD0000042";
 const SYS_ID = "a".repeat(31) + "1";
 
 function ticket(over: Partial<Ticket> = {}): Ticket {
