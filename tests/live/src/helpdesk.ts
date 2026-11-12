@@ -3,7 +3,7 @@
 // numbers, enums, counts and times only, never ticket text.
 import type { InternalTicketView } from "@ai-it-support/shared";
 import { missingServiceNowEnv } from "./config.ts";
-import type { ScenarioContext, ScenarioResult } from "./runner.ts";
+import type { ScenarioContext, ScenarioResult, Evidence } from "./runner.ts";
 import { createE2eServiceNow, type E2eServiceNow } from "./servicenow.ts";
 
 /** The two personas the helpdesk scenarios use (plan §4.2). */
@@ -121,4 +121,72 @@ export async function waitForIncident(
 export function incidentCreatedAt(view: InternalTicketView): number | null {
   const event = view.events.find((e) => e.type === "incident_created");
   return event === undefined ? null : Date.parse(event.at);
+}
+
+export interface IncidentCleanup {
+  /** Incidents already closed, or closed by this run now. */
+  readonly closed: number;
+  /** Reads or closes that failed; the incident may still be open. */
+  readonly failed: number;
+  /** Incidents still open when the rows were read again. */
+  readonly open: number;
+}
+
+/**
+ * Closes every `[E2E]` incident that carries one of `ticketIds`, for a
+ * `finally` block, including an unexpected duplicate. One failed read or close
+ * is counted and the rest go on; the rows are read again afterwards, so an
+ * open incident is reported and never hidden. Incidents of other tickets, and
+ * incidents without `[E2E]`, are never touched: `closeIncident` refuses them.
+ * It never throws, so a cleanup failure cannot hide the assertion before it.
+ */
+export async function closeIncidents(
+  sn: E2eServiceNow,
+  ticketIds: readonly string[],
+): Promise<IncidentCleanup> {
+  let closed = 0;
+  let failed = 0;
+  for (const ticketId of ticketIds) {
+    try {
+      for (const incident of await sn.incidentsByCorrelationId(ticketId)) {
+        if (incident.state === "7") {
+          closed += 1;
+          continue;
+        }
+        try {
+          await sn.closeIncident(incident.sys_id);
+          closed += 1;
+        } catch {
+          failed += 1;
+        }
+      }
+    } catch {
+      failed += 1;
+    }
+  }
+  let open = 0;
+  for (const ticketId of ticketIds) {
+    try {
+      open += (await sn.incidentsByCorrelationId(ticketId)).filter((i) => i.state !== "7").length;
+    } catch {
+      // A read that fails here is already counted; do not count it twice.
+    }
+  }
+  return { closed, failed, open };
+}
+
+/** Adds the cleanup counts to the evidence and, on any gap, one named check. */
+export function cleanupChecks(
+  cleanup: IncidentCleanup | undefined,
+  checks: string[],
+  evidence: Evidence,
+): Evidence {
+  if (cleanup === undefined) return evidence;
+  if (cleanup.failed > 0 || cleanup.open > 0) checks.push("cleanup-closed");
+  return {
+    ...evidence,
+    cleanupClosed: cleanup.closed,
+    cleanupFailed: cleanup.failed,
+    cleanupOpen: cleanup.open,
+  };
 }

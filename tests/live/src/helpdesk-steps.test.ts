@@ -3,6 +3,8 @@
 // runLive against the mocks; no host is reached.
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  cleanupChecks,
+  closeIncidents,
   createHelpdeskTicket,
   createdHelpdeskTickets,
   incidentCreatedAt,
@@ -15,6 +17,7 @@ import {
 import { result } from "./pipeline.ts";
 import type { Evidence, Scenario, ScenarioContext, ScenarioResult } from "./runner.ts";
 import { startHelpdeskHarness, type HelpdeskHarness } from "./testing/helpdesk-harness.ts";
+import { sysId } from "./testing/mock-servicenow.ts";
 
 const PRINTER = {
   title: "Printer on level 2 is offline",
@@ -158,5 +161,150 @@ describe("createHelpdeskTicket", () => {
       },
     });
     expect(h.count("POST", "/api/internal/test-tickets")).toBe(0);
+  });
+});
+
+/** A probe that closes every incident it created, in a `finally` block. */
+function cleanupProbe(
+  id: string,
+  body: (context: ScenarioContext, checks: string[], evidence: Evidence) => Promise<void>,
+): Scenario {
+  return {
+    id,
+    async run(context): Promise<ScenarioResult> {
+      const notRun = serviceNowNotRun(context);
+      if (notRun) return notRun;
+      const sn = serviceNowOf(context);
+      const checks: string[] = [];
+      const evidence: Evidence = {};
+      let cleanup: Awaited<ReturnType<typeof closeIncidents>> | undefined;
+      try {
+        await body(context, checks, evidence);
+      } finally {
+        cleanup = await closeIncidents(
+          sn,
+          createdHelpdeskTickets(context).map((t) => t.ticketId),
+        );
+      }
+      return result(checks, cleanupChecks(cleanup, checks, evidence));
+    },
+  };
+}
+
+describe("closeIncidents", () => {
+  it("closes an unexpected duplicate too, and reports one close each", async () => {
+    const h = await harness({ faults: { incidents: () => 2 } });
+    const { code, report } = await h.run(
+      [],
+      [
+        cleanupProbe("T9.L.05", async (context) => {
+          const ticket = await createHelpdeskTicket(context, "L05", {
+            persona: PERSONAS.carol,
+            text: PRINTER,
+          });
+          await waitForIncident(context, ticket.ticketId);
+        }),
+      ],
+    );
+    expect(code).toBe(0);
+    expect(evidenceOf(report)).toMatchObject({ cleanupClosed: 2, cleanupOpen: 0 });
+    expect(h.data.incidents).toHaveLength(2);
+    expect(h.data.incidents.every((i) => i["state"] === "7")).toBe(true);
+    expect(h.serviceNowMethods().filter((m) => m === "PATCH")).toHaveLength(2);
+  });
+
+  it("refuses a non-[E2E] incident, reports it open, and closes the owned one", async () => {
+    const h = await harness();
+    const realIncident = {
+      sys_id: sysId(700),
+      number: "INC0000700",
+      category: "hardware",
+      caller_id: sysId(1),
+      assignment_group: "",
+      short_description: "Real user printer problem",
+      description: "d",
+      state: "1",
+      correlation_id: "",
+      correlation_display: "ITS-000900",
+      sys_created_on: "2026-11-13 00:00:00",
+    };
+    const { report, code } = await h.run(
+      [],
+      [
+        cleanupProbe("T9.L.06", async (context) => {
+          const ticket = await createHelpdeskTicket(context, "L06", {
+            persona: PERSONAS.carol,
+            text: PRINTER,
+          });
+          await waitForIncident(context, ticket.ticketId);
+          h.data.incidents.push({ ...realIncident, correlation_id: ticket.ticketId });
+        }),
+      ],
+    );
+    expect(code).toBe(1);
+    expect(evidenceOf(report)).toMatchObject({
+      cleanupFailed: 1,
+      cleanupOpen: 1,
+      failedChecks: ["cleanup-closed"],
+    });
+    expect(h.data.incidents.find((i) => i["sys_id"] === sysId(700))!["state"]).toBe("1");
+    expect(h.data.incidents.filter((i) => i["state"] === "7")).toHaveLength(1);
+  });
+
+  it("keeps going after a refused close and still reports the assertion", async () => {
+    const h = await harness({ sn: { denyClose: 503 } });
+    const { report, code } = await h.run(
+      [],
+      [
+        cleanupProbe("T9.L.07", async (context, checks) => {
+          const ticket = await createHelpdeskTicket(context, "L07", {
+            persona: PERSONAS.carol,
+            text: PRINTER,
+          });
+          const view = await waitForIncident(context, ticket.ticketId);
+          if (view.status !== "incident_created") checks.push("incident-created");
+        }),
+      ],
+    );
+    expect(code).toBe(1);
+    // The assertion passed; the cleanup is the only failure, and it is named.
+    expect(evidenceOf(report)).toMatchObject({
+      cleanupFailed: 1,
+      cleanupOpen: 1,
+      failedChecks: ["cleanup-closed"],
+    });
+    expect(h.data.incidents[0]!["state"]).toBe("1");
+  });
+
+  it("does not throw, and reports the failure, when the incident lookup fails", async () => {
+    const h = await harness({ sn: { denyIncidentRead: 503 } });
+    const { report } = await h.run(
+      [],
+      [
+        cleanupProbe("T9.L.08", async (context) => {
+          await createHelpdeskTicket(context, "L08", { persona: PERSONAS.carol, text: PRINTER });
+        }),
+      ],
+    );
+    expect(evidenceOf(report)).toMatchObject({
+      cleanupFailed: 1,
+      cleanupOpen: 0,
+      failedChecks: ["cleanup-closed"],
+    });
+  });
+
+  it("still closes the incident when the body throws, and rethrows that error", async () => {
+    const h = await harness();
+    const throwing = cleanupProbe("T9.L.09", async (context) => {
+      const ticket = await createHelpdeskTicket(context, "L09", {
+        persona: PERSONAS.carol,
+        text: PRINTER,
+      });
+      await waitForIncident(context, ticket.ticketId);
+      throw new RangeError("assertion failed");
+    });
+    const { report } = await h.run([], [throwing]);
+    expect(report.scenarios[0]).toMatchObject({ status: "fail", error: "RangeError" });
+    expect(h.data.incidents[0]!["state"]).toBe("7");
   });
 });
