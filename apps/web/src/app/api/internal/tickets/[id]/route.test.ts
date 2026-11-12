@@ -159,6 +159,44 @@ describe("GET /api/internal/tickets/:id", () => {
     expect(await res.text()).not.toContain(MARKER);
   });
 
+  it("returns the reply notifications with their seven keys, oldest first (P5-T8b)", async () => {
+    const entry = (n: number, kind: string, status: string) => ({
+      id: `${n}1111111-1111-4111-8111-111111111111`,
+      channel: "email",
+      kind,
+      status,
+      reason: status === "skipped" ? "not_allow_listed" : null,
+      providerId: status === "sent" ? "msg_01" : null,
+      at: AT,
+    });
+    const notifications = [entry(1, "needs_info", "sent"), entry(2, "incident_reply", "skipped")];
+    getTicketView.mockResolvedValue({ ...view, notifications });
+    const body = await (await call(ID)).json();
+    expect(body.notifications).toEqual(notifications);
+    for (const item of body.notifications) expect(Object.keys(item)).toHaveLength(7);
+  });
+
+  it("fails with 500 and no value when a notification carries a stray key", async () => {
+    getTicketView.mockResolvedValue({
+      ...view,
+      notifications: [
+        {
+          id: ID,
+          channel: "email",
+          kind: "incident_reply",
+          status: "sent",
+          reason: null,
+          providerId: "msg_01",
+          at: AT,
+          to: MARKER,
+        },
+      ],
+    });
+    const res = await call(ID);
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toContain(MARKER);
+  });
+
   it("fails with 500 and no value when the repository returns a view with a bad number", async () => {
     getTicketView.mockResolvedValue({ ...view, number: MARKER });
     const res = await call(ID);

@@ -230,6 +230,10 @@ const VIEW_EVENT_LIMIT = 500;
 // The reviews view for the internal API: wait_token_id is never in this list.
 const VIEW_REVIEW_COLUMNS = "id,kind,slack_user_id,decision,decided_at,slack_ts,created_at";
 const VIEW_REVIEW_LIMIT = 100;
+// The notifications view: no ticket_id (the filter), never an address. One row
+// per email kind, so two rows at most; the limit is a plain guard.
+const VIEW_NOTIFICATION_COLUMNS = "id,channel,kind,status,provider_id,reason,at";
+const VIEW_NOTIFICATION_LIMIT = 10;
 // The full row for the review functions (the decision handler needs wait_token_id).
 const REVIEW_COLUMNS =
   "id,ticket_id,kind,proposal_id,slack_user_id,decision,decided_at,wait_token_id,slack_ts,created_at";
@@ -294,6 +298,15 @@ const viewReviewSchema = reviewSchema.pick({
   created_at: true,
 });
 const viewEventSchema = z.object({ type: z.string(), at: timestamp });
+const viewNotificationSchema = z.object({
+  id: z.uuid(),
+  channel: z.enum(["email"]),
+  kind: z.enum(NOTIFICATION_KINDS),
+  status: z.enum(NOTIFICATION_STATUSES),
+  provider_id: z.string().nullable(),
+  reason: z.enum(NOTIFICATION_REASONS).nullable(),
+  at: timestamp,
+});
 const securityEventRowSchema = z.object({
   source: z.string(),
   kind: z.string(),
@@ -710,38 +723,48 @@ export function createRepositories(client: DbClient) {
       const ticket = parseRow(op, viewTicketSchema.nullable(), ticketResult);
       if (!ticket) return null;
 
-      const [redactionResult, triageResult, callsResult, eventsResult, reviewsResult] =
-        await Promise.all([
-          client
-            .from("ticket_redactions")
-            .select(VIEW_REDACTION_COLUMNS)
-            .eq("ticket_id", id)
-            .maybeSingle(),
-          client
-            .from("triage_results")
-            .select(VIEW_TRIAGE_COLUMNS)
-            .eq("ticket_id", id)
-            .maybeSingle(),
-          client.from("ai_calls").select("id", { count: "exact", head: true }).eq("ticket_id", id),
-          client
-            .from("ticket_events")
-            .select(VIEW_EVENT_COLUMNS)
-            .eq("ticket_id", id)
-            .order("at", { ascending: true })
-            .order("id", { ascending: true })
-            .limit(VIEW_EVENT_LIMIT),
-          client
-            .from("reviews")
-            .select(VIEW_REVIEW_COLUMNS)
-            .eq("ticket_id", id)
-            .order("created_at", { ascending: true })
-            .order("id", { ascending: true })
-            .limit(VIEW_REVIEW_LIMIT),
-        ]);
+      const [
+        redactionResult,
+        triageResult,
+        callsResult,
+        eventsResult,
+        reviewsResult,
+        notificationsResult,
+      ] = await Promise.all([
+        client
+          .from("ticket_redactions")
+          .select(VIEW_REDACTION_COLUMNS)
+          .eq("ticket_id", id)
+          .maybeSingle(),
+        client.from("triage_results").select(VIEW_TRIAGE_COLUMNS).eq("ticket_id", id).maybeSingle(),
+        client.from("ai_calls").select("id", { count: "exact", head: true }).eq("ticket_id", id),
+        client
+          .from("ticket_events")
+          .select(VIEW_EVENT_COLUMNS)
+          .eq("ticket_id", id)
+          .order("at", { ascending: true })
+          .order("id", { ascending: true })
+          .limit(VIEW_EVENT_LIMIT),
+        client
+          .from("reviews")
+          .select(VIEW_REVIEW_COLUMNS)
+          .eq("ticket_id", id)
+          .order("created_at", { ascending: true })
+          .order("id", { ascending: true })
+          .limit(VIEW_REVIEW_LIMIT),
+        client
+          .from("notifications")
+          .select(VIEW_NOTIFICATION_COLUMNS)
+          .eq("ticket_id", id)
+          .order("at", { ascending: true })
+          .order("id", { ascending: true })
+          .limit(VIEW_NOTIFICATION_LIMIT),
+      ]);
       const redaction = parseRow(op, viewRedactionSchema.nullable(), redactionResult);
       const triage = parseRow(op, viewTriageSchema.nullable(), triageResult);
       const events = parseRow(op, z.array(viewEventSchema), eventsResult);
       const reviews = parseRow(op, z.array(viewReviewSchema), reviewsResult);
+      const notifications = parseRow(op, z.array(viewNotificationSchema), notificationsResult);
       if (callsResult.error) throw supabaseError(op, callsResult.error);
 
       // Fields are copied one by one, so a column the database returns
@@ -787,7 +810,15 @@ export function createRepositories(client: DbClient) {
           slackTs: review.slack_ts,
           createdAt: review.created_at,
         })),
-        notifications: [],
+        notifications: notifications.map((row) => ({
+          id: row.id,
+          channel: row.channel,
+          kind: row.kind,
+          status: row.status,
+          reason: row.reason,
+          providerId: row.provider_id,
+          at: row.at,
+        })),
         autofix: [],
         incident:
           ticket.servicenow_number === null || ticket.servicenow_sys_id === null
