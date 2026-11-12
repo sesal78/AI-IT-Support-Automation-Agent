@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { ServiceNowConfig } from "./config.ts";
-import { createE2eServiceNow, ServiceNowApiError, ServiceNowGuardError } from "./servicenow.ts";
+import {
+  createE2eServiceNow,
+  INCIDENT_PAGE_LIMIT,
+  ServiceNowApiError,
+  ServiceNowGuardError,
+  serviceNowStamp,
+} from "./servicenow.ts";
 import {
   fullInstance,
   mockServiceNow,
@@ -12,6 +18,7 @@ import {
 
 const config: ServiceNowConfig = { instanceUrl: SN_URL, username: SN_USER, password: SN_PASSWORD };
 const TICKET = "11111111-2222-3333-4444-555555555555";
+const SINCE = Date.parse("2026-11-13T00:00:00Z");
 
 function incident(short: string, id = sysId(900)) {
   return {
@@ -24,6 +31,8 @@ function incident(short: string, id = sysId(900)) {
     description: "d",
     state: "1",
     correlation_id: TICKET,
+    correlation_display: "ITS-000001",
+    sys_created_on: "2026-11-13 00:00:00",
   };
 }
 
@@ -180,5 +189,98 @@ describe("createE2eServiceNow", () => {
     expect(error).toBeInstanceOf(ServiceNowApiError);
     expect((error as ServiceNowApiError).status).toBe(403);
     expect((error as Error).message).toBe("userRoles: status 403");
+  });
+});
+
+describe("e2eIncidentsSince (P5-T5c, T5.O.01)", () => {
+  it("asks for [E2E] rows since the run start, with one GET and a fixed query", async () => {
+    const data = fullInstance();
+    data.incidents.push(incident("[E2E] printer"));
+    data.incidents.push({
+      ...incident("[E2E] older", sysId(901)),
+      sys_created_on: "2026-11-12 23:59:59",
+    });
+    data.incidents.push({ ...incident("Real user printer", sysId(902)) });
+    const mock = mockServiceNow(data);
+    const page = await createE2eServiceNow(config, mock.fetch).e2eIncidentsSince(SINCE);
+
+    expect(page).toMatchObject({ truncated: false });
+    expect(page.incidents.map((i) => i.sys_id)).toEqual([sysId(900)]);
+    expect(mock.requests).toHaveLength(1);
+    const request = mock.requests[0]!;
+    expect(request.method).toBe("GET");
+    expect(request.url.searchParams.get("sysparm_query")).toBe(
+      "short_descriptionSTARTSWITH[E2E]^sys_created_on>=2026-11-13 00:00:00",
+    );
+    expect(request.url.searchParams.get("sysparm_limit")).toBe(String(INCIDENT_PAGE_LIMIT));
+  });
+
+  it("retains correlation_display and sys_created_on for the reconciliation", async () => {
+    const data = fullInstance();
+    data.incidents.push(incident("[E2E] printer"));
+    const { incidents } = await createE2eServiceNow(
+      config,
+      mockServiceNow(data).fetch,
+    ).e2eIncidentsSince(SINCE);
+    expect(incidents[0]).toMatchObject({
+      correlation_display: "ITS-000001",
+      sys_created_on: "2026-11-13 00:00:00",
+    });
+  });
+
+  it("reports a full page as truncated, never as the whole list", async () => {
+    const data = fullInstance();
+    for (let i = 0; i < INCIDENT_PAGE_LIMIT; i++) {
+      data.incidents.push({
+        ...incident("[E2E] many", sysId(1_000 + i)),
+        correlation_id: TICKET,
+      });
+    }
+    const page = await createE2eServiceNow(config, mockServiceNow(data).fetch).e2eIncidentsSince(
+      SINCE,
+    );
+    expect(page.incidents).toHaveLength(INCIDENT_PAGE_LIMIT);
+    expect(page.truncated).toBe(true);
+  });
+
+  it("refuses a since value that is not a finite number, before any request", async () => {
+    const mock = mockServiceNow(fullInstance());
+    const sn = createE2eServiceNow(config, mock.fetch);
+    await expect(sn.e2eIncidentsSince(Number.NaN)).rejects.toBeInstanceOf(ServiceNowGuardError);
+    expect(mock.requests).toEqual([]);
+    expect(() => serviceNowStamp(Number.POSITIVE_INFINITY)).toThrow(ServiceNowGuardError);
+  });
+
+  it("never builds a query from a value: the stamp holds no query syntax", () => {
+    expect(serviceNowStamp(SINCE)).toBe("2026-11-13 00:00:00");
+    expect(serviceNowStamp(SINCE + 999)).toBe("2026-11-13 00:00:00");
+  });
+});
+
+describe("mock ServiceNow failure paths (test support)", () => {
+  it("answers a refused incident read with that status", async () => {
+    const data = fullInstance();
+    const sn = createE2eServiceNow(config, mockServiceNow(data, { denyIncidentRead: 503 }).fetch);
+    const error = await sn.incidentsByCorrelationId(TICKET).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ServiceNowApiError);
+    expect((error as ServiceNowApiError).status).toBe(503);
+  });
+
+  it("answers a refused close with that status and leaves the incident open", async () => {
+    const data = fullInstance();
+    data.incidents.push(incident("[E2E] printer"));
+    const sn = createE2eServiceNow(config, mockServiceNow(data, { denyClose: 503 }).fetch);
+    await expect(sn.closeIncident(sysId(900))).rejects.toBeInstanceOf(ServiceNowApiError);
+    expect(data.incidents[0]!["state"]).toBe("1");
+  });
+
+  it("stamps a created incident with the mock clock", async () => {
+    const data = fullInstance();
+    const mock = mockServiceNow(data, { now: () => SINCE });
+    await mock.fetch(new URL("/api/now/table/incident", SN_URL), {
+      method: "POST",
+      body: JSON.stringify({ short_description: "[E2E] x", correlation_id: TICKET }),
+    });
+    expect(data.incidents[0]!["sys_created_on"]).toBe("2026-11-13 00:00:00");
   });
 });

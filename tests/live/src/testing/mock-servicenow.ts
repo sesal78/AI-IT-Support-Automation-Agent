@@ -58,11 +58,28 @@ export interface Recorded {
   readonly init: RequestInit;
 }
 
-export function mockServiceNow(
-  data: MockSnData,
-  options: { denyRoles?: boolean; denyAll?: number; keepOpen?: boolean } = {},
-) {
+export interface MockServiceNowOptions {
+  denyRoles?: boolean;
+  denyAll?: number;
+  keepOpen?: boolean;
+  /** Status for every incident read (a cleanup lookup failure). */
+  denyIncidentRead?: number;
+  /** Status for a close PATCH whose body sets `state: "7"` (a cleanup close failure). */
+  denyClose?: number;
+  /** Clock for `sys_created_on` (default `Date.now`). */
+  now?: () => number;
+}
+
+/** The display format ServiceNow returns for `sys_created_on`, `YYYY-MM-DD HH:MM:SS`. */
+export const snStamp = (ms: number): string =>
+  new Date(ms).toISOString().slice(0, 19).replace("T", " ");
+
+/** True when a row's `sys_created_on` is at or after the query's stamp. */
+const createdSince = (row: Row, stamp: string): boolean => (row["sys_created_on"] ?? "") >= stamp;
+
+export function mockServiceNow(data: MockSnData, options: MockServiceNowOptions = {}) {
   const requests: Recorded[] = [];
+  const now = options.now ?? Date.now;
   const fetchImpl = async (input: URL, init: RequestInit): Promise<Response> => {
     const method = init.method ?? "GET";
     requests.push({ method, url: input, init });
@@ -79,7 +96,12 @@ export function mockServiceNow(
       // The connector's create: the row gets the fields the helper reads back.
       const n = data.incidents.length + 1;
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
-      const row: Row = { assignment_group: "", state: "1", ...stringify(body) };
+      const row: Row = {
+        assignment_group: "",
+        state: "1",
+        sys_created_on: snStamp(now()),
+        ...stringify(body),
+      };
       row["sys_id"] = sysId(900 + n);
       row["number"] = `INC${String(n).padStart(7, "0")}`;
       data.incidents.push(row);
@@ -90,15 +112,20 @@ export function mockServiceNow(
       const row = data.incidents.find((r) => r["sys_id"] === id);
       if (row === undefined) return json({}, 404);
       const patch = stringify(JSON.parse(String(init.body)));
+      if (patch["state"] === "7" && options.denyClose !== undefined) {
+        return json({ error: "denied" }, options.denyClose);
+      }
       // keepOpen: the instance says OK but never closes (T5.C.02 failure path).
       if (!(options.keepOpen && patch["state"] === "7")) Object.assign(row, patch);
       return json({ result: row });
     }
+    const tokens = (input.searchParams.get("sysparm_query") ?? "").split("^");
     const terms = Object.fromEntries(
-      (input.searchParams.get("sysparm_query") ?? "")
-        .split("^")
-        .map((t) => t.split("=") as [string, string]),
+      tokens.filter((t) => t.includes("=")).map((t) => t.split("=") as [string, string]),
     );
+    // `fieldSTARTSWITHvalue` has no `=`; take the value from the operator's token.
+    const startsWith = (field: string): string | undefined =>
+      tokens.find((t) => t.startsWith(`${field}STARTSWITH`))?.slice(`${field}STARTSWITH`.length);
     let rows: Row[] = [];
     if (table === "sys_user")
       rows = data.users.filter((u) => u["user_name"] === terms["user_name"]);
@@ -106,14 +133,25 @@ export function mockServiceNow(
       if (options.denyRoles) return json({ error: "denied" }, 403);
       rows = (data.roles[terms["user"] ?? ""] ?? []).map((name) => ({ "role.name": name }));
     } else if (table === "sys_user_group") {
-      rows = data.groups.filter((g) => g === terms["name"]).map((name) => ({ sys_id: "1", name }));
+      // A distinct sys_id per group, as the instance has (T5.L.08 compares it).
+      rows = data.groups
+        .map((name, i) => ({ sys_id: sysId(500 + i), name }))
+        .filter((group) => group.name === terms["name"]);
     } else if (table === "sys_choice") rows = data.categories.map((value) => ({ value }));
     else if (table === "incident") {
+      if (options.denyIncidentRead !== undefined) {
+        return json({ error: "denied" }, options.denyIncidentRead);
+      }
+      const byPrefix = startsWith("short_description");
+      const since = terms["sys_created_on>"];
       rows = data.incidents.filter((r) =>
         terms["sys_id"] !== undefined
           ? r["sys_id"] === terms["sys_id"]
-          : r["correlation_id"] ===
-            (terms["correlation_id"] ?? input.searchParams.get("correlation_id")),
+          : byPrefix !== undefined
+            ? (r["short_description"] ?? "").startsWith(byPrefix) &&
+              (since === undefined || createdSince(r, since))
+            : r["correlation_id"] ===
+              (terms["correlation_id"] ?? input.searchParams.get("correlation_id")),
       );
     } else if (table === "sys_journal_field")
       rows = data.journal.filter((r) => r["element_id"] === terms["element_id"]);
