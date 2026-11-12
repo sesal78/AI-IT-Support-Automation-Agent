@@ -20,7 +20,6 @@ import { z } from "zod";
 import {
   buildReplyEmail,
   createResendClient,
-  EmailProviderError,
   isAllowedRecipient,
   parseRecipient,
   type ResendClient,
