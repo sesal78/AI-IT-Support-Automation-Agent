@@ -582,7 +582,7 @@ export const reconciliationScenario: Scenario = {
     const sn = serviceNowOf(context);
     const checks: string[] = [];
     const tickets = createdHelpdeskTickets(context);
-    const owned = new Set(tickets.map((t) => t.ticketId));
+    const owned = new Set<string>();
     const foreign = foreignTickets(context);
     const withoutIncident: string[] = [];
     const wrongCount: string[] = [];
@@ -598,6 +598,7 @@ export const reconciliationScenario: Scenario = {
         continue;
       }
       withIncident += 1;
+      owned.add(ticket.ticketId);
       const incidents = await sn.incidentsByCorrelationId(ticket.ticketId);
       incidentCount += incidents.length;
       if (incidents.length !== 1) wrongCount.push(ticket.ticketId);

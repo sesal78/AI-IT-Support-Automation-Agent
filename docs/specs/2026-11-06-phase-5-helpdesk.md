@@ -508,7 +508,7 @@ Target repo: D:/Homebase/Sandbox/ai-it-support-agent
 - [ ] `T5.F.01` passes when the mock reports asleep for 3 minutes and then creates one incident; it fails when no `helpdesk_asleep` event is written and when the ticket is not `incident_created` at the limit (shortened in the test).
 - [ ] `T5.O.01` fails when an incident has no matching ticket and when a ticket has two incidents.
 - [ ] Every scenario closes the incidents it created (the mock records one close each); the helper refuses to close one whose `short_description` lacks `[E2E]`.
-- [ ] `--phase 5` selects `T5.C.02`, `T5.L.01`, `T5.L.03`, `T5.L.04`, `T5.L.05`, `T5.O.01` (and the P5-T8c scenarios) but not `T5.L.02`, `T5.L.08`, `T5.F.01`; across the default scenarios of this part the mock sees 6 `test-tickets` requests and 0 form submits.
+- [ ] `--phase 5` selects `T5.C.02`, `T5.L.01`, `T5.L.03`, `T5.L.04`, `T5.L.05`, `T5.O.01` (and the P5-T8c scenarios) but not `T5.L.02`, `T5.L.08`, `T5.F.01`; across the default scenarios of this part the mock sees 6 unique tickets, 7 `test-tickets` requests (T5.L.03 repeats one ID) and 0 form submits.
 - [ ] Each scenario's evidence has ticket IDs, incident numbers, times in ms and the sum of `aiCallCount`; no ticket text.
 
 ## Non-Goals

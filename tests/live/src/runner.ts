@@ -30,6 +30,8 @@ export interface ScenarioContext {
   readonly sleep: (ms: number) => Promise<void>;
   /** This run's ID; scenarios build their test IDs from it. */
   readonly runId: string;
+  /** The run's start time, before any scenario, in milliseconds. */
+  readonly startedAt: number;
   /** The `.loop-evidence` folder (a scenario may write a hand-off file under `live/`). */
   readonly evidenceDir: string;
   /** The `--from <file>` argument, for a scenario with `needsFrom`. */
@@ -241,6 +243,7 @@ export async function runLive(options: RunLiveOptions): Promise<number> {
     now,
     sleep,
     runId,
+    startedAt: Date.parse(startedAt),
     evidenceDir: options.evidenceDir,
     from,
   };

@@ -31,7 +31,6 @@ export interface HelpdeskTicketOptions {
 }
 
 const tickets = new WeakMap<ScenarioContext, HelpdeskTicket[]>();
-const runStarted = new WeakMap<ScenarioContext, number>();
 const foreign = new WeakMap<ScenarioContext, Set<string>>();
 // One counter per scenario: two creations in flight must not take one number.
 const counters = new WeakMap<ScenarioContext, Map<string, number>>();
@@ -65,15 +64,10 @@ export const foreignTickets = (context: ScenarioContext): ReadonlySet<string> =>
   foreign.get(context) ?? new Set<string>();
 
 /**
- * When this run first created a helpdesk ticket, in ms. It is read once, at
- * the start, so T5.O.01 reconciles the whole run and not only its own part.
+ * The runner's start time, before any scenario or helpdesk ticket, in ms.
  */
 export function runStartMs(context: ScenarioContext): number {
-  const started = runStarted.get(context);
-  if (started !== undefined) return started;
-  const now = context.now();
-  runStarted.set(context, now);
-  return now;
+  return context.startedAt;
 }
 
 /**
@@ -87,7 +81,6 @@ export async function createHelpdeskTicket(
   scenarioId: string,
   options: HelpdeskTicketOptions,
 ): Promise<HelpdeskTicket> {
-  runStartMs(context);
   const n = options.n ?? nextNumber(context, scenarioId);
   const testId = `${context.runId}:${scenarioId}:${n}`;
   const { ticketId } = await context.client.createTestTicket({

@@ -7,6 +7,7 @@ import {
   duplicateSubmitScenario,
   L02_TICKETS,
   printerFaultScenario,
+  reconciliationScenario,
   shadowModeScenario,
 } from "./helpdesk-scenarios.ts";
 import type { Scenario } from "./runner.ts";
@@ -373,6 +374,42 @@ describe("T5.F.01 asleep instance and T5.O.01 reconciliation", () => {
     const reconciliation = report.scenarios.find((s) => s.id === "T5.O.01")!;
     expect(reconciliation.evidence["failedChecks"]).toEqual(["orphans"]);
     expect(reconciliation.evidence["orphans"]).toHaveLength(1);
+  });
+
+  it("T5.O.01 finds an orphan created before the first helpdesk ticket", async () => {
+    const h = await harness();
+    const earlier: Scenario = {
+      id: "T9.L.01",
+      async run(context) {
+        await context.sleep(10_000);
+        h.data.incidents.push({
+          sys_id: sysId(9_001),
+          number: "INC0009001",
+          category: "software",
+          caller_id: sysId(1),
+          assignment_group: "",
+          short_description: "[E2E] orphan",
+          description: "d",
+          state: "7",
+          correlation_id: "11111111-2222-3333-4444-555555555555",
+          correlation_display: "ITS-000999",
+          sys_created_on: "2026-11-13 00:00:10",
+        });
+        await context.sleep(110_000);
+        return { status: "pass" };
+      },
+    };
+    const { report } = await h.run([], [earlier, printerFaultScenario, reconciliationScenario]);
+    expect(report.scenarios[2]!.status).toBe("fail");
+    expect(report.scenarios[2]!.evidence["orphans"]).toEqual(["INC0009001"]);
+  });
+
+  it("T5.O.01 refuses an incident on a ticket without an incident_created event", async () => {
+    const h = await harness({ faults: { syncRejected: () => true } });
+    const { report } = await h.run([], [approveRejectTimeoutScenario, reconciliationScenario]);
+    expect(report.scenarios[1]!.status).toBe("fail");
+    expect(report.scenarios[1]!.evidence["failedChecks"]).toContain("orphans");
+    expect(report.scenarios[1]!.evidence["orphans"]).toHaveLength(2);
   });
 
   it("T5.O.01 fails when a ticket has two incidents", async () => {
