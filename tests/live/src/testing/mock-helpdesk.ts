@@ -26,12 +26,18 @@ export interface MockHelpdeskFaults {
   readonly correlationDisplay?: (testId: string) => string;
   /** Creates the incident although the ticket is in shadow mode (T5.L.05 negative). */
   readonly createInShadow?: boolean;
+  /** Creates an incident for a rejected or timed-out ticket (T5.L.04 negative). */
+  readonly syncRejected?: (testId: string) => boolean;
 }
 
 export interface MockHelpdeskOptions {
   readonly now: () => number;
   /** Where created incidents and work notes go; the scenario reads this data. */
   readonly data: MockSnData;
+  /** The channel a signed decision must name; any channel when unset. */
+  readonly channelId?: string;
+  /** The 2-minute review timeout of the e2e app (H14). */
+  readonly reviewTimeoutMs?: number;
   readonly faults?: MockHelpdeskFaults;
 }
 
@@ -53,12 +59,21 @@ export interface MockHelpdeskTicket {
   readonly email: string;
   readonly triage: MockTriage;
   readonly shadowMode: boolean;
+  readonly reviewTimeoutMs: number;
   status: string;
   events: Array<{ type: string; at: number }>;
-  review: { id: string; slackTs: string; createdAt: number } | null;
+  review: {
+    id: string;
+    slackTs: string;
+    createdAt: number;
+    decision: "approve" | "reject" | "timeout" | null;
+    decidedBy: string | null;
+    decidedAt: number | null;
+  } | null;
   reviewPendingAt: number | null;
   syncAt: number | null;
   syncStartedAt: number | null;
+  pendingDecision: { decision: "approve" | "reject"; at: number } | null;
   incident: { number: string; sysId: string } | null;
 }
 
@@ -78,7 +93,13 @@ export const SYNC_DELAY_MS = 1_000;
 export const INCIDENT_MS = 1_000;
 /** Triaged -> a card ts for a review ticket. */
 export const REVIEW_DELAY_MS = 1_000;
+/** A recorded click -> `review_decided` and the status (the woken run). */
+export const DECISION_LAG_MS = 500;
+/** The e2e review timeout, H14. */
+export const REVIEW_TIMEOUT_MS = 120_000;
 
+const INTERACTIVITY = "/api/slack/interactivity";
+const NO_STORE = { "Cache-Control": "no-store" };
 const iso = (ms: number) => new Date(ms).toISOString();
 
 /**
@@ -167,6 +188,9 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
             id: randomUUID(),
             slackTs: `${Math.floor(pendingAt / 1000)}.${String(seq++).padStart(6, "0")}`,
             createdAt: pendingAt,
+            decision: null,
+            decidedBy: null,
+            decidedAt: null,
           };
           t.reviewPendingAt = pendingAt;
           push(t, "review_requested", pendingAt);
@@ -175,6 +199,41 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
           t.status = "auto";
           t.syncAt = triagedAt + SYNC_DELAY_MS;
         }
+      }
+
+      // No decision in time: the app escalates the ticket to the manual queue.
+      if (
+        t.status === "review_pending" &&
+        t.review !== null &&
+        t.review.decision === null &&
+        t.reviewPendingAt !== null &&
+        at >= t.reviewPendingAt + t.reviewTimeoutMs
+      ) {
+        const timeoutAt = t.reviewPendingAt + t.reviewTimeoutMs;
+        t.review.decision = "timeout";
+        t.review.decidedAt = timeoutAt;
+        push(t, "review_timed_out", timeoutAt);
+        t.status = "escalated_manual";
+      }
+
+      // A recorded click: review_decided and the new status 500 ms later.
+      if (t.pendingDecision !== null && at >= t.pendingDecision.at) {
+        const { decision, at: decidedAt } = t.pendingDecision;
+        t.pendingDecision = null;
+        t.review!.decision = decision;
+        t.review!.decidedAt = decidedAt;
+        push(t, "review_decided", decidedAt);
+        t.status = decision === "approve" ? "approved" : "rejected";
+        if (decision === "approve") t.syncAt = decidedAt + SYNC_DELAY_MS;
+      }
+
+      // Neither a rejected nor a timed-out ticket starts the sync.
+      if (
+        (t.status === "rejected" || t.status === "escalated_manual") &&
+        t.incident === null &&
+        faults.syncRejected?.(t.testId) === true
+      ) {
+        createIncidents(t, at, 1);
       }
 
       if ((t.status === "auto" || t.status === "approved") && t.syncAt !== null && at >= t.syncAt) {
@@ -226,12 +285,14 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
       email: String(body.email ?? ""),
       triage: defaultHelpdeskTriage(title, description),
       shadowMode: overrides.shadowMode === true,
+      reviewTimeoutMs: options.reviewTimeoutMs ?? REVIEW_TIMEOUT_MS,
       status: "new",
       events: [],
       review: null,
       reviewPendingAt: null,
       syncAt: null,
       syncStartedAt: null,
+      pendingDecision: null,
       incident: null,
     };
     tickets.set(testId, ticket);
@@ -279,9 +340,9 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
               {
                 id: t.review.id,
                 kind: "triage",
-                decision: null,
-                decidedBy: null,
-                decidedAt: null,
+                decision: t.review.decision,
+                decidedBy: t.review.decidedBy,
+                decidedAt: t.review.decidedAt === null ? null : iso(t.review.decidedAt),
                 slackTs: t.review.slackTs,
                 createdAt: iso(t.review.createdAt),
               },
@@ -292,8 +353,70 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
     };
   }
 
+  /** A signed decision, answered like the app: verify, bind, record. */
+  function decide(request: MockRequest, at: number): MockReply {
+    if (request.slack === null || !request.slack.ok) {
+      return { status: 401, json: { error: "unauthorized" }, headers: NO_STORE };
+    }
+    interface Payload {
+      type?: unknown;
+      actions?: unknown;
+      user?: { id?: unknown };
+      channel?: { id?: unknown };
+      container?: { message_ts?: unknown };
+    }
+    let payload: Payload | undefined;
+    try {
+      payload = JSON.parse(new URLSearchParams(request.body).get("payload") ?? "") as Payload;
+    } catch {
+      payload = undefined;
+    }
+    const actions = payload?.actions;
+    const action =
+      Array.isArray(actions) && actions.length === 1
+        ? (actions[0] as { action_id?: unknown; value?: unknown } | undefined)
+        : undefined;
+    const decision =
+      action?.action_id === "review_approve"
+        ? "approve"
+        : action?.action_id === "review_reject"
+          ? "reject"
+          : undefined;
+    const userId = payload?.user?.id;
+    if (
+      payload?.type !== "block_actions" ||
+      decision === undefined ||
+      typeof action?.value !== "string" ||
+      typeof userId !== "string"
+    ) {
+      return { status: 400, json: { error: "bad_payload" }, headers: NO_STORE };
+    }
+    const ticket = [...tickets.values()].find((t) => t.review?.id === action.value);
+    if (ticket === undefined)
+      return { status: 404, json: { error: "not_found" }, headers: NO_STORE };
+    const review = ticket.review!;
+    if (
+      options.channelId !== undefined &&
+      (payload?.channel?.id !== options.channelId ||
+        payload?.container?.message_ts !== review.slackTs)
+    ) {
+      return { status: 403, json: { error: "forbidden" }, headers: NO_STORE };
+    }
+    if (review.decision === "timeout") return { status: 200, json: { outcome: "late" } };
+    if (review.decision !== null) {
+      return { status: 200, json: { outcome: "already_decided" } };
+    }
+    review.decidedBy = userId;
+    ticket.pendingDecision = { decision, at: at + DECISION_LAG_MS };
+    return { status: 200, json: { outcome: "recorded" } };
+  }
+
   function override(request: MockRequest): MockReply | undefined {
-    advance(now());
+    const at = now();
+    advance(at);
+    if (request.method === "POST" && request.path === INTERACTIVITY) {
+      return request.accessOk ? decide(request, at) : undefined;
+    }
     if (!request.accessOk || !request.bearerOk) return undefined;
     if (request.method === "POST" && request.path === "/api/internal/test-tickets") {
       let body: Record<string, unknown> = {};
