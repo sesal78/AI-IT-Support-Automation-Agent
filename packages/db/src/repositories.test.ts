@@ -453,14 +453,23 @@ describe("probeSchema", () => {
   const tableOf = (call: Captured | undefined) => call?.url.pathname.split("/").pop();
 
   it("reports both true when every probe succeeds, selecting only one row", async () => {
-    const calls = respond(ok([]), ok([]), ok([]), ok([]), ok([]), ok([]));
+    const calls = respond(ok([]), ok([]), ok([]), ok([]), ok([]), ok([]), ok([]));
     expect(await repos.probeSchema()).toEqual({
       database: true,
       migration0003: true,
       migration0005: true,
+      migration0006: true,
     });
     expect(calls.map(tableOf).sort()).toEqual(
-      ["ai_calls", "kb_articles", "reviews", "security_events", "tickets", "tickets"].sort(),
+      [
+        "ai_calls",
+        "kb_articles",
+        "notifications",
+        "reviews",
+        "security_events",
+        "tickets",
+        "tickets",
+      ].sort(),
     );
     expect(calls.some((c) => c.url.searchParams.get("select") === "is_test")).toBe(true);
     for (const call of calls) expect(call.url.searchParams.get("limit")).toBe("1");
@@ -475,6 +484,7 @@ describe("probeSchema", () => {
       database: true,
       migration0003: false,
       migration0005: true,
+      migration0006: true,
     });
   });
 
@@ -487,6 +497,20 @@ describe("probeSchema", () => {
       database: true,
       migration0003: true,
       migration0005: false,
+      migration0006: true,
+    });
+  });
+
+  it("reports migration0006 false, and the rest true, when only the notifications probe fails", async () => {
+    vi.stubGlobal("fetch", async (input: string | URL) => {
+      const url = new URL(String(input));
+      return url.pathname.endsWith("/notifications") ? pgError("42P01", 404) : ok([]);
+    });
+    expect(await repos.probeSchema()).toEqual({
+      database: true,
+      migration0003: true,
+      migration0005: true,
+      migration0006: false,
     });
   });
 
@@ -499,6 +523,7 @@ describe("probeSchema", () => {
       database: true,
       migration0003: false,
       migration0005: true,
+      migration0006: true,
     });
   });
 
@@ -510,6 +535,7 @@ describe("probeSchema", () => {
       database: false,
       migration0003: false,
       migration0005: false,
+      migration0006: false,
     });
   });
 
@@ -519,6 +545,7 @@ describe("probeSchema", () => {
       database: false,
       migration0003: false,
       migration0005: false,
+      migration0006: false,
     });
   });
 
@@ -531,15 +558,21 @@ describe("probeSchema", () => {
     vi.stubGlobal("fetch", async (input: string | URL) => {
       const url = new URL(String(input));
       started.push(`${url.pathname.split("/").pop()}:${url.searchParams.get("select")}`);
-      // The first (tickets.id) probe answers at once; the rest wait until all five have started.
+      // The first (tickets.id) probe answers at once; the rest wait until all six have started.
       if (started.length > 1) await gate;
       return ok([]);
     });
     const pending = repos.probeSchema();
-    await vi.waitFor(() => expect(started).toHaveLength(6));
+    await vi.waitFor(() => expect(started).toHaveLength(7));
     release?.();
-    expect(await pending).toEqual({ database: true, migration0003: true, migration0005: true });
+    expect(await pending).toEqual({
+      database: true,
+      migration0003: true,
+      migration0005: true,
+      migration0006: true,
+    });
     expect(started).toContain("reviews:id");
+    expect(started).toContain("notifications:id");
   });
 
   it("times out a hanging probe and counts it as false", async () => {
@@ -549,6 +582,7 @@ describe("probeSchema", () => {
       database: false,
       migration0003: false,
       migration0005: false,
+      migration0006: false,
     });
     expect(Date.now() - started).toBeLessThan(2000);
   });
@@ -757,12 +791,13 @@ describe("getTicketView", () => {
       { type: "redacted", at: "2026-09-29T10:01:00+00:00" },
     ]),
     reviews: ok([]),
+    notifications: ok([]),
   });
 
   it("selects named columns only, never a raw column", async () => {
     const calls = database(full());
     await repos.getTicketView(ticketId);
-    expect(calls.length).toBe(6);
+    expect(calls.length).toBe(7);
     for (const call of calls) {
       const columns = (call.url.searchParams.get("select") ?? "").split(",");
       for (const raw of Object.keys(RAW)) expect(columns).not.toContain(raw);
@@ -884,6 +919,85 @@ describe("getTicketView", () => {
   it("throws DbError when the ai_calls count fails", async () => {
     database({ ...full(), ai_calls: pgError("42501", 403) });
     await expectDbError(repos.getTicketView(ticketId), "getTicketView");
+  });
+
+  describe("notifications (P5-T8b)", () => {
+    const viewNotification = {
+      id: randomUUID(),
+      channel: "email",
+      kind: "incident_reply",
+      status: "sent",
+      provider_id: "msg_01",
+      reason: null,
+      at: now,
+    };
+    const skipped = {
+      id: randomUUID(),
+      channel: "email",
+      kind: "needs_info",
+      status: "skipped",
+      provider_id: null,
+      reason: "not_allow_listed",
+      at: "2026-09-29T10:02:00+00:00",
+    };
+
+    it("maps the rows to seven keys each, in the order the database returned them", async () => {
+      database({ ...full(), notifications: ok([viewNotification, skipped]) });
+      const view = await repos.getTicketView(ticketId);
+      expect(view?.notifications).toEqual([
+        {
+          id: viewNotification.id,
+          channel: "email",
+          kind: "incident_reply",
+          status: "sent",
+          reason: null,
+          providerId: "msg_01",
+          at: now,
+        },
+        {
+          id: skipped.id,
+          channel: "email",
+          kind: "needs_info",
+          status: "skipped",
+          reason: "not_allow_listed",
+          providerId: null,
+          at: "2026-09-29T10:02:00+00:00",
+        },
+      ]);
+      for (const entry of view?.notifications ?? []) {
+        expect(Object.keys(entry).sort()).toEqual(
+          ["at", "channel", "id", "kind", "providerId", "reason", "status"].sort(),
+        );
+      }
+    });
+
+    it("asks for the ticket's rows oldest first, with named columns and no address", async () => {
+      const calls = database(full());
+      await repos.getTicketView(ticketId);
+      const rows = calls.find((c) => c.url.pathname.endsWith("/notifications"));
+      expect(rows?.url.searchParams.get("ticket_id")).toBe(`eq.${ticketId}`);
+      expect(rows?.url.searchParams.get("order")).toBe("at.asc,id.asc");
+      expect(rows?.url.searchParams.get("select")).toBe(
+        "id,channel,kind,status,provider_id,reason,at",
+      );
+    });
+
+    it("drops a column the database returns beyond the ones asked for", async () => {
+      database({
+        ...full(),
+        notifications: ok([{ ...viewNotification, ticket_id: ticketId, to: RAW.requester_email }]),
+      });
+      const view = await repos.getTicketView(ticketId);
+      expect(JSON.stringify(view?.notifications)).not.toContain(RAW.requester_email);
+      expect(JSON.stringify(view?.notifications)).not.toContain("ticket_id");
+    });
+
+    it("throws DbError when the notifications query fails or a row has a bad value", async () => {
+      database({ ...full(), notifications: pgError("42P01", 404) });
+      await expectDbError(repos.getTicketView(ticketId), "getTicketView");
+      database({ ...full(), notifications: ok([{ ...viewNotification, status: "queued" }]) });
+      await expectDbError(repos.getTicketView(ticketId), "getTicketView");
+    });
   });
 });
 
@@ -1494,7 +1608,7 @@ describe("reviews", () => {
           return new Response(null, { status: 200, headers: { "content-range": "*/0" } });
         }
         if (table === "reviews") return reviewBody.clone();
-        if (table === "ticket_events") return ok([]);
+        if (table === "ticket_events" || table === "notifications") return ok([]);
         return ok(null, 200);
       });
       return calls;

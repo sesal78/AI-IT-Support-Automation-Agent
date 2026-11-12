@@ -64,7 +64,12 @@ async function load(overrides?: Record<string, string | undefined>): Promise<Rou
 beforeEach(() => {
   vi.resetModules();
   probeSchema.mockReset();
-  probeSchema.mockResolvedValue({ database: true, migration0003: true, migration0005: true });
+  probeSchema.mockResolvedValue({
+    database: true,
+    migration0003: true,
+    migration0005: true,
+    migration0006: true,
+  });
   probeBuiltinHelpdesk.mockReset();
   probeBuiltinHelpdesk.mockResolvedValue(true);
   runs.list.mockReset();
@@ -90,6 +95,7 @@ describe("GET /api/health/config", () => {
         database: true,
         migration0003: true,
         migration0005: true,
+        migration0006: true,
         pipelineTrigger: true,
         turnstile: true,
         internalApi: true,
@@ -139,7 +145,12 @@ describe("GET /api/health/config", () => {
   });
 
   it("reports migration0003 false but database true when one probe fails, still 200", async () => {
-    probeSchema.mockResolvedValue({ database: true, migration0003: false, migration0005: true });
+    probeSchema.mockResolvedValue({
+      database: true,
+      migration0003: false,
+      migration0005: true,
+      migration0006: true,
+    });
     const { GET } = await load();
     const res = await GET();
     expect(res.status).toBe(200);
@@ -149,7 +160,12 @@ describe("GET /api/health/config", () => {
   });
 
   it("reports migration0005 false with status 200 and the other flags unchanged when only the reviews probe fails", async () => {
-    probeSchema.mockResolvedValue({ database: true, migration0003: true, migration0005: false });
+    probeSchema.mockResolvedValue({
+      database: true,
+      migration0003: true,
+      migration0005: false,
+      migration0006: true,
+    });
     const { GET } = await load();
     const res = await GET();
     expect(res.status).toBe(200);
@@ -159,6 +175,35 @@ describe("GET /api/health/config", () => {
       database: true,
       migration0003: true,
       migration0005: false,
+      migration0006: true,
+      pipelineTrigger: true,
+      turnstile: true,
+      internalApi: true,
+      e2eMode: false,
+      slackInteractivity: true,
+      helpdeskReachable: true,
+      helpdeskAsleep: false,
+      builtinHelpdesk: false,
+    });
+  });
+
+  it("reports migration0006 false with status 200 and the other flags unchanged when only the notifications probe fails", async () => {
+    probeSchema.mockResolvedValue({
+      database: true,
+      migration0003: true,
+      migration0005: true,
+      migration0006: false,
+    });
+    const { GET } = await load();
+    const res = await GET();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(healthConfigSchema.safeParse(body).success).toBe(true);
+    expect(body.features).toEqual({
+      database: true,
+      migration0003: true,
+      migration0005: true,
+      migration0006: false,
       pipelineTrigger: true,
       turnstile: true,
       internalApi: true,

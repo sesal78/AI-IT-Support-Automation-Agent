@@ -394,6 +394,7 @@ function createDefaultRoute(
             database: true,
             migration0003: true,
             migration0005: true,
+            migration0006: true,
             pipelineTrigger: true,
             turnstile: true,
             internalApi: true,
