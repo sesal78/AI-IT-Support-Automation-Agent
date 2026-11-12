@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type { AddressInfo } from "node:net";
 import { brotliCompressSync, createGzip, deflateRawSync, deflateSync, gzipSync } from "node:zlib";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildCanaries } from "../src/canaries.js";
 import { createEgressRecorder } from "../test-support/egress-recorder.js";
 
@@ -160,6 +160,101 @@ describe("egress recorder: allowInQuery", () => {
     ["an origin that is not a URL", "nope", LOOKUP, EMAIL],
   ])("rejects %s", (_name, origin, path, value) => {
     expect(() => recorder.allowInQuery(origin, path, value)).toThrow(TypeError);
+  });
+});
+
+describe("egress recorder: allowRecipientInBody", () => {
+  const EMAIL = "demo.carol@example.com";
+  // Rules last until stop(), so every test gets its own path.
+  let runs = 0;
+  let SEND = "/emails";
+  beforeEach(() => {
+    SEND = `/emails-${(runs += 1)}`;
+  });
+  const send = (body: unknown, url = `${ORIGIN}${SEND}`, init: RequestInit = {}) =>
+    post(JSON.stringify(body), { headers: { "content-type": "application/json" }, ...init }, url);
+
+  it("lets exactly the registered address be the only entry of `to`, and still records the body", async () => {
+    recorder.forbid(EMAIL);
+    recorder.allowRecipientInBody(ORIGIN, SEND, EMAIL, "help@example.test");
+    await send({ from: "help@example.test", to: [EMAIL], subject: "Your IT ticket ITS-000042" });
+    expect(() => recorder.assertClean()).not.toThrow();
+    expect(recorder.requests()[0]?.body).toContain(EMAIL);
+  });
+
+  it.each([
+    ["no sender registered", undefined, "help@example.test"],
+    ["a different sender", "help@example.test", "other@example.test"],
+  ])("flags the `from` address when %s", async (_name, sender, from) => {
+    recorder.allowRecipientInBody(ORIGIN, SEND, EMAIL, sender);
+    await send({ from, to: [EMAIL] });
+    expect(leakMessage()).toContain("body: unredacted:EMAIL");
+  });
+
+  it("does not blank the registered sender anywhere but `from`", async () => {
+    recorder.allowRecipientInBody(ORIGIN, SEND, EMAIL, "help@example.test");
+    await send({ from: "help@example.test", to: [EMAIL], text: "write to help@example.test" });
+    expect(leakMessage()).toContain("body: unredacted:EMAIL");
+  });
+
+  it("matches the address case-insensitively", async () => {
+    recorder.allowRecipientInBody(ORIGIN, SEND, EMAIL);
+    await send({ to: [EMAIL.toUpperCase()], subject: "s" });
+    expect(() => recorder.assertClean()).not.toThrow();
+  });
+
+  it.each([
+    ["the subject", { to: [EMAIL], subject: `hello ${EMAIL}` }, "body:"],
+    ["the text", { to: [EMAIL], text: `contact ${EMAIL}` }, "body:"],
+    ["the html", { to: [EMAIL], html: `<p>${EMAIL}</p>` }, "body:"],
+    ["another field", { to: [EMAIL], reply_to: EMAIL }, "body:"],
+    ["a second recipient", { to: [EMAIL, "x@example.com"] }, "body:"],
+    ["a bcc", { to: [EMAIL], bcc: ["x@example.com"] }, "body:"],
+    ["a different address in to", { to: ["other@example.com"] }, "body:"],
+    ["a string instead of a list", { to: EMAIL }, "body:"],
+  ])("still flags an email in %s", async (_name, body, where) => {
+    recorder.forbid(EMAIL);
+    recorder.allowRecipientInBody(ORIGIN, SEND, EMAIL);
+    await send(body);
+    expect(leakMessage()).toContain(where);
+  });
+
+  it("still flags a canary in another field next to the allowed address", async () => {
+    recorder.allowRecipientInBody(ORIGIN, SEND, EMAIL);
+    await send({ to: [EMAIL], text: `ssn ${canary("ssn")}` });
+    expect(leakMessage()).toContain("body: ssn");
+  });
+
+  it("does not exempt another path, another origin, the query or a header", async () => {
+    recorder.forbid(EMAIL);
+    recorder.allowRecipientInBody(ORIGIN, SEND, EMAIL);
+    await send({ to: [EMAIL] }, `${ORIGIN}/other`);
+    await fetch(`${ORIGIN}${SEND}?to=${encodeURIComponent(EMAIL)}`, { method: "POST" });
+    await send({ to: [EMAIL] }, `${ORIGIN}${SEND}`, { headers: { "x-copy": EMAIL } });
+    const message = leakMessage();
+    expect(message).toMatch(/body: custom#\d+/);
+    expect(message).toMatch(/query: custom#\d+/);
+    expect(message).toMatch(/header x-copy: custom#\d+/);
+  });
+
+  it("flags the address when the body is not JSON", async () => {
+    recorder.forbid(EMAIL);
+    recorder.allowRecipientInBody(ORIGIN, SEND, EMAIL);
+    await post(`to=${EMAIL}`, {}, `${ORIGIN}${SEND}`);
+    expect(leakMessage()).toContain("body:");
+  });
+
+  it.each([
+    ["an empty value", ORIGIN, "/emails", ""],
+    ["a path without a leading slash", ORIGIN, "emails", EMAIL],
+    ["a path with a query", ORIGIN, "/emails?x=1", EMAIL],
+    ["an origin that is not a URL", "nope", "/emails", EMAIL],
+  ])("rejects %s", (_name, origin, path, value) => {
+    expect(() => recorder.allowRecipientInBody(origin, path, value)).toThrow(TypeError);
+  });
+
+  it("rejects an empty sender", () => {
+    expect(() => recorder.allowRecipientInBody(ORIGIN, SEND, EMAIL, " ")).toThrow(TypeError);
   });
 });
 

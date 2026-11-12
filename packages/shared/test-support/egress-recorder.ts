@@ -63,6 +63,16 @@ export type EgressRecorder = {
    * still scanned. Cleared by `stop()`.
    */
   allowInQuery(origin: string, path: string, value: string): void;
+  /**
+   * Lets exactly `value` (compared in lower case) be the only entry of `to` in the
+   * JSON body of a POST at one origin and path (the requester email in a Resend
+   * send). The request is still recorded in full, and every other field of the
+   * body is still scanned: the value in a subject, text, html, cc, bcc, a second
+   * recipient, the query, a header, another path or origin, or a body that is
+   * not that JSON is still a leak. A `sender` (the configured From address) is
+   * blanked the same way, only as the `from` field. Cleared by `stop()`.
+   */
+  allowRecipientInBody(origin: string, path: string, value: string, sender?: string): void;
   /** Forgets recorded requests and violations; keeps mocks and forbidden strings. */
   reset(): void;
   /** Recorded requests (without 127.0.0.1 traffic). */
@@ -160,6 +170,12 @@ export function createEgressRecorder(options: { runId?: string } = {}): EgressRe
   const unmocked = new Set<string>();
   const forbidden: string[] = [];
   const allowedInQuery: Array<{ origin: string; path: string; value: string }> = [];
+  const allowedRecipients: Array<{
+    origin: string;
+    path: string;
+    value: string;
+    sender: string | undefined;
+  }> = [];
   let running = false;
 
   /** The query text to scan: allowed values for this host and path are blanked out. */
@@ -176,6 +192,39 @@ export function createEgressRecorder(options: { runId?: string } = {}): EgressRe
       }
     }
     return changed ? query.toString().replaceAll("+", "%20") : url.search;
+  }
+
+  /** The body text to scan: an allowed sole recipient is blanked out, nothing else. */
+  function scannedBody(url: URL, method: string, body: string): string {
+    if (method !== "POST") return body;
+    for (const rule of allowedRecipients) {
+      if (rule.origin !== url.origin || rule.path !== url.pathname) continue;
+      try {
+        const parsed: unknown = JSON.parse(body);
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
+        const to = (parsed as { to?: unknown }).to;
+        if (
+          Array.isArray(to) &&
+          to.length === 1 &&
+          typeof to[0] === "string" &&
+          to[0].toLowerCase() === rule.value.toLowerCase()
+        ) {
+          const from = (parsed as { from?: unknown }).from;
+          const blankFrom =
+            rule.sender !== undefined &&
+            typeof from === "string" &&
+            from.toLowerCase() === rule.sender.toLowerCase();
+          return JSON.stringify({
+            ...parsed,
+            to: ["[allowed]"],
+            ...(blankFrom ? { from: "[allowed]" } : {}),
+          });
+        }
+      } catch {
+        // Not JSON: scanned as it is.
+      }
+    }
+    return body;
   }
 
   async function capture(request: Request): Promise<void> {
@@ -199,7 +248,7 @@ export function createEgressRecorder(options: { runId?: string } = {}): EgressRe
     } catch {
       unreadable = "body could not be decoded";
     }
-    haystacks.push({ where: "body", text: body });
+    haystacks.push({ where: "body", text: scannedBody(url, request.method, body) });
     entries.push({
       record: {
         method: request.method,
@@ -282,6 +331,7 @@ export function createEgressRecorder(options: { runId?: string } = {}): EgressRe
       unmocked.clear();
       forbidden.length = 0;
       allowedInQuery.length = 0;
+      allowedRecipients.length = 0;
     },
     mock(origin, resolver) {
       const base = new URL(origin).origin;
@@ -306,6 +356,18 @@ export function createEgressRecorder(options: { runId?: string } = {}): EgressRe
         throw new TypeError("allowInQuery() needs a path such as /api/x, without a query");
       }
       allowedInQuery.push({ origin: new URL(origin).origin, path, value });
+    },
+    allowRecipientInBody(origin, path, value, sender) {
+      if (typeof value !== "string" || value.trim() === "") {
+        throw new TypeError("allowRecipientInBody() needs a non-empty string");
+      }
+      if (!path.startsWith("/") || path.includes("?") || path.includes("#")) {
+        throw new TypeError("allowRecipientInBody() needs a path such as /emails, without a query");
+      }
+      if (sender !== undefined && (typeof sender !== "string" || sender.trim() === "")) {
+        throw new TypeError("allowRecipientInBody() needs a non-empty sender");
+      }
+      allowedRecipients.push({ origin: new URL(origin).origin, path, value, sender });
     },
     reset() {
       entries.length = 0;
