@@ -118,7 +118,6 @@ export {
   type HelpdeskSyncPayload,
   type IntakeTicketPayload,
   type NotificationKind,
-  type NotifyRequesterPayload,
   type ReviewTicketPayload,
   type TicketSubmission,
   type TriageTicketPayload,
