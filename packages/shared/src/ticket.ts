@@ -71,3 +71,24 @@ export interface HelpdeskSyncPayload {
   /** Test switches; they take effect only in E2E mode on a test ticket. */
   testOverrides?: TestOverrides;
 }
+
+/**
+ * Trigger.dev id of the requester reply task (services/pipeline, P5-T8b),
+ * triggered by string id with `NotifyRequesterPayload` once per ticket and kind.
+ */
+export const NOTIFY_REQUESTER_TASK_ID = "notify-requester";
+
+/** The two reply emails: the incident reply and the "more detail" request. */
+export const NOTIFICATION_KINDS = ["incident_reply", "needs_info"] as const;
+export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
+
+/**
+ * Payload of `notify-requester`: the ticket and the kind only. Strict, so the
+ * address or any ticket text can never travel in the payload.
+ */
+export const notifyRequesterPayloadSchema = z.strictObject({
+  ticketId: z.uuid(),
+  kind: z.enum(NOTIFICATION_KINDS),
+});
+
+export type NotifyRequesterPayload = z.infer<typeof notifyRequesterPayloadSchema>;
