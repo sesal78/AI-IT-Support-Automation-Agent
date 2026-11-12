@@ -261,3 +261,34 @@ describe("getNotification", () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+describe("getRequesterEmail", () => {
+  it("selects the one named column and returns the address", async () => {
+    const calls = respond(ok({ requester_email: REQUESTER }));
+    expect(await repos.getRequesterEmail(ticketId)).toBe(REQUESTER);
+    expect(calls[0]?.url.pathname).toBe("/rest/v1/tickets");
+    expect(selectOf(calls[0])).toBe("requester_email");
+    expect(calls[0]?.url.searchParams.get("id")).toBe(`eq.${ticketId}`);
+  });
+
+  it("returns null for an unknown ticket", async () => {
+    respond(ok(null));
+    expect(await repos.getRequesterEmail(ticketId)).toBeNull();
+  });
+
+  it("throws DbError when the row has another shape, naming no value", async () => {
+    respond(ok({ requester_email: 42 }));
+    await expectDbError(repos.getRequesterEmail(ticketId), "getRequesterEmail");
+  });
+
+  it("throws DbError on a Supabase error without echoing the address", async () => {
+    respond(pgError("42501", 403));
+    await expectDbError(repos.getRequesterEmail(ticketId), "getRequesterEmail");
+  });
+
+  it("rejects a non-UUID with a TypeError before any request", async () => {
+    const calls = respond();
+    await expect(repos.getRequesterEmail("nope")).rejects.toThrow(TypeError);
+    expect(calls).toHaveLength(0);
+  });
+});

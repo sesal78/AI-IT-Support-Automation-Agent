@@ -3,7 +3,10 @@ import { z } from "zod";
 import {
   HELPDESK_SYNC_TASK_ID,
   INTAKE_TICKET_TASK_ID,
+  NOTIFICATION_KINDS,
+  NOTIFY_REQUESTER_TASK_ID,
   TRIAGE_TICKET_TASK_ID,
+  notifyRequesterPayloadSchema,
   ticketNumberSchema,
   ticketSubmissionSchema,
 } from "./ticket.js";
@@ -101,5 +104,28 @@ describe("ticketNumberSchema", () => {
     42,
   ])("rejects %j", (value) => {
     expect(ticketNumberSchema.safeParse(value).success).toBe(false);
+  });
+});
+
+describe("NOTIFY_REQUESTER_TASK_ID and notifyRequesterPayloadSchema", () => {
+  const ticketId = "6f1e3c0e-5b8a-4d7e-9c52-0a1b2c3d4e5f";
+
+  it("is the Trigger.dev task id of the requester reply task", () => {
+    expect(NOTIFY_REQUESTER_TASK_ID).toBe("notify-requester");
+    expect([...NOTIFICATION_KINDS]).toEqual(["incident_reply", "needs_info"]);
+  });
+
+  it.each(NOTIFICATION_KINDS)("accepts a ticket id and the kind %s", (kind) => {
+    expect(notifyRequesterPayloadSchema.parse({ ticketId, kind })).toEqual({ ticketId, kind });
+  });
+
+  it.each([
+    ["a non-UUID ticket id", { ticketId: "ITS-000042", kind: "incident_reply" }],
+    ["an unknown kind", { ticketId, kind: "welcome" }],
+    ["a missing kind", { ticketId }],
+    ["an extra key (the requester address)", { ticketId, kind: "needs_info", to: "a@b.test" }],
+    ["test overrides", { ticketId, kind: "needs_info", testOverrides: { shadowMode: true } }],
+  ])("rejects %s", (_name, payload) => {
+    expect(notifyRequesterPayloadSchema.safeParse(payload).success).toBe(false);
   });
 });

@@ -1110,6 +1110,24 @@ export function createRepositories(client: DbClient) {
     },
 
     /**
+     * The requester's address, for the reply task ONLY (service role, pipeline;
+     * the web app and the internal view never call it). The one named column
+     * is selected and the address is never part of an error. Null when no
+     * ticket has this id.
+     */
+    async getRequesterEmail(ticketId: string): Promise<string | null> {
+      const op = "getRequesterEmail";
+      assertUuid(op, "ticketId", ticketId);
+      const result = await client
+        .from("tickets")
+        .select("requester_email")
+        .eq("id", ticketId)
+        .maybeSingle();
+      const row = parseRow(op, z.object({ requester_email: z.string() }).nullable(), result);
+      return row === null ? null : row.requester_email;
+    },
+
+    /**
      * Stores the helpdesk incident of a ticket (P5-T5a), only while no sys_id is
      * set (one conditional UPDATE). `changed: false` when the ticket already
      * holds the same sys_id. A different stored sys_id throws
