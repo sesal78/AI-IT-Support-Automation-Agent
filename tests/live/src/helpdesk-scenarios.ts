@@ -362,14 +362,14 @@ export const L02_CONCURRENCY = 4;
 
 /**
  * The 10 eval tickets that route `auto` live (resolved point 18). The dataset
- * has no `auto` label: they are the first 10 of the `normal` set, which carry
- * no sensitive topic and no `needs_info` or `injection_suspected` flag.
+ * has no `auto` label: use the first 10 normal tickets whose expected route
+ * is null. Normal tickets labelled for review (P1 or flagged) are excluded.
  */
 export function autoEvalTickets(path: URL | string = DATASET) {
   const normal = evalTicketSchema
     .array()
     .parse(JSON.parse(readFileSync(path, "utf8")))
-    .filter((t) => t.set === "normal");
+    .filter((t) => t.set === "normal" && t.expected.route === null);
   if (normal.length < L02_TICKETS) throw new RangeError("expected 10 normal eval tickets");
   return normal.slice(0, L02_TICKETS);
 }
