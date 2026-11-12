@@ -87,12 +87,6 @@ async function storedNumber(
   return ticket.servicenow_number;
 }
 
-/** A provider answer that no repeat can change: any 4xx but 429 and 408, or an unreadable reply. */
-function isPermanent(code: string): boolean {
-  if (code === "bad_response" || code === "redirect") return true;
-  return /^http_4[0-9]{2}$/.test(code) && code !== "http_429" && code !== "http_408";
-}
-
 /**
  * The task body, exported so tests can call it without the Trigger.dev runtime.
  *
@@ -110,7 +104,7 @@ function isPermanent(code: string): boolean {
  * network and timeout, waiting 1 s then 2 s); the task makes up to 3 attempts.
  * A repeated key makes the provider return its first result, which bridges a
  * lost reply or a failed row write inside the provider's key window (24 hours).
- * A permanent 4xx or unreadable reply aborts at once. The event follows the
+ * Provider errors follow the task's three-attempt rule. The event follows the
  * row and is written only by the run that created the row, so a crash between
  * the two leaves the row (the proof) without its event.
  *
@@ -170,7 +164,7 @@ export async function runNotifyRequester(
       ? fixStepsSchema.safeParse(triage.suggested_fix)
       : null;
   if (fix !== null && !fix.success) {
-    throw new Error("notify-requester: the saved fix steps have an unexpected shape");
+    throw new AbortTaskRunError("notify-requester: the saved fix steps have an unexpected shape");
   }
   let email: ReturnType<typeof buildReplyEmail>;
   try {
@@ -188,24 +182,14 @@ export async function runNotifyRequester(
     );
   }
 
-  let providerId: string;
-  try {
-    ({ id: providerId } = await deps.resend.send({
-      from: deps.from,
-      to: parseRecipient(requester),
-      subject: email.subject,
-      text: email.text,
-      html: email.html,
-      idempotencyKey: `notify:${ticketId}:${kind}`,
-    }));
-  } catch (error) {
-    if (error instanceof EmailProviderError && isPermanent(error.code)) {
-      throw new AbortTaskRunError(
-        `notify-requester: the email provider refused ticket ${ticketId} (${error.code})`,
-      );
-    }
-    throw error;
-  }
+  const { id: providerId } = await deps.resend.send({
+    from: deps.from,
+    to: parseRecipient(requester),
+    subject: email.subject,
+    text: email.text,
+    html: email.html,
+    idempotencyKey: `notify:${ticketId}:${kind}`,
+  });
 
   const { created } = await repos.recordNotification({
     ticketId,
@@ -264,6 +248,8 @@ export async function onNotifyRequesterFailure(
   params: { payload: unknown; error: unknown },
   deps?: NotifyRequesterFailureDeps,
 ): Promise<void> {
+  // Refused input never reached Resend and must not fill the terminal row slot.
+  if (params.error instanceof AbortTaskRunError) return;
   const error =
     params.error instanceof EmailProviderError ? params.error.code : errorClassName(params.error);
   const log = deps?.logger ?? logger;
