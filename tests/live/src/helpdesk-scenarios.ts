@@ -7,6 +7,7 @@ import {
   cleanupChecks,
   closeIncidents,
   createHelpdeskTicket,
+  createdHelpdeskTickets,
   incidentCreatedAt,
   type IncidentCleanup,
   PERSONAS,
@@ -16,11 +17,13 @@ import {
   serviceNowOf,
   waitForIncident,
 } from "./helpdesk.ts";
-import { result } from "./pipeline.ts";
+import { p95, result } from "./pipeline.ts";
+import { pool } from "./review-security.ts";
 import { SIGN, slackNotRun } from "./review-flow.ts";
 import { E2E_PREFIX, type E2eServiceNow } from "./servicenow.ts";
 import { createSlackSigner, type Decision, type SendResult } from "./slack-signer.ts";
-import type { InternalTicketView } from "@ai-it-support/shared";
+import { evalTicketSchema, type InternalTicketView } from "@ai-it-support/shared";
+import { readFileSync } from "node:fs";
 
 /** DoD table entry 1 and 2: a printer fault reaches its incident this fast. */
 export const INCIDENT_DEADLINE_MS = 60_000;
@@ -350,9 +353,151 @@ export const shadowModeScenario: Scenario = {
   },
 };
 
+const DATASET = new URL("../../../evals/tickets.json", import.meta.url);
+export const L02_TICKETS = 10;
+/** At most this many ticket creations are in flight (T5.L.02). */
+export const L02_CONCURRENCY = 4;
+
+/**
+ * The 10 eval tickets that route `auto` live (resolved point 18). The dataset
+ * has no `auto` label: they are the first 10 of the `normal` set, which carry
+ * no sensitive topic and no `needs_info` or `injection_suspected` flag.
+ */
+export function autoEvalTickets(path: URL | string = DATASET) {
+  const normal = evalTicketSchema
+    .array()
+    .parse(JSON.parse(readFileSync(path, "utf8")))
+    .filter((t) => t.set === "normal");
+  if (normal.length < L02_TICKETS) throw new RangeError("expected 10 normal eval tickets");
+  return normal.slice(0, L02_TICKETS);
+}
+
+/**
+ * T5.L.02 (DoD 1): the 10 auto eval tickets, at most 4 created at a time, each
+ * reaches `incident_created`, and the p95 of (incident_created - createdAt) is
+ * under 60 s. Seun chose on 2026-11-13 AEDT to keep the existing nearest-rank
+ * p95, so with 10 values p95 is the maximum: all 10 must be under 60 000 ms.
+ * A ticket that routes `review` fails, naming the eval ID.
+ */
+export const autoIncidentLatencyScenario: Scenario = {
+  id: "T5.L.02",
+  heavy: true,
+  async run(context) {
+    const notRun = serviceNowNotRun(context);
+    if (notRun) return notRun;
+    const sn = serviceNowOf(context);
+    return withCleanup(context, sn, async (ticketIds) => {
+      const checks: string[] = [];
+      const evidence: Evidence = {};
+      const created: Array<{ evalId: string; ticketId: string }> = [];
+      await pool(autoEvalTickets(), L02_CONCURRENCY, async (t, index) => {
+        const ticket = await createHelpdeskTicket(context, "L02", {
+          persona: {
+            name: t.name,
+            email: `e2e-load+${index + 1}@example.com`,
+            department: t.department,
+          },
+          text: { title: t.title, description: t.description },
+        });
+        created.push({ evalId: t.id, ticketId: ticket.ticketId });
+        ticketIds.push(ticket.ticketId);
+      });
+      // Eval order, not finishing order.
+      created.sort((x, y) => x.evalId.localeCompare(y.evalId));
+
+      const views = new Map<string, InternalTicketView>();
+      for (const { ticketId } of created) {
+        views.set(ticketId, await waitForIncident(context, ticketId, INCIDENT_WAIT_MS));
+      }
+
+      const byEval = new Map<string, number>();
+      const notCreated: string[] = [];
+      const reviewRouted: string[] = [];
+      let aiCallCount = 0;
+      for (const { evalId, ticketId } of created) {
+        const view = views.get(ticketId)!;
+        aiCallCount += view.aiCallCount;
+        if (view.triage?.route !== "auto") reviewRouted.push(evalId);
+        const at = incidentCreatedAt(view);
+        if (view.status !== "incident_created" || at === null) notCreated.push(evalId);
+        else byEval.set(evalId, at - Date.parse(view.createdAt));
+      }
+      const latencies = [...byEval.values()];
+      const p95Ms = latencies.length === L02_TICKETS ? p95(latencies) : null;
+      const slowTickets = [...byEval.entries()]
+        .filter(([, ms]) => ms >= INCIDENT_DEADLINE_MS)
+        .map(([evalId]) => evalId);
+
+      if (notCreated.length > 0) checks.push("all-incident-created");
+      if (reviewRouted.length > 0) checks.push("route-auto");
+      if (p95Ms === null || p95Ms >= INCIDENT_DEADLINE_MS) checks.push("p95-under-60s");
+
+      Object.assign(evidence, {
+        tickets: created.length,
+        latenciesMs: latencies,
+        p95Ms,
+        maxMs: latencies.length > 0 ? Math.max(...latencies) : null,
+        notCreated,
+        reviewRouted,
+        slowTickets,
+        aiCallCount,
+      });
+      return { checks, evidence };
+    });
+  },
+};
+
+/**
+ * T5.L.08 (after T5.L.02 in the same run): for those 10 tickets, the incident's
+ * `assignment_group` is the `sys_id` of the triage group. It reads the closed
+ * incidents T5.L.02 left behind and creates nothing. Without T5.L.02 in this
+ * run it reports `not_run`.
+ */
+export const triageGroupScenario: Scenario = {
+  id: "T5.L.08",
+  heavy: true,
+  async run(context) {
+    const notRun = serviceNowNotRun(context);
+    if (notRun) return notRun;
+    const tickets = createdHelpdeskTickets(context).filter((t) => t.scenarioId === "L02");
+    if (tickets.length === 0) return { status: "not_run", evidence: { reason: "l02-not-in-run" } };
+    const sn = serviceNowOf(context);
+    const checks: string[] = [];
+    const mismatched: string[] = [];
+    const unknownGroup: string[] = [];
+    let matched = 0;
+    let aiCallCount = 0;
+    for (const ticket of tickets) {
+      const view = await context.client.ticket(ticket.ticketId);
+      aiCallCount += view.aiCallCount;
+      const name = view.triage?.assignmentGroup ?? null;
+      const group = name === null ? undefined : await sn.groupByName(name);
+      if (group?.["sys_id"] === undefined) {
+        unknownGroup.push(ticket.ticketId);
+        continue;
+      }
+      const incidents = await sn.incidentsByCorrelationId(ticket.ticketId);
+      if (incidents.length === 1 && incidents[0]!.assignment_group === group["sys_id"])
+        matched += 1;
+      else mismatched.push(ticket.ticketId);
+    }
+    if (mismatched.length > 0) checks.push("assignment-group");
+    if (unknownGroup.length > 0) checks.push("triage-group-exists");
+    return result(checks, {
+      tickets: tickets.length,
+      matched,
+      mismatched,
+      unknownGroup,
+      aiCallCount,
+    });
+  },
+};
+
 export const helpdeskScenarios: readonly Scenario[] = [
   printerFaultScenario,
   duplicateSubmitScenario,
   approveRejectTimeoutScenario,
   shadowModeScenario,
+  autoIncidentLatencyScenario,
+  triageGroupScenario,
 ];

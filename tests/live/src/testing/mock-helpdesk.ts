@@ -24,6 +24,10 @@ export interface MockHelpdeskFaults {
   readonly workNotes?: (testId: string) => number;
   /** The incident's `correlation_display` instead of the ticket number. */
   readonly correlationDisplay?: (testId: string) => string;
+  /** The incident's `assignment_group` name instead of the triage group (T5.L.08). */
+  readonly assignmentGroup?: (testId: string) => string;
+  /** The triage route instead of the text's (T5.L.02: a live triage miss). */
+  readonly route?: (testId: string) => "auto" | "review";
   /** Creates the incident although the ticket is in shadow mode (T5.L.05 negative). */
   readonly createInShadow?: boolean;
   /** Creates an incident for a rejected or timed-out ticket (T5.L.04 negative). */
@@ -148,7 +152,8 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
         number: `INC${String(n).padStart(7, "0")}`,
         category: faults.category?.(t.testId) ?? t.triage.category,
         caller_id: faults.caller?.(t.testId) ?? mockCallerId(data, t.email),
-        assignment_group: groupSysId(data, t.triage.assignmentGroup) ?? "",
+        assignment_group:
+          groupSysId(data, faults.assignmentGroup?.(t.testId) ?? t.triage.assignmentGroup) ?? "",
         short_description: `${E2E_PREFIX} ${t.title}`,
         description: t.description,
         state: "1",
@@ -275,6 +280,7 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
     const overrides = (body.testOverrides ?? {}) as { shadowMode?: unknown };
     const title = redact(String(body.title)).text;
     const description = redact(String(body.description)).text;
+    const triage = defaultHelpdeskTriage(title, description);
     const ticket: MockHelpdeskTicket = {
       testId,
       ticketId: randomUUID(),
@@ -283,7 +289,7 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
       title,
       description,
       email: String(body.email ?? ""),
-      triage: defaultHelpdeskTriage(title, description),
+      triage: { ...triage, route: faults.route?.(testId) ?? triage.route },
       shadowMode: overrides.shadowMode === true,
       reviewTimeoutMs: options.reviewTimeoutMs ?? REVIEW_TIMEOUT_MS,
       status: "new",

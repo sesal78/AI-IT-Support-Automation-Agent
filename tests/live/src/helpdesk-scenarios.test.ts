@@ -3,7 +3,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   approveRejectTimeoutScenario,
+  autoEvalTickets,
   duplicateSubmitScenario,
+  L02_TICKETS,
   printerFaultScenario,
   shadowModeScenario,
 } from "./helpdesk-scenarios.ts";
@@ -174,6 +176,100 @@ describe("T5.L.04 approve, reject and timeout", () => {
     const { code, report } = await h.run([], [approveRejectTimeoutScenario]);
     expect(code).toBe(2);
     expect(report.scenarios[0]).toMatchObject({ status: "not_run" });
+    expect(h.count("POST", "/api/internal/test-tickets")).toBe(0);
+  });
+});
+
+describe("T5.L.02 auto incident latency and T5.L.08 triage group", () => {
+  it("uses the first 10 normal eval tickets as the auto set", () => {
+    const tickets = autoEvalTickets();
+    expect(tickets).toHaveLength(L02_TICKETS);
+    expect(tickets.every((t) => t.expected.sensitiveTopic === null)).toBe(true);
+    expect(new Set(tickets.map((t) => t.id)).size).toBe(L02_TICKETS);
+  });
+
+  it("passes with 10 incidents, a p95 of 7 s, and at most 4 creations in flight", async () => {
+    const h = await harness({ delayMs: 10 });
+    const { code, report } = await h.run(["--only", "T5.L.02"]);
+    expect(code).toBe(0);
+    expect(evidenceOf(report)).toMatchObject({
+      tickets: 10,
+      p95Ms: 7_000,
+      maxMs: 7_000,
+      notCreated: [],
+      reviewRouted: [],
+      slowTickets: [],
+      cleanupClosed: 10,
+      cleanupOpen: 0,
+      failedChecks: [],
+    });
+    expect(evidenceOf(report)["latenciesMs"]).toHaveLength(10);
+    expect(h.e2e.peakInFlightOf("POST /api/internal/test-tickets")).toBeLessThanOrEqual(4);
+    expect(h.e2e.peakInFlightOf("POST /api/internal/test-tickets")).toBeGreaterThan(1);
+    expect(h.count("POST", "/api/internal/test-tickets")).toBe(10);
+    expect(h.data.incidents.every((i) => i["state"] === "7")).toBe(true);
+  });
+
+  it.each([
+    [54_000, 60_000],
+    [55_000, 61_000],
+  ])("fails when the slowest latency is %i ms (p95 %i)", async (slowFault, p95Ms) => {
+    const h = await harness({
+      faults: { incidentAfterMs: (id) => (id.endsWith(":L02:10") ? slowFault : 1_000) },
+    });
+    const { code, report } = await h.run(["--only", "T5.L.02"]);
+    expect(code).toBe(1);
+    expect(failedChecks(report)).toEqual(["p95-under-60s"]);
+    expect(evidenceOf(report)["p95Ms"]).toBe(p95Ms);
+    expect(evidenceOf(report)["slowTickets"]).toEqual(["E010"]);
+  });
+
+  it("fails, naming the eval ID, when a ticket routes review", async () => {
+    const h = await harness({
+      faults: { route: (id) => (id.endsWith(":L02:2") ? "review" : "auto") },
+    });
+    const { code, report } = await h.run(["--only", "T5.L.02"]);
+    expect(code).toBe(1);
+    expect(failedChecks(report)).toContain("route-auto");
+    expect(evidenceOf(report)["reviewRouted"]).toEqual(["E002"]);
+  });
+
+  it("T5.L.08 passes for the 10 closed incidents T5.L.02 left behind", async () => {
+    const h = await harness();
+    const { code, report } = await h.run(["--only", "T5.L.02,T5.L.08"]);
+    expect(code).toBe(0);
+    expect(report.scenarios.map((s) => s.status)).toEqual(["pass", "pass"]);
+    expect(report.scenarios[1]!.evidence).toMatchObject({
+      tickets: 10,
+      matched: 10,
+      mismatched: [],
+      unknownGroup: [],
+      failedChecks: [],
+    });
+  });
+
+  it("T5.L.08 fails, naming the ticket, when one group differs", async () => {
+    const h = await harness({
+      faults: { assignmentGroup: (id) => (id.endsWith(":L02:3") ? "Network" : "Software") },
+    });
+    const { code, report } = await h.run(["--only", "T5.L.02,T5.L.08"]);
+    expect(code).toBe(1);
+    expect(report.scenarios[1]!.status).toBe("fail");
+    expect(report.scenarios[1]!.evidence).toMatchObject({
+      matched: 9,
+      failedChecks: ["assignment-group"],
+    });
+    expect(report.scenarios[1]!.evidence["mismatched"]).toHaveLength(1);
+  });
+
+  it("T5.L.08 is not_run when T5.L.02 did not run", async () => {
+    const h = await harness();
+    const { code, report } = await h.run(["--only", "T5.L.08"]);
+    expect(code).toBe(2);
+    expect(report.scenarios[0]).toMatchObject({
+      status: "not_run",
+      evidence: { reason: "l02-not-in-run" },
+    });
     expect(h.count("POST", "/api/internal/test-tickets")).toBe(0);
   });
 });

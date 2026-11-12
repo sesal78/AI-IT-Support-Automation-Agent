@@ -32,6 +32,17 @@ export interface HelpdeskTicketOptions {
 
 const tickets = new WeakMap<ScenarioContext, HelpdeskTicket[]>();
 const runStarted = new WeakMap<ScenarioContext, number>();
+// One counter per scenario: two creations in flight must not take one number.
+const counters = new WeakMap<ScenarioContext, Map<string, number>>();
+
+/** The next number for this scenario's test ID, counted before the request. */
+function nextNumber(context: ScenarioContext, scenarioId: string): number {
+  const map = counters.get(context) ?? new Map<string, number>();
+  const n = (map.get(scenarioId) ?? 0) + 1;
+  map.set(scenarioId, n);
+  counters.set(context, map);
+  return n;
+}
 
 /** The tickets this run created through `createHelpdeskTicket`, in order. */
 export const createdHelpdeskTickets = (context: ScenarioContext): readonly HelpdeskTicket[] =>
@@ -61,8 +72,7 @@ export async function createHelpdeskTicket(
   options: HelpdeskTicketOptions,
 ): Promise<HelpdeskTicket> {
   runStartMs(context);
-  const known = createdHelpdeskTickets(context).filter((t) => t.scenarioId === scenarioId);
-  const n = options.n ?? known.length + 1;
+  const n = options.n ?? nextNumber(context, scenarioId);
   const testId = `${context.runId}:${scenarioId}:${n}`;
   const { ticketId } = await context.client.createTestTicket({
     name: options.persona.name,
