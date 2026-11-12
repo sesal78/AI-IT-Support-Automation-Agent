@@ -8,6 +8,7 @@ import {
 } from "@ai-it-support/helpdesk";
 import { helpdeskContractCases } from "@ai-it-support/helpdesk/testing";
 import { missingServiceNowEnv } from "./config.ts";
+import { noteForeignTickets } from "./helpdesk.ts";
 import type { Scenario, ScenarioResult } from "./runner.ts";
 import { createE2eServiceNow } from "./servicenow.ts";
 
@@ -84,6 +85,9 @@ export const serviceNowContractScenario: Scenario = {
         cleanupErrors += 1;
       }
     }
+    // These correlation IDs belong to this scenario, not to an app ticket, so
+    // T5.O.01 must not report them as orphans.
+    noteForeignTickets(ctx, ticketIds);
     return {
       status: failedCases === 0 && cleanupErrors === 0 && open === 0 ? "pass" : "fail",
       evidence: { created: ticketIds.length, failedCases, cleanupErrors, open, aiCallCount: 0 },

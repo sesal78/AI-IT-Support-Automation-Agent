@@ -504,7 +504,7 @@ Target repo: D:/Homebase/Sandbox/ai-it-support-agent
 - [ ] `T5.L.03` passes with one incident and fails with two.
 - [ ] `T5.L.04` passes for 1 / 0 / 0 incidents and fails when the rejected or the timed-out ticket gets one.
 - [ ] `T5.L.05` passes for 0 incidents and `incident_skipped_shadow`, and fails when the mock creates one.
-- [ ] `T5.L.02` passes when 9 of 10 latencies are under 60 s and fails at a p95 of 61 s; it never has more than 4 ticket creations in flight (the mock records the peak). `T5.L.08` fails, naming the ticket, when one group differs.
+- [ ] `T5.L.02` passes when all 10 latencies are under 60 s and fails at 60 s or above: the nearest-rank p95 over 10 values is the maximum, so one slow value fails the scenario (Seun, 13 November 2026 AEDT; this replaces the earlier "9 of 10 ... fails at a p95 of 61 s" wording); it never has more than 4 ticket creations in flight (the mock records the peak). `T5.L.08` fails, naming the ticket, when one group differs.
 - [ ] `T5.F.01` passes when the mock reports asleep for 3 minutes and then creates one incident; it fails when no `helpdesk_asleep` event is written and when the ticket is not `incident_created` at the limit (shortened in the test).
 - [ ] `T5.O.01` fails when an incident has no matching ticket and when a ticket has two incidents.
 - [ ] Every scenario closes the incidents it created (the mock records one close each); the helper refuses to close one whose `short_description` lacks `[E2E]`.

@@ -32,6 +32,7 @@ export interface HelpdeskTicketOptions {
 
 const tickets = new WeakMap<ScenarioContext, HelpdeskTicket[]>();
 const runStarted = new WeakMap<ScenarioContext, number>();
+const foreign = new WeakMap<ScenarioContext, Set<string>>();
 // One counter per scenario: two creations in flight must not take one number.
 const counters = new WeakMap<ScenarioContext, Map<string, number>>();
 
@@ -47,6 +48,21 @@ function nextNumber(context: ScenarioContext, scenarioId: string): number {
 /** The tickets this run created through `createHelpdeskTicket`, in order. */
 export const createdHelpdeskTickets = (context: ScenarioContext): readonly HelpdeskTicket[] =>
   tickets.get(context) ?? [];
+
+/**
+ * Records ticket IDs another scenario of this run owns without an app ticket
+ * (the T5.C.02 contract incidents). T5.O.01 reports them as foreign, not as
+ * orphans: the contract scenario created and closed them itself.
+ */
+export function noteForeignTickets(context: ScenarioContext, ids: readonly string[]): void {
+  const set = foreign.get(context) ?? new Set<string>();
+  for (const id of ids) set.add(id);
+  foreign.set(context, set);
+}
+
+/** The ticket IDs a scenario of this run owns without an app ticket. */
+export const foreignTickets = (context: ScenarioContext): ReadonlySet<string> =>
+  foreign.get(context) ?? new Set<string>();
 
 /**
  * When this run first created a helpdesk ticket, in ms. It is read once, at
