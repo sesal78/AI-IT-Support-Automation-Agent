@@ -10,6 +10,7 @@ const FROM = "help@example.test";
 const EMAIL = "marker.requester@example.test";
 const RAW = { title: "MARKER-RAW-TITLE", description: "MARKER-RAW-DESCRIPTION" };
 const INC = "INC0010001";
+const HD = "HD0000042";
 const SYS_ID = "a".repeat(31) + "1";
 
 function ticket(over: Partial<Ticket> = {}): Ticket {
@@ -149,6 +150,87 @@ const payload = (kind: "incident_reply" | "needs_info" = "incident_reply") => ({
   kind,
 });
 
+describe("runNotifyRequester: incident_reply", () => {
+  it("sends one email with the ITS number and the INC number, records one sent row and one event", async () => {
+    const h = harness();
+    const result = await runNotifyRequester(payload(), h.deps);
+    expect(result).toEqual({ ticketId: TICKET, kind: "incident_reply", outcome: "sent" });
+    expect(h.requests).toHaveLength(1);
+    const request = h.requests[0]!;
+    expect(request.to).toBe(EMAIL);
+    expect(request.from).toBe(FROM);
+    expect(request.idempotencyKey).toBe(`notify:${TICKET}:incident_reply`);
+    expect(request.subject).toBe("Your IT ticket ITS-000042");
+    expect(request.text).toContain("ITS-000042");
+    expect(request.text).toContain(INC);
+    expect(request.text).toContain("1. Restart the VPN client");
+    expect(request.html).toContain(INC);
+    expect([...h.rows.values()]).toMatchObject([
+      { kind: "incident_reply", status: "sent", provider_id: "msg_1", reason: null },
+    ]);
+    expect(h.events).toEqual([{ type: "notification_sent", payload: { kind: "incident_reply" } }]);
+  });
+
+  it("running again sends nothing and writes nothing more", async () => {
+    const h = harness();
+    await runNotifyRequester(payload(), h.deps);
+    const again = await runNotifyRequester(payload(), h.deps);
+    expect(again).toEqual({
+      ticketId: TICKET,
+      kind: "incident_reply",
+      outcome: "already_recorded",
+    });
+    expect(h.requests).toHaveLength(1);
+    expect(h.rows.size).toBe(1);
+    expect(h.events).toHaveLength(1);
+  });
+
+  it("marks a test ticket's subject with [E2E]", async () => {
+    const h = harness({ ticket: ticket({ is_test: true }) });
+    await runNotifyRequester(payload(), h.deps);
+    expect(h.requests[0]?.subject).toBe("[E2E] Your IT ticket ITS-000042");
+  });
+
+  it("uses the stored HD number of a builtin ticket and never the ServiceNow columns", async () => {
+    const h = harness({
+      ticket: ticket({ helpdesk: "builtin", servicenow_number: null, servicenow_sys_id: null }),
+      hdNumber: HD,
+    });
+    await runNotifyRequester(payload(), h.deps);
+    expect(h.requests[0]?.text).toContain(HD);
+    expect(h.requests[0]?.text).not.toContain(INC);
+    expect(h.requests[0]?.text).not.toContain(SYS_ID);
+  });
+
+  it("a builtin ticket still takes the HD number when stray ServiceNow columns are set", async () => {
+    const h = harness({ ticket: ticket({ helpdesk: "builtin" }), hdNumber: HD });
+    await runNotifyRequester(payload(), h.deps);
+    expect(h.requests[0]?.text).toContain(HD);
+    expect(h.requests[0]?.text).not.toContain(INC);
+  });
+
+  it("a ticket made before the helpdesk flag existed uses its ServiceNow number", async () => {
+    const h = harness({ ticket: ticket({ helpdesk: null }) });
+    await runNotifyRequester(payload(), h.deps);
+    expect(h.requests[0]?.text).toContain(INC);
+  });
+
+  it("aborts with no request when there is no fix step to send (the template needs one)", async () => {
+    for (const suggested_fix of [null, { steps: [] }, { steps: ["  "] }]) {
+      const h = harness({ triage: triage({ suggested_fix }) });
+      await expect(runNotifyRequester(payload(), h.deps)).rejects.toBeInstanceOf(AbortTaskRunError);
+      expect(h.requests).toHaveLength(0);
+      expect(h.rows.size).toBe(0);
+    }
+  });
+
+  it("throws, sending nothing, when the saved fix steps have an unexpected shape", async () => {
+    const h = harness({ triage: triage({ suggested_fix: { steps: "not a list" } }) });
+    await expect(runNotifyRequester(payload(), h.deps)).rejects.toThrow(/unexpected shape/);
+    expect(h.requests).toHaveLength(0);
+  });
+});
+
 describe("runNotifyRequester: recipient allow-list", () => {
   it("records one skipped row and one event, with no request, for a requester not on the list", async () => {
     const h = harness({ allowed: ["someone.else@example.test"] });
@@ -227,5 +309,63 @@ describe("runNotifyRequester: refusals", () => {
     const h = harness({ existing, ticket: ticket({ status: "rejected" }) });
     expect((await runNotifyRequester(payload(), h.deps)).outcome).toBe("already_recorded");
     expect(h.requests).toHaveLength(0);
+  });
+});
+
+describe("runNotifyRequester: needs_info", () => {
+  it.each(["rejected", "escalated_manual", "failed"] as const)(
+    "refuses needs_info for a %s ticket even with the flag",
+    async (status) => {
+      const h = harness({
+        ticket: ticket({ status }),
+        triage: triage({ route: "review", flags: ["needs_info"] }),
+      });
+      await expect(runNotifyRequester(payload("needs_info"), h.deps)).rejects.toBeInstanceOf(
+        AbortTaskRunError,
+      );
+      expect(h.requests).toEqual([]);
+      expect(h.rows.size).toBe(0);
+      expect(h.events).toEqual([]);
+    },
+  );
+
+  const needy = () => ({
+    ticket: ticket({ status: "review_pending", servicenow_number: null, servicenow_sys_id: null }),
+    triage: triage({ route: "review", flags: ["needs_info"], suggested_fix: null }),
+  });
+
+  it("sends the details variant without a helpdesk number, under its own key", async () => {
+    const h = harness(needy());
+    const result = await runNotifyRequester(payload("needs_info"), h.deps);
+    expect(result).toEqual({ ticketId: TICKET, kind: "needs_info", outcome: "sent" });
+    const request = h.requests[0]!;
+    expect(request.subject).toBe("More detail needed for your IT ticket ITS-000042");
+    expect(request.idempotencyKey).toBe(`notify:${TICKET}:needs_info`);
+    expect(request.text).not.toMatch(/INC|HD0/);
+    expect(h.events).toEqual([{ type: "notification_sent", payload: { kind: "needs_info" } }]);
+  });
+
+  it("aborts with no request when the triage flags do not hold needs_info", async () => {
+    const h = harness({ ...needy(), triage: triage({ route: "review", flags: ["p1"] }) });
+    await expect(runNotifyRequester(payload("needs_info"), h.deps)).rejects.toBeInstanceOf(
+      AbortTaskRunError,
+    );
+    expect(h.requests).toHaveLength(0);
+  });
+
+  it("an incident_reply row does not stop the needs_info email", async () => {
+    const existing: Notification = {
+      id: "00000000-0000-4000-8000-0000000000fe",
+      ticket_id: TICKET,
+      channel: "email",
+      kind: "incident_reply",
+      status: "sent",
+      provider_id: "msg_old",
+      reason: null,
+      at: NOW,
+    };
+    const h = harness({ ...needy(), existing });
+    expect((await runNotifyRequester(payload("needs_info"), h.deps)).outcome).toBe("sent");
+    expect(h.requests).toHaveLength(1);
   });
 });
