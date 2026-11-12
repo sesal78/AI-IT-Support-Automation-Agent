@@ -38,6 +38,11 @@ import {
   triggerHelpdeskSyncTask,
   type TriggerHelpdeskSyncFn,
 } from "./helpdesk-enqueue.js";
+import {
+  enqueueNotify,
+  triggerNotifyRequesterTask,
+  type TriggerNotifyFn,
+} from "./notify-enqueue.js";
 
 // Payload type is shared with the caller that triggers it (packages/shared).
 export const reviewTicketPayload = z.object({
@@ -92,6 +97,8 @@ export interface ReviewDeps {
   alert: AlertFn;
   /** Starts helpdesk-sync after `approved` (P5-T5b). Replaced in tests. */
   triggerHelpdeskSync: TriggerHelpdeskSyncFn;
+  /** Starts the `needs_info` email after `review_requested` (P5-T8b). Replaced in tests. */
+  triggerNotify: TriggerNotifyFn;
   logger: { info: LogFn; warn: LogFn; error: LogFn };
 }
 
@@ -119,6 +126,7 @@ export function createReviewDeps(source: Record<string, string | undefined>): Re
     e2eMode: env.E2E_MODE,
     alert: createPipelineAlert(source, repos),
     triggerHelpdeskSync: triggerHelpdeskSyncTask,
+    triggerNotify: triggerNotifyRequesterTask,
     logger,
   };
 }
@@ -137,7 +145,8 @@ const fixStepsSchema = z.object({ steps: z.array(z.string()), caveats: z.array(z
  * While the row has no `slack_ts`: the card is built from the redaction, the
  * triage row and the KB titles, posted, and its ts stored; the full fix steps
  * go to its thread (best effort). Then the event `review_requested` (once),
- * and the wait on the row's token. A failed card post throws before the event,
+ * and, for a ticket whose triage flags hold `needs_info`, the email trigger
+ * `notify-requester { kind: "needs_info" }` (P5-T8b); then the wait on the row's token. A failed card post throws before the event,
  * so the next attempt posts again.
  *
  * Privacy: only redacted text reaches Slack. Events and logs carry IDs and
@@ -200,6 +209,21 @@ export async function runReviewTicket(
   const written = await repos.listEventTypes(ticketId, ["review_requested"]);
   if (!written.includes("review_requested")) {
     await repos.addEvent(ticketId, "review_requested", { reviewId: review.id });
+  }
+  // P5-T8b: a ticket that needs more detail gets its email before the wait. A
+  // retry gets here again with the same key (a no-op if it was started), and
+  // the card is not posted again (`slack_ts`). A failed trigger never fails the review.
+  if (triage.flags?.includes("needs_info")) {
+    await enqueueNotify(
+      { ticketId, kind: "needs_info" },
+      {
+        task: "review-ticket",
+        repos,
+        triggerNotify: deps.triggerNotify,
+        alert: deps.alert,
+        logger: log,
+      },
+    );
   }
   log.info("review-ticket: waiting", { ticketId, reviewId: review.id, attempt, timeout });
   const waited = await deps.wait.forToken(review.wait_token_id);

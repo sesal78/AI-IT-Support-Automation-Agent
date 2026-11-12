@@ -133,6 +133,21 @@ export const REPLY_ENV = {
   REPLY_ALLOWED_RECIPIENTS: REPLY_RECIPIENT,
 };
 
+export const RESEND_ORIGIN = "https://api.resend.com";
+
+/**
+ * Resend: POST /emails answers a new message id each time. A run only calls it
+ * for a requester on REPLY_ALLOWED_RECIPIENTS, which is one fake address; a test
+ * that lets a run send overrides this mock and allows that address in the body.
+ */
+export function mockResend(recorder: EgressRecorder): void {
+  let sent = 0;
+  recorder.mock(RESEND_ORIGIN, () => {
+    sent += 1;
+    return HttpResponse.json({ id: `msg_mock_${String(sent).padStart(4, "0")}` });
+  });
+}
+
 /** The Slack Web API: chat.postMessage answers a new ts each time, chat.update ok. */
 export function mockSlack(recorder: EgressRecorder): void {
   let posted = 0;
