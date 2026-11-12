@@ -74,6 +74,12 @@ export interface MockServiceNowOptions {
 export const snStamp = (ms: number): string =>
   new Date(ms).toISOString().slice(0, 19).replace("T", " ");
 
+/** The sys_id the mock gives an assignment group, or undefined when it is unknown. */
+export function groupSysId(data: MockSnData, name: string): string | undefined {
+  const index = data.groups.indexOf(name);
+  return index < 0 ? undefined : sysId(500 + index);
+}
+
 /** True when a row's `sys_created_on` is at or after the query's stamp. */
 const createdSince = (row: Row, stamp: string): boolean => (row["sys_created_on"] ?? "") >= stamp;
 
@@ -135,7 +141,7 @@ export function mockServiceNow(data: MockSnData, options: MockServiceNowOptions 
     } else if (table === "sys_user_group") {
       // A distinct sys_id per group, as the instance has (T5.L.08 compares it).
       rows = data.groups
-        .map((name, i) => ({ sys_id: sysId(500 + i), name }))
+        .map((name) => ({ sys_id: groupSysId(data, name)!, name }))
         .filter((group) => group.name === terms["name"]);
     } else if (table === "sys_choice") rows = data.categories.map((value) => ({ value }));
     else if (table === "incident") {

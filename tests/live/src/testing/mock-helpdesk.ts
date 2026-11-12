@@ -1,0 +1,308 @@
+// A mock of the e2e app's phase 5 flow (test support only): redacted ->
+// triaged -> auto | review -> helpdesk_pending -> incident_created, plus the
+// incident the `helpdesk-sync` task would create. It writes that incident into
+// the same in-memory Table API data the P5-T7 helper reads, so a scenario sees
+// real rows: category, caller, assignment group, correlation_display and the
+// triage work note.
+import { randomUUID } from "node:crypto";
+import { redact } from "@ai-it-support/shared";
+import { E2E_PREFIX } from "../servicenow.ts";
+import type { MockReply, MockRequest } from "./mock-e2e.ts";
+import { groupSysId, snStamp, sysId, type MockSnData } from "./mock-servicenow.ts";
+
+/** Ways the mock can misbehave, so each scenario's negative cases can be shown. */
+export interface MockHelpdeskFaults {
+  /** Sync start -> incident, in ms (default 1 000). */
+  readonly incidentAfterMs?: (testId: string) => number;
+  /** How many incidents to create for one ticket (default 1). */
+  readonly incidents?: (testId: string) => number;
+  /** Creates the incident although the ticket is in shadow mode (T5.L.05 negative). */
+  readonly createInShadow?: boolean;
+}
+
+export interface MockHelpdeskOptions {
+  readonly now: () => number;
+  /** Where created incidents and work notes go; the scenario reads this data. */
+  readonly data: MockSnData;
+  readonly faults?: MockHelpdeskFaults;
+}
+
+interface MockTriage {
+  readonly category: string;
+  readonly assignmentGroup: string;
+  readonly route: "auto" | "review";
+  readonly sensitiveFlags: readonly string[];
+}
+
+/** A ticket the mock app is holding, with the time of each step. */
+export interface MockHelpdeskTicket {
+  readonly testId: string;
+  readonly ticketId: string;
+  readonly number: string;
+  readonly createdAt: number;
+  readonly title: string;
+  readonly description: string;
+  readonly email: string;
+  readonly triage: MockTriage;
+  readonly shadowMode: boolean;
+  status: string;
+  events: Array<{ type: string; at: number }>;
+  review: { id: string; slackTs: string; createdAt: number } | null;
+  reviewPendingAt: number | null;
+  syncAt: number | null;
+  syncStartedAt: number | null;
+  incident: { number: string; sysId: string } | null;
+}
+
+export interface MockHelpdesk {
+  readonly override: (request: MockRequest) => MockReply | undefined;
+  /** Tickets by test ID. */
+  readonly tickets: Map<string, MockHelpdeskTicket>;
+  /** Moves the tickets on to the mock clock's time. */
+  tick(): void;
+}
+
+export const REDACT_MS = 1_000;
+export const TRIAGE_MS = 5_000;
+/** Triaged or approved -> `helpdesk_pending`. */
+export const SYNC_DELAY_MS = 1_000;
+/** `helpdesk_pending` -> incident (the sync's one write). */
+export const INCIDENT_MS = 1_000;
+/** Triaged -> a card ts for a review ticket. */
+export const REVIEW_DELAY_MS = 1_000;
+
+const iso = (ms: number) => new Date(ms).toISOString();
+
+/**
+ * What the mock triage decides from the ticket text: a printer, screen or
+ * laptop fault is `hardware` on the `auto` route; an HR complaint is sensitive
+ * and goes to `review`; anything else is `software` on the `auto` route. The
+ * real app uses the model (P3-T2); this is the deterministic stand-in.
+ */
+export function defaultHelpdeskTriage(title: string, description: string): MockTriage {
+  const text = `${title} ${description}`;
+  if (/\bHR\b|harassment|complaint/i.test(text)) {
+    return {
+      category: "software",
+      assignmentGroup: "Software",
+      route: "review",
+      sensitiveFlags: ["hr"],
+    };
+  }
+  if (/printer|monitor|screen|laptop|keyboard|docking/i.test(text)) {
+    return { category: "hardware", assignmentGroup: "Hardware", route: "auto", sensitiveFlags: [] };
+  }
+  return { category: "software", assignmentGroup: "Software", route: "auto", sensitiveFlags: [] };
+}
+
+/** The `sys_id` of the active user with this email, or of `svc.itsupport`. */
+export function mockCallerId(data: MockSnData, email: string): string {
+  const found = data.users.find((u) => u["email"] === email && u["active"] !== "false");
+  if (found !== undefined) return found["sys_id"]!;
+  return data.users.find((u) => u["user_name"] === "svc.itsupport")?.["sys_id"] ?? sysId(1);
+}
+
+export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
+  const { now, data, faults = {} } = options;
+  const tickets = new Map<string, MockHelpdeskTicket>();
+  let seq = 1;
+
+  const ticketById = (id: string) => [...tickets.values()].find((t) => t.ticketId === id);
+  const push = (t: MockHelpdeskTicket, type: string, at: number) => t.events.push({ type, at });
+
+  /** Creates `count` incidents for the ticket at `at`, like the connector. */
+  function createIncidents(t: MockHelpdeskTicket, at: number, count: number): void {
+    for (let i = 0; i < count; i++) {
+      const n = data.incidents.length + 1;
+      const row: Record<string, string> = {
+        sys_id: sysId(900 + n),
+        number: `INC${String(n).padStart(7, "0")}`,
+        category: t.triage.category,
+        caller_id: mockCallerId(data, t.email),
+        assignment_group: groupSysId(data, t.triage.assignmentGroup) ?? "",
+        short_description: `${E2E_PREFIX} ${t.title}`,
+        description: t.description,
+        state: "1",
+        correlation_id: t.ticketId,
+        correlation_display: t.number,
+        sys_created_on: snStamp(at),
+      };
+      data.incidents.push(row);
+      if (i === 0) t.incident = { number: row["number"]!, sysId: row["sys_id"]! };
+      // The triage work note (DoD 5); its text carries no ticket text.
+      data.journal.push({
+        element_id: row["sys_id"]!,
+        element: "work_notes",
+        value: `Triage note: category ${row["category"]}, priority P3.`,
+      });
+    }
+  }
+
+  /** Moves every ticket on to `at`, writing each step at its own time. */
+  function advance(at: number): void {
+    for (const t of tickets.values()) {
+      const redactedAt = t.createdAt + REDACT_MS;
+      if (t.status === "new" && at >= redactedAt) {
+        t.status = "redacted";
+        push(t, "redacted", redactedAt);
+      }
+
+      const triagedAt = t.createdAt + TRIAGE_MS;
+      if (t.status === "redacted" && at >= triagedAt) {
+        push(t, "policy_decided", triagedAt);
+        push(t, "triaged", triagedAt);
+        if (t.triage.route === "review") {
+          const pendingAt = triagedAt + REVIEW_DELAY_MS;
+          t.review = {
+            id: randomUUID(),
+            slackTs: `${Math.floor(pendingAt / 1000)}.${String(seq++).padStart(6, "0")}`,
+            createdAt: pendingAt,
+          };
+          t.reviewPendingAt = pendingAt;
+          push(t, "review_requested", pendingAt);
+          t.status = "review_pending";
+        } else {
+          t.status = "auto";
+          t.syncAt = triagedAt + SYNC_DELAY_MS;
+        }
+      }
+
+      if ((t.status === "auto" || t.status === "approved") && t.syncAt !== null && at >= t.syncAt) {
+        t.status = "helpdesk_pending";
+        t.syncStartedAt = t.syncAt;
+        push(t, "helpdesk_sync_started", t.syncAt);
+      }
+      if (t.status !== "helpdesk_pending" || t.syncStartedAt === null) continue;
+
+      const doneAt = t.syncStartedAt + (faults.incidentAfterMs?.(t.testId) ?? INCIDENT_MS);
+      if (at < doneAt) continue;
+      if (t.shadowMode) {
+        if (faults.createInShadow === true) createIncidents(t, doneAt, 1);
+        push(t, "shadow_skipped", doneAt);
+        t.status = "incident_skipped_shadow";
+      } else {
+        createIncidents(t, doneAt, faults.incidents?.(t.testId) ?? 1);
+        push(t, "incident_created", doneAt);
+        push(t, "helpdesk_note_added", doneAt);
+        t.status = "incident_created";
+      }
+    }
+  }
+
+  function create(body: Record<string, unknown>): MockReply {
+    const testId = typeof body.testId === "string" ? body.testId : "";
+    const existing = tickets.get(testId);
+    if (existing) {
+      return {
+        status: 201,
+        json: {
+          ticketId: existing.ticketId,
+          ticketNumber: existing.number,
+          queued: true,
+          duplicate: true,
+        },
+      };
+    }
+    const overrides = (body.testOverrides ?? {}) as { shadowMode?: unknown };
+    const title = redact(String(body.title)).text;
+    const description = redact(String(body.description)).text;
+    const ticket: MockHelpdeskTicket = {
+      testId,
+      ticketId: randomUUID(),
+      number: `ITS-${String(tickets.size + 1).padStart(6, "0")}`,
+      createdAt: now(),
+      title,
+      description,
+      email: String(body.email ?? ""),
+      triage: defaultHelpdeskTriage(title, description),
+      shadowMode: overrides.shadowMode === true,
+      status: "new",
+      events: [],
+      review: null,
+      reviewPendingAt: null,
+      syncAt: null,
+      syncStartedAt: null,
+      incident: null,
+    };
+    tickets.set(testId, ticket);
+    return {
+      status: 201,
+      json: { ticketId: ticket.ticketId, ticketNumber: ticket.number, queued: true },
+    };
+  }
+
+  function view(t: MockHelpdeskTicket) {
+    const triaged = t.events.some((e) => e.type === "triaged");
+    return {
+      id: t.ticketId,
+      number: t.number,
+      status: t.status,
+      isTest: true,
+      source: "web",
+      createdAt: iso(t.createdAt),
+      redacted: t.status === "new" ? null : { title: t.title, description: t.description },
+      triage: triaged
+        ? {
+            sensitive: t.triage.sensitiveFlags.length > 0,
+            sensitiveFlags: [...t.triage.sensitiveFlags],
+            category: t.triage.category,
+            subcategory: null,
+            priority: "P3",
+            urgency: "medium",
+            assignmentGroup: t.triage.assignmentGroup,
+            route: t.triage.route,
+            flags: [],
+            probabilities: null,
+            groundingScore: 0.9,
+            kbArticleIds: [],
+            suggestedFix: { steps: ["step 1", "step 2"], caveats: [] },
+            modelVersions: null,
+            triagedAt: iso(t.createdAt + TRIAGE_MS),
+          }
+        : null,
+      aiCallCount: triaged ? 1 : 0,
+      events: t.events.map((e) => ({ type: e.type, at: iso(e.at) })),
+      reviews:
+        t.review === null
+          ? []
+          : [
+              {
+                id: t.review.id,
+                kind: "triage",
+                decision: null,
+                decidedBy: null,
+                decidedAt: null,
+                slackTs: t.review.slackTs,
+                createdAt: iso(t.review.createdAt),
+              },
+            ],
+      notifications: [],
+      autofix: [],
+      incident: t.incident === null ? null : { number: t.incident.number, sysId: t.incident.sysId },
+    };
+  }
+
+  function override(request: MockRequest): MockReply | undefined {
+    advance(now());
+    if (!request.accessOk || !request.bearerOk) return undefined;
+    if (request.method === "POST" && request.path === "/api/internal/test-tickets") {
+      let body: Record<string, unknown> = {};
+      try {
+        body = JSON.parse(request.body) as Record<string, unknown>;
+      } catch {
+        return {
+          status: 400,
+          json: { error: "invalid_body" },
+          headers: { "Cache-Control": "no-store" },
+        };
+      }
+      return create(body);
+    }
+    const match = /^\/api\/internal\/tickets\/([^/]+)$/.exec(request.path);
+    const ticket = match ? ticketById(match[1]!) : undefined;
+    if (request.method === "GET" && ticket) return { status: 200, json: view(ticket) };
+    return undefined;
+  }
+
+  return { override, tickets, tick: () => advance(now()) };
+}
