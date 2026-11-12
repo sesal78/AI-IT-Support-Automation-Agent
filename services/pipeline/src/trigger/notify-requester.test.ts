@@ -6,8 +6,10 @@ import { EmailProviderError, type SendEmailInput } from "../email/index.js";
 import {
   createNotifyRequesterDeps,
   notifyRequesterOptions,
+  onNotifyRequesterFailure,
   runNotifyRequester,
   type NotifyRequesterDeps,
+  type NotifyRequesterFailureDeps,
 } from "./notify-requester.js";
 
 const TICKET = "00000000-0000-4000-8000-000000000001";
@@ -84,6 +86,8 @@ function harness(options: Options = {}) {
   if (options.existing) rows.set(options.existing.kind, options.existing);
   const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
   const requests: SendEmailInput[] = [];
+  const statusWrites: string[] = [];
+  const alerts: Array<{ kind: string; ticketId?: string | undefined }> = [];
   const logs: unknown[] = [];
   const sends = [...(options.sends ?? [])];
   const recordFailures = [...(options.recordFailures ?? [])];
@@ -153,7 +157,19 @@ function harness(options: Options = {}) {
     allowedRecipients: options.allowed ?? [EMAIL],
     logger: { info: record("info"), warn: record("warn"), error: record("error") },
   };
-  return { deps, rows, events, requests, logs };
+  const failureDeps: NotifyRequesterFailureDeps = {
+    repos: {
+      getTicket: deps.repos.getTicket,
+      getTriage: deps.repos.getTriage,
+      recordNotification: deps.repos.recordNotification,
+      addEvent: deps.repos.addEvent,
+    },
+    alert: async (kind, alertOptions) => {
+      alerts.push({ kind, ticketId: alertOptions?.ticketId });
+    },
+    logger: deps.logger,
+  };
+  return { deps, failureDeps, rows, events, requests, statusWrites, alerts, logs };
 }
 
 const payload = (kind: "incident_reply" | "needs_info" = "incident_reply") => ({
@@ -480,11 +496,136 @@ describe("runNotifyRequester: privacy", () => {
   });
 });
 
+describe("onNotifyRequesterFailure", () => {
+  it.each([
+    ["missing number", { ticket: ticket({ servicenow_number: null }) }],
+    ["missing fix", { triage: triage({ suggested_fix: null }) }],
+    ["empty fix", { triage: triage({ suggested_fix: { steps: [] } }) }],
+    ["malformed fix", { triage: triage({ suggested_fix: { steps: 42 } }) }],
+  ])("a pre-send refusal (%s) never fills the notification slot", async (_name, options) => {
+    const h = harness(options as Options);
+    const error = await runNotifyRequester(payload(), h.deps).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AbortTaskRunError);
+    await onNotifyRequesterFailure({ payload: payload(), error }, h.failureDeps);
+    expect(h.requests).toEqual([]);
+    expect(h.rows.size).toBe(0);
+    expect(h.events).toEqual([]);
+    expect(h.alerts).toEqual([]);
+  });
+
+  it("a corrected fix can still send after the original abort and failure hook", async () => {
+    const h = harness({ triage: triage({ suggested_fix: null }) });
+    const error = await runNotifyRequester(payload(), h.deps).catch((caught: unknown) => caught);
+    await onNotifyRequesterFailure({ payload: payload(), error }, h.failureDeps);
+    h.deps.repos.getTriage = async () => triage();
+    expect((await runNotifyRequester(payload(), h.deps)).outcome).toBe("sent");
+    expect(h.requests).toHaveLength(1);
+  });
+
+  it("a permanent provider refusal still records one failed row and alert", async () => {
+    const h = harness({ sends: [new EmailProviderError("http_422")] });
+    const error = await runNotifyRequester(payload(), h.deps).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(EmailProviderError);
+    await onNotifyRequesterFailure({ payload: payload(), error }, h.failureDeps);
+    await onNotifyRequesterFailure({ payload: payload(), error }, h.failureDeps);
+    expect(h.requests).toHaveLength(1);
+    expect([...h.rows.values()]).toMatchObject([{ status: "failed", reason: "provider_error" }]);
+    expect(h.events).toEqual([
+      { type: "notification_failed", payload: { kind: "incident_reply", error: "http_422" } },
+    ]);
+    expect(h.alerts).toHaveLength(1);
+  });
+
+  const failed = (
+    h: ReturnType<typeof harness>,
+    error: unknown = new EmailProviderError("http_500"),
+  ) => onNotifyRequesterFailure({ payload: payload(), error }, h.failureDeps);
+
+  it("records one failed row, one notification_failed event and one alert, and changes no status", async () => {
+    const h = harness();
+    await failed(h);
+    expect([...h.rows.values()]).toMatchObject([
+      { kind: "incident_reply", status: "failed", reason: "provider_error", provider_id: null },
+    ]);
+    expect(h.events).toEqual([
+      { type: "notification_failed", payload: { kind: "incident_reply", error: "http_500" } },
+    ]);
+    expect(h.alerts).toEqual([{ kind: "notify_failed", ticketId: TICKET }]);
+    expect(h.statusWrites).toEqual([]);
+    expect(Object.keys(h.failureDeps.repos)).not.toContain("setTicketStatus");
+  });
+
+  it("names a non-provider error by its class only", async () => {
+    const h = harness();
+    await failed(h, new DbError("recordNotification", `boom ${EMAIL}`));
+    expect(h.events[0]?.payload).toEqual({ kind: "incident_reply", error: "DbError" });
+    expect(JSON.stringify(h.events)).not.toContain(EMAIL);
+  });
+
+  it("leaves a sent row, its proof and the alerts alone", async () => {
+    const h = harness();
+    await runNotifyRequester(payload(), h.deps);
+    await failed(h);
+    expect([...h.rows.values()]).toMatchObject([{ status: "sent", provider_id: "msg_1" }]);
+    expect(h.events).toEqual([{ type: "notification_sent", payload: { kind: "incident_reply" } }]);
+    expect(h.alerts).toEqual([]);
+  });
+
+  it("running the hook twice leaves one row, one event and one alert", async () => {
+    const h = harness();
+    await failed(h);
+    await failed(h);
+    expect(h.rows.size).toBe(1);
+    expect(h.events).toHaveLength(1);
+    expect(h.alerts).toHaveLength(1);
+  });
+
+  it.each([
+    ["a rejected ticket", { ticket: ticket({ status: "rejected" }) }],
+    ["an unknown ticket", { ticket: null }],
+  ])("records nothing for %s: a refused trigger must not fill the slot", async (_name, options) => {
+    const h = harness(options as Options);
+    await failed(h, new AbortTaskRunError("refused"));
+    expect(h.rows.size).toBe(0);
+    expect(h.alerts).toEqual([]);
+  });
+
+  it("records nothing for a needs_info trigger on a ticket without the flag", async () => {
+    const h = harness({ triage: triage({ flags: [] }) });
+    await onNotifyRequesterFailure(
+      { payload: payload("needs_info"), error: new AbortTaskRunError("x") },
+      h.failureDeps,
+    );
+    expect(h.rows.size).toBe(0);
+  });
+
+  it("never throws: an invalid payload, a failing repository and a failing alert", async () => {
+    const h = harness();
+    await expect(
+      onNotifyRequesterFailure(
+        { payload: { ticketId: "nope" }, error: new Error("x") },
+        h.failureDeps,
+      ),
+    ).resolves.toBeUndefined();
+    h.failureDeps.repos.getTicket = async () => {
+      throw new DbError("getTicket", `down ${EMAIL}`);
+    };
+    await expect(failed(h)).resolves.toBeUndefined();
+    const g = harness();
+    g.failureDeps.alert = async () => {
+      throw new Error("slack down");
+    };
+    await expect(failed(g)).resolves.toBeUndefined();
+    expect(JSON.stringify(h.logs)).not.toContain(EMAIL);
+  });
+});
+
 describe("notifyRequesterOptions and deps", () => {
   it("is wired as the notify-requester task with three attempts and the failure hook", () => {
     expect(notifyRequesterOptions.id).toBe(NOTIFY_REQUESTER_TASK_ID);
     expect(notifyRequesterOptions.schema).toBe(notifyRequesterPayloadSchema);
     expect(notifyRequesterOptions.retry).toMatchObject({ maxAttempts: 3 });
+    expect(notifyRequesterOptions.onFailure).toBe(onNotifyRequesterFailure);
   });
 
   const env = {

@@ -83,7 +83,12 @@ import {
   onHelpdeskSyncFailure,
   runHelpdeskSync,
 } from "../src/trigger/helpdesk-sync.js";
-import { createNotifyRequesterDeps, runNotifyRequester } from "../src/trigger/notify-requester.js";
+import {
+  createNotifyRequesterDeps,
+  createNotifyRequesterFailureDeps,
+  onNotifyRequesterFailure,
+  runNotifyRequester,
+} from "../src/trigger/notify-requester.js";
 import { REPLY_ENV, REVIEW_ENV, mockProviders, mockSlack, pipelineEnv } from "./provider-mocks.js";
 import { SERVICENOW_ENV, mockServiceNow, type ServiceNowMock } from "./servicenow-mock.js";
 import { createTokenBroker, type TokenBroker } from "./token-broker.js";
@@ -194,8 +199,11 @@ const TASKS: Record<string, TaskDef> = {
   // Started by helpdesk-sync after `incident_created` and by review-ticket for
   // a `needs_info` ticket (P5-T8b). The Resend origin is not mocked by the
   // runner: a test that lets a run send mocks it on the egress recorder.
-  [NOTIFY_REQUESTER_TASK_ID]: defineTask(notifyRequesterPayloadSchema, (payload, { env }) =>
-    runNotifyRequester(payload, createNotifyRequesterDeps(env)),
+  [NOTIFY_REQUESTER_TASK_ID]: defineTask(
+    notifyRequesterPayloadSchema,
+    (payload, { env }) => runNotifyRequester(payload, createNotifyRequesterDeps(env)),
+    (payload, error, env) =>
+      onNotifyRequesterFailure({ payload, error }, createNotifyRequesterFailureDeps(env)),
   ),
 };
 

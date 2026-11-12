@@ -1,4 +1,4 @@
-import { errorClassName } from "@ai-it-support/ai";
+import { errorClassName, type AlertFn } from "@ai-it-support/ai";
 import {
   createDbClient,
   createRepositories,
@@ -20,10 +20,12 @@ import { z } from "zod";
 import {
   buildReplyEmail,
   createResendClient,
+  EmailProviderError,
   isAllowedRecipient,
   parseRecipient,
   type ResendClient,
 } from "../email/index.js";
+import { createFailureAlert } from "../pipeline-alert.js";
 
 export type { NotifyRequesterPayload };
 
@@ -219,6 +221,82 @@ export function createNotifyRequesterDeps(
   };
 }
 
+export interface NotifyRequesterFailureDeps {
+  repos: Pick<Repositories, "getTicket" | "getTriage" | "recordNotification" | "addEvent">;
+  alert: AlertFn;
+  logger: { info: LogFn; warn: LogFn; error: LogFn };
+}
+
+/** The database and the alert sink only: the run may have failed on any other variable. */
+export function createNotifyRequesterFailureDeps(
+  source: Record<string, string | undefined>,
+  repos: NotifyRequesterFailureDeps["repos"] &
+    Pick<Repositories, "recordSecurityEvent"> = createRepositories(createDbClient(source)),
+): NotifyRequesterFailureDeps {
+  return { repos, alert: createFailureAlert("notify-requester", source, repos), logger };
+}
+
+/**
+ * The task's `onFailure` hook, called once after the last attempt failed. For
+ * a ticket the email suits (`isEligible`) it records one `failed` row
+ * (`provider_error`), `notification_failed { kind, error }` and
+ * `alert:notify_failed`. An existing row, a sent one included, is left as it
+ * is and raises nothing. It never changes the ticket's status and never
+ * throws; a failure here (the database is down) is logged by class name only.
+ */
+export async function onNotifyRequesterFailure(
+  params: { payload: unknown; error: unknown },
+  deps?: NotifyRequesterFailureDeps,
+): Promise<void> {
+  // Refused input never reached Resend and must not fill the terminal row slot.
+  if (params.error instanceof AbortTaskRunError) return;
+  const error =
+    params.error instanceof EmailProviderError ? params.error.code : errorClassName(params.error);
+  const log = deps?.logger ?? logger;
+  const safeLog = (message: string, data: object) => {
+    try {
+      log.error(message, { ...data });
+    } catch {
+      // The hook must not throw, even when logging fails.
+    }
+  };
+  try {
+    const parsed = notifyRequesterPayloadSchema.safeParse(params.payload);
+    if (!parsed.success) {
+      safeLog("notify-requester: failed run without a valid payload", { error });
+      return;
+    }
+    const { ticketId, kind } = parsed.data;
+    const { repos, alert } = deps ?? createNotifyRequesterFailureDeps(process.env);
+    const ticket = await repos.getTicket(ticketId);
+    const triage = kind === "needs_info" ? await repos.getTriage(ticketId) : null;
+    if (!ticket || !isEligible(kind, ticket, triage)) {
+      safeLog("notify-requester: failed run, nothing recorded", { ticketId, kind, error });
+      return;
+    }
+    const { created } = await repos.recordNotification({
+      ticketId,
+      channel: "email",
+      kind,
+      status: "failed",
+      providerId: null,
+      reason: "provider_error",
+    });
+    if (!created) {
+      safeLog("notify-requester: failed run, row already recorded", { ticketId, kind, error });
+      return;
+    }
+    await repos.addEvent(ticketId, "notification_failed", { kind, error });
+    await alert("notify_failed", { ticketId });
+    safeLog("notify-requester: failed", { ticketId, kind, error });
+  } catch (hookError) {
+    safeLog("notify-requester: could not record the failure", {
+      error,
+      cause: errorClassName(hookError),
+    });
+  }
+}
+
 /**
  * Task options, exported so a test can assert the wiring. Sends the requester
  * one reply email per ticket and kind. Three attempts with exponential backoff;
@@ -236,6 +314,7 @@ export const notifyRequesterOptions = {
   },
   run: async (payload: NotifyRequesterPayload) =>
     runNotifyRequester(payload, createNotifyRequesterDeps(process.env)),
+  onFailure: onNotifyRequesterFailure,
 };
 
 export const notifyRequester = schemaTask(notifyRequesterOptions);
