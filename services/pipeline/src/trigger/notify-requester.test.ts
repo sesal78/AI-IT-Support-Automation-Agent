@@ -340,6 +340,22 @@ describe("runNotifyRequester: refusals", () => {
 });
 
 describe("runNotifyRequester: needs_info", () => {
+  it.each(["rejected", "escalated_manual", "failed"] as const)(
+    "refuses needs_info for a %s ticket even with the flag",
+    async (status) => {
+      const h = harness({
+        ticket: ticket({ status }),
+        triage: triage({ route: "review", flags: ["needs_info"] }),
+      });
+      await expect(runNotifyRequester(payload("needs_info"), h.deps)).rejects.toBeInstanceOf(
+        AbortTaskRunError,
+      );
+      expect(h.requests).toEqual([]);
+      expect(h.rows.size).toBe(0);
+      expect(h.events).toEqual([]);
+    },
+  );
+
   const needy = () => ({
     ticket: ticket({ status: "review_pending", servicenow_number: null, servicenow_sys_id: null }),
     triage: triage({ route: "review", flags: ["needs_info"], suggested_fix: null }),
@@ -390,11 +406,11 @@ describe("runNotifyRequester: failures and retries", () => {
   });
 
   it.each(["http_422", "http_401", "bad_response", "redirect"])(
-    "aborts the task on the permanent provider error %s, so no attempt repeats it",
+    "keeps provider error %s within the task's bounded retry rule",
     async (code) => {
       const h = harness({ sends: [new EmailProviderError(code)] });
       const error = await runNotifyRequester(payload(), h.deps).catch((caught: unknown) => caught);
-      expect(error).toBeInstanceOf(AbortTaskRunError);
+      expect(error).toBeInstanceOf(EmailProviderError);
       expect(String((error as Error).message)).toContain(code);
       expect(h.requests).toHaveLength(1);
       expect(h.rows.size).toBe(0);
@@ -481,6 +497,45 @@ describe("runNotifyRequester: privacy", () => {
 });
 
 describe("onNotifyRequesterFailure", () => {
+  it.each([
+    ["missing number", { ticket: ticket({ servicenow_number: null }) }],
+    ["missing fix", { triage: triage({ suggested_fix: null }) }],
+    ["empty fix", { triage: triage({ suggested_fix: { steps: [] } }) }],
+    ["malformed fix", { triage: triage({ suggested_fix: { steps: 42 } }) }],
+  ])("a pre-send refusal (%s) never fills the notification slot", async (_name, options) => {
+    const h = harness(options as Options);
+    const error = await runNotifyRequester(payload(), h.deps).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AbortTaskRunError);
+    await onNotifyRequesterFailure({ payload: payload(), error }, h.failureDeps);
+    expect(h.requests).toEqual([]);
+    expect(h.rows.size).toBe(0);
+    expect(h.events).toEqual([]);
+    expect(h.alerts).toEqual([]);
+  });
+
+  it("a corrected fix can still send after the original abort and failure hook", async () => {
+    const h = harness({ triage: triage({ suggested_fix: null }) });
+    const error = await runNotifyRequester(payload(), h.deps).catch((caught: unknown) => caught);
+    await onNotifyRequesterFailure({ payload: payload(), error }, h.failureDeps);
+    h.deps.repos.getTriage = async () => triage();
+    expect((await runNotifyRequester(payload(), h.deps)).outcome).toBe("sent");
+    expect(h.requests).toHaveLength(1);
+  });
+
+  it("a permanent provider refusal still records one failed row and alert", async () => {
+    const h = harness({ sends: [new EmailProviderError("http_422")] });
+    const error = await runNotifyRequester(payload(), h.deps).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(EmailProviderError);
+    await onNotifyRequesterFailure({ payload: payload(), error }, h.failureDeps);
+    await onNotifyRequesterFailure({ payload: payload(), error }, h.failureDeps);
+    expect(h.requests).toHaveLength(1);
+    expect([...h.rows.values()]).toMatchObject([{ status: "failed", reason: "provider_error" }]);
+    expect(h.events).toEqual([
+      { type: "notification_failed", payload: { kind: "incident_reply", error: "http_422" } },
+    ]);
+    expect(h.alerts).toHaveLength(1);
+  });
+
   const failed = (
     h: ReturnType<typeof harness>,
     error: unknown = new EmailProviderError("http_500"),
