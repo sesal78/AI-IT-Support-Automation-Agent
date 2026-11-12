@@ -1,14 +1,33 @@
-import { errorClassName } from "@ai-it-support/ai";
-import type { Repositories, Ticket, Triage } from "@ai-it-support/db";
-import type { NotificationKind, NotifyRequesterPayload } from "@ai-it-support/shared";
-import { AbortTaskRunError } from "@trigger.dev/sdk";
+import { errorClassName, type AlertFn } from "@ai-it-support/ai";
+import {
+  createDbClient,
+  createRepositories,
+  dbEnvShape,
+  type Repositories,
+  type Ticket,
+  type Triage,
+} from "@ai-it-support/db";
+import {
+  NOTIFY_REQUESTER_TASK_ID,
+  notifyRequesterPayloadSchema,
+  parseEnv,
+  replyEnvShape,
+  type NotificationKind,
+  type NotifyRequesterPayload,
+} from "@ai-it-support/shared";
+import { AbortTaskRunError, logger, schemaTask } from "@trigger.dev/sdk";
 import { z } from "zod";
 import {
   buildReplyEmail,
+  createResendClient,
+  EmailProviderError,
   isAllowedRecipient,
   parseRecipient,
   type ResendClient,
 } from "../email/index.js";
+import { createFailureAlert } from "../pipeline-alert.js";
+
+export type { NotifyRequesterPayload };
 
 export type NotifyRequesterResult = {
   ticketId: string;
@@ -46,7 +65,7 @@ const fixStepsSchema = z.object({ steps: z.array(z.string()) });
  * the triage flag. The run aborts without it; the failure hook records
  * nothing without it, so a refused trigger can never fill the ticket's slot.
  */
-export function isEligible(kind: NotificationKind, ticket: Ticket, triage: Triage | null): boolean {
+function isEligible(kind: NotificationKind, ticket: Ticket, triage: Triage | null): boolean {
   return kind === "incident_reply"
     ? ticket.status === "incident_created"
     : triage?.flags?.includes("needs_info") === true;
@@ -67,6 +86,12 @@ async function storedNumber(
   return ticket.servicenow_number;
 }
 
+/** A provider answer that no repeat can change: any 4xx but 429 and 408, or an unreadable reply. */
+function isPermanent(code: string): boolean {
+  if (code === "bad_response" || code === "redirect") return true;
+  return /^http_4[0-9]{2}$/.test(code) && code !== "http_429" && code !== "http_408";
+}
+
 /**
  * The task body, exported so tests can call it without the Trigger.dev runtime.
  *
@@ -84,7 +109,7 @@ async function storedNumber(
  * network and timeout, waiting 1 s then 2 s); the task makes up to 3 attempts.
  * A repeated key makes the provider return its first result, which bridges a
  * lost reply or a failed row write inside the provider's key window (24 hours).
- The event follows the
+ * A permanent 4xx or unreadable reply aborts at once. The event follows the
  * row and is written only by the run that created the row, so a crash between
  * the two leaves the row (the proof) without its event.
  *
@@ -162,14 +187,24 @@ export async function runNotifyRequester(
     );
   }
 
-  const { id: providerId } = await deps.resend.send({
-    from: deps.from,
-    to: parseRecipient(requester),
-    subject: email.subject,
-    text: email.text,
-    html: email.html,
-    idempotencyKey: `notify:${ticketId}:${kind}`,
-  });
+  let providerId: string;
+  try {
+    ({ id: providerId } = await deps.resend.send({
+      from: deps.from,
+      to: parseRecipient(requester),
+      subject: email.subject,
+      text: email.text,
+      html: email.html,
+      idempotencyKey: `notify:${ticketId}:${kind}`,
+    }));
+  } catch (error) {
+    if (error instanceof EmailProviderError && isPermanent(error.code)) {
+      throw new AbortTaskRunError(
+        `notify-requester: the email provider refused ticket ${ticketId} (${error.code})`,
+      );
+    }
+    throw error;
+  }
 
   const { created } = await repos.recordNotification({
     ticketId,
@@ -184,3 +219,115 @@ export async function runNotifyRequester(
   log.info("notify-requester: sent", { ticketId, kind });
   return done("sent");
 }
+
+const notifyRequesterDepsEnvShape = { ...dbEnvShape, ...replyEnvShape };
+
+/** Validates env and builds the real deps. Invalid variables throw, naming the variable. */
+export function createNotifyRequesterDeps(
+  source: Record<string, string | undefined>,
+): NotifyRequesterDeps {
+  const env = parseEnv(notifyRequesterDepsEnvShape, source);
+  return {
+    repos: createRepositories(createDbClient(source)),
+    resend: createResendClient({ apiKey: env.RESEND_API_KEY }),
+    from: env.REPLY_FROM,
+    allowedRecipients: env.REPLY_ALLOWED_RECIPIENTS,
+    logger,
+  };
+}
+
+export interface NotifyRequesterFailureDeps {
+  repos: Pick<Repositories, "getTicket" | "getTriage" | "recordNotification" | "addEvent">;
+  alert: AlertFn;
+  logger: { info: LogFn; warn: LogFn; error: LogFn };
+}
+
+/** The database and the alert sink only: the run may have failed on any other variable. */
+export function createNotifyRequesterFailureDeps(
+  source: Record<string, string | undefined>,
+  repos: NotifyRequesterFailureDeps["repos"] &
+    Pick<Repositories, "recordSecurityEvent"> = createRepositories(createDbClient(source)),
+): NotifyRequesterFailureDeps {
+  return { repos, alert: createFailureAlert("notify-requester", source, repos), logger };
+}
+
+/**
+ * The task's `onFailure` hook, called once after the last attempt failed. For
+ * a ticket the email suits (`isEligible`) it records one `failed` row
+ * (`provider_error`), `notification_failed { kind, error }` and
+ * `alert:notify_failed`. An existing row, a sent one included, is left as it
+ * is and raises nothing. It never changes the ticket's status and never
+ * throws; a failure here (the database is down) is logged by class name only.
+ */
+export async function onNotifyRequesterFailure(
+  params: { payload: unknown; error: unknown },
+  deps?: NotifyRequesterFailureDeps,
+): Promise<void> {
+  const error =
+    params.error instanceof EmailProviderError ? params.error.code : errorClassName(params.error);
+  const log = deps?.logger ?? logger;
+  const safeLog = (message: string, data: object) => {
+    try {
+      log.error(message, { ...data });
+    } catch {
+      // The hook must not throw, even when logging fails.
+    }
+  };
+  try {
+    const parsed = notifyRequesterPayloadSchema.safeParse(params.payload);
+    if (!parsed.success) {
+      safeLog("notify-requester: failed run without a valid payload", { error });
+      return;
+    }
+    const { ticketId, kind } = parsed.data;
+    const { repos, alert } = deps ?? createNotifyRequesterFailureDeps(process.env);
+    const ticket = await repos.getTicket(ticketId);
+    const triage = kind === "needs_info" ? await repos.getTriage(ticketId) : null;
+    if (!ticket || !isEligible(kind, ticket, triage)) {
+      safeLog("notify-requester: failed run, nothing recorded", { ticketId, kind, error });
+      return;
+    }
+    const { created } = await repos.recordNotification({
+      ticketId,
+      channel: "email",
+      kind,
+      status: "failed",
+      providerId: null,
+      reason: "provider_error",
+    });
+    if (!created) {
+      safeLog("notify-requester: failed run, row already recorded", { ticketId, kind, error });
+      return;
+    }
+    await repos.addEvent(ticketId, "notification_failed", { kind, error });
+    await alert("notify_failed", { ticketId });
+    safeLog("notify-requester: failed", { ticketId, kind, error });
+  } catch (hookError) {
+    safeLog("notify-requester: could not record the failure", {
+      error,
+      cause: errorClassName(hookError),
+    });
+  }
+}
+
+/**
+ * Task options, exported so a test can assert the wiring. Sends the requester
+ * one reply email per ticket and kind. Three attempts with exponential backoff;
+ * env is validated at the start of each run.
+ */
+export const notifyRequesterOptions = {
+  id: NOTIFY_REQUESTER_TASK_ID,
+  schema: notifyRequesterPayloadSchema,
+  retry: {
+    maxAttempts: 3,
+    factor: 2,
+    minTimeoutInMs: 1000,
+    maxTimeoutInMs: 10_000,
+    randomize: true,
+  },
+  run: async (payload: NotifyRequesterPayload) =>
+    runNotifyRequester(payload, createNotifyRequesterDeps(process.env)),
+  onFailure: onNotifyRequesterFailure,
+};
+
+export const notifyRequester = schemaTask(notifyRequesterOptions);

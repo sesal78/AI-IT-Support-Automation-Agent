@@ -43,7 +43,9 @@ import { errorClassName } from "@ai-it-support/ai";
 import {
   INTAKE_TICKET_TASK_ID,
   HELPDESK_SYNC_TASK_ID,
+  NOTIFY_REQUESTER_TASK_ID,
   REVIEW_TICKET_TASK_ID,
+  notifyRequesterPayloadSchema,
   TRIAGE_TICKET_TASK_ID,
 } from "@ai-it-support/shared";
 import { AbortTaskRunError, auth } from "@trigger.dev/sdk";
@@ -81,7 +83,13 @@ import {
   onHelpdeskSyncFailure,
   runHelpdeskSync,
 } from "../src/trigger/helpdesk-sync.js";
-import { REVIEW_ENV, mockProviders, mockSlack, pipelineEnv } from "./provider-mocks.js";
+import {
+  createNotifyRequesterDeps,
+  createNotifyRequesterFailureDeps,
+  onNotifyRequesterFailure,
+  runNotifyRequester,
+} from "../src/trigger/notify-requester.js";
+import { REPLY_ENV, REVIEW_ENV, mockProviders, mockSlack, pipelineEnv } from "./provider-mocks.js";
 import { SERVICENOW_ENV, mockServiceNow, type ServiceNowMock } from "./servicenow-mock.js";
 import { createTokenBroker, type TokenBroker } from "./token-broker.js";
 
@@ -188,6 +196,15 @@ const TASKS: Record<string, TaskDef> = {
     (payload, error, env) =>
       onHelpdeskSyncFailure({ payload, error }, createHelpdeskSyncFailureDeps(env)),
   ),
+  // Started by helpdesk-sync after `incident_created` and by review-ticket for
+  // a `needs_info` ticket (P5-T8b). The Resend origin is not mocked by the
+  // runner: a test that lets a run send mocks it on the egress recorder.
+  [NOTIFY_REQUESTER_TASK_ID]: defineTask(
+    notifyRequesterPayloadSchema,
+    (payload, { env }) => runNotifyRequester(payload, createNotifyRequesterDeps(env)),
+    (payload, error, env) =>
+      onNotifyRequesterFailure({ payload, error }, createNotifyRequesterFailureDeps(env)),
+  ),
 };
 
 const MAX_ATTEMPTS = 3;
@@ -268,6 +285,7 @@ export async function startLocalRunner(options: LocalRunnerOptions): Promise<Loc
   const env: RunEnv = {
     ...pipelineEnv(options.restStack, true),
     ...REVIEW_ENV,
+    ...REPLY_ENV,
     ...SERVICENOW_ENV,
     ...options.env,
   };
