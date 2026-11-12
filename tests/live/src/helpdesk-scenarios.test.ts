@@ -181,10 +181,23 @@ describe("T5.L.04 approve, reject and timeout", () => {
 });
 
 describe("T5.L.02 auto incident latency and T5.L.08 triage group", () => {
-  it("uses the first 10 normal eval tickets as the auto set", () => {
+  it("uses the first 10 normal eval tickets whose labels permit auto routing", () => {
     const tickets = autoEvalTickets();
     expect(tickets).toHaveLength(L02_TICKETS);
     expect(tickets.every((t) => t.expected.sensitiveTopic === null)).toBe(true);
+    expect(tickets.every((t) => t.expected.route === null)).toBe(true);
+    expect(tickets.map((t) => t.id)).toEqual([
+      "E001",
+      "E002",
+      "E003",
+      "E005",
+      "E006",
+      "E007",
+      "E008",
+      "E009",
+      "E010",
+      "E011",
+    ]);
     expect(new Set(tickets.map((t) => t.id)).size).toBe(L02_TICKETS);
   });
 
@@ -221,7 +234,7 @@ describe("T5.L.02 auto incident latency and T5.L.08 triage group", () => {
     expect(code).toBe(1);
     expect(failedChecks(report)).toEqual(["p95-under-60s"]);
     expect(evidenceOf(report)["p95Ms"]).toBe(p95Ms);
-    expect(evidenceOf(report)["slowTickets"]).toEqual(["E010"]);
+    expect(evidenceOf(report)["slowTickets"]).toEqual(["E011"]);
   });
 
   it("fails, naming the eval ID, when a ticket routes review", async () => {
