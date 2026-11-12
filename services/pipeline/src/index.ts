@@ -28,3 +28,8 @@ export {
   type HelpdeskSyncPayload,
   type HelpdeskSyncResult,
 } from "./trigger/helpdesk-sync.js";
+export {
+  notifyRequester,
+  type NotifyRequesterPayload,
+  type NotifyRequesterResult,
+} from "./trigger/notify-requester.js";
