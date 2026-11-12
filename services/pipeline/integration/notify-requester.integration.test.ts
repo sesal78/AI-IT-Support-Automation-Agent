@@ -66,6 +66,8 @@ const PATHS: Partial<Record<TicketStatus, TicketStatus[]>> = {
   incident_created: ["redacted", "triaged", "auto", "helpdesk_pending", "incident_created"],
   review_pending: ["redacted", "triaged", "review_pending"],
   rejected: ["redacted", "triaged", "review_pending", "rejected"],
+  escalated_manual: ["redacted", "triaged", "review_pending", "escalated_manual"],
+  failed: ["redacted", "triaged", "auto", "helpdesk_pending", "failed"],
 };
 
 interface Seed {
@@ -282,14 +284,14 @@ describe("notify-requester on the local REST stack", () => {
     expect(await notifications(ticketId)).toMatchObject([{ status: "failed" }]);
   }, 90_000);
 
-  it("a permanent 422 ends after one request and one attempt, with the failed row", async () => {
+  it("a permanent 422 uses three bounded attempts, then records the failed row", async () => {
     const { ticketId } = await seed();
     scriptResend(422);
 
     const runs = await startNotify(ticketId);
 
-    expect(emailRequests()).toHaveLength(1);
-    expect(runs).toMatchObject([{ status: "FAILED", attempts: 1 }]);
+    expect(emailRequests()).toHaveLength(3);
+    expect(runs).toMatchObject([{ status: "FAILED", attempts: 3 }]);
     expect(await notifications(ticketId)).toMatchObject([{ status: "failed" }]);
     expect(await alertRows("notify_failed")).toEqual([{ count: 1 }]);
   });
@@ -329,8 +331,22 @@ describe("notify-requester on the local REST stack", () => {
     ]);
     // A refused trigger on a rejected ticket must not fill its slot.
     expect(await notifications(rejected.ticketId)).toEqual([]);
+    expect(await notifications(numberless.ticketId)).toEqual([]);
     expect(await ticketStatus(rejected.ticketId)).toBe("rejected");
   });
+
+  it.each(["rejected", "escalated_manual", "failed"] as const)(
+    "needs_info refuses a %s ticket without sending or filling its slot",
+    async (status) => {
+      const { ticketId } = await seed({ status, incident: false, flags: ["needs_info"] });
+      scriptResend(200);
+      const runs = await startNotify(ticketId, "needs_info");
+      expect(runs).toMatchObject([{ status: "FAILED", attempts: 1 }]);
+      expect(emailRequests()).toEqual([]);
+      expect(await notifications(ticketId)).toEqual([]);
+      expect(await ticketStatus(ticketId)).toBe(status);
+    },
+  );
 
   it("the needs_info variant is sent once, under its own key, for a flagged ticket", async () => {
     const { ticketId, ticketNumber } = await seed({
