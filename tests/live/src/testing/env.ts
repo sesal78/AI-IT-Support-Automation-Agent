@@ -3,6 +3,8 @@
  * `repeat` so no literal secret sits in the source. The token is letters only
  * (the internal token rule); the others carry regex-special characters.
  */
+import { SN_PASSWORD, SN_URL, SN_USER } from "./mock-servicenow.ts";
+
 export function markerEnv(origin: string) {
   return {
     E2E_BASE_URL: origin,
@@ -33,5 +35,17 @@ export function markerSlackEnv() {
     E2E_SLACK_CHANNEL_ID: TEST_SLACK.channelId,
     E2E_SLACK_SIGNING_SECRET: `MarkerSigningSecret${"k".repeat(20)}`,
     E2E_SLACK_REVIEWER_ID: TEST_SLACK.reviewerId,
+  };
+}
+
+/**
+ * The three live ServiceNow variables (P5-T7), pointing at the fetch-level
+ * mock. The instance URL is the fixed e2e one the helper requires.
+ */
+export function markerServiceNowEnv() {
+  return {
+    E2E_SERVICENOW_INSTANCE_URL: SN_URL,
+    E2E_SERVICENOW_USERNAME: SN_USER,
+    E2E_SERVICENOW_PASSWORD: SN_PASSWORD,
   };
 }
