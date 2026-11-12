@@ -1,3 +1,4 @@
+import type { AlertFn } from "@ai-it-support/ai";
 import {
   HelpdeskConflictError,
   IncidentConflictError,
@@ -25,6 +26,7 @@ import {
   runHelpdeskSync,
   type HelpdeskSyncDeps,
 } from "./helpdesk-sync.js";
+import type { TriggerNotifyFn } from "./notify-enqueue.js";
 
 const TICKET = "00000000-0000-4000-8000-000000000001";
 const KB = "00000000-0000-4000-8000-00000000000b";
@@ -109,6 +111,8 @@ interface Options {
   helpdeskConflict?: boolean;
   /** The fake clock at the start of the run (ISO). Default: the ticket's created_at. */
   clockAt?: string;
+  /** Thrown by triggerNotify (P5-T8b). */
+  notifyError?: unknown;
 }
 
 function harness(options: Options = {}) {
@@ -207,8 +211,11 @@ function harness(options: Options = {}) {
       return {} as never;
     }),
   };
-  const alert = vi.fn(async () => undefined);
+  const alert = vi.fn<AlertFn>(async () => undefined);
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  const triggerNotify = vi.fn<TriggerNotifyFn>(async () => {
+    if (options.notifyError) throw options.notifyError;
+  });
   const createConnector = vi.fn(() => {
     if (options.connectorFactoryError) throw options.connectorFactoryError;
     return connector;
@@ -229,10 +236,12 @@ function harness(options: Options = {}) {
     shadowMode: options.shadowMode ?? false,
     e2eMode: options.e2eMode ?? false,
     alert,
+    triggerNotify,
     logger,
   };
   return {
     deps,
+    triggerNotify,
     calls,
     repos,
     connector,
@@ -1069,5 +1078,104 @@ describe("helpdeskSyncOptions", () => {
       randomize: true,
     });
     expect(helpdeskSyncOptions.onFailure).toBe(onHelpdeskSyncFailure);
+  });
+});
+
+describe("runHelpdeskSync: the reply email (P5-T8b)", () => {
+  const key = `notify-requester:${TICKET}:incident_reply`;
+
+  it("starts notify-requester once, after the status is incident_created", async () => {
+    const h = harness();
+    await run(h);
+    expect(h.triggerNotify).toHaveBeenCalledExactlyOnceWith(
+      { ticketId: TICKET, kind: "incident_reply" },
+      { idempotencyKey: key },
+    );
+    const toCreated = h.repos.setTicketStatus.mock.calls.findIndex(
+      ([, to]) => to === "incident_created",
+    );
+    expect(h.repos.setTicketStatus.mock.invocationCallOrder[toCreated]).toBeLessThan(
+      h.triggerNotify.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("starts nothing in shadow mode", async () => {
+    const h = harness({ shadowMode: true });
+    await expect(run(h)).resolves.toEqual({ ticketId: TICKET, shadow: true });
+    expect(h.status.value).toBe("incident_skipped_shadow");
+    expect(h.triggerNotify).not.toHaveBeenCalled();
+  });
+
+  it.each(["sync_refused", "mismatch", "failed run"])(
+    "starts nothing when the run is refused or fails (%s)",
+    async (way) => {
+      const h =
+        way === "sync_refused"
+          ? harness({ found: ticket("rejected") })
+          : way === "mismatch"
+            ? harness({ found: { ...ticket(), helpdesk: "builtin" } })
+            : harness({ failures: { createTicket: [new HelpdeskError("auth", "create")] } });
+      await run(h);
+      expect(h.triggerNotify).not.toHaveBeenCalled();
+    },
+  );
+
+  it("a trigger that throws leaves the status incident_created, records one event and one alert, and the run goes on", async () => {
+    const h = harness({ notifyError: new TypeError("trigger unavailable") });
+    await expect(run(h)).resolves.toEqual({
+      ticketId: TICKET,
+      incident: { externalId: SYS_ID, number: INC },
+    });
+    expect(h.status.value).toBe("incident_created");
+    expect(h.statusWrites).toEqual(["helpdesk_pending", "incident_created"]);
+    expect(eventTypes(h).filter((type) => type === "notify_enqueue_failed")).toHaveLength(1);
+    expect(payloadOf(h, "notify_enqueue_failed")).toEqual({
+      kind: "incident_reply",
+      error: "TypeError",
+    });
+    expect(h.alert.mock.calls.filter(([kind]) => kind === "notify_enqueue_failed")).toEqual([
+      ["notify_enqueue_failed", { ticketId: TICKET }],
+    ]);
+    expect(eventTypes(h)).not.toContain("helpdesk_sync_failed");
+  });
+
+  it("retry recovery: a ticket whose status was saved before the trigger is enqueued again with the same key, and nothing else is redone", async () => {
+    const h = harness({ found: ticket("incident_created"), incidentExists: true });
+    await expect(run(h)).resolves.toEqual({ ticketId: TICKET, skipped: true });
+    expect(h.triggerNotify).toHaveBeenCalledExactlyOnceWith(
+      { ticketId: TICKET, kind: "incident_reply" },
+      { idempotencyKey: key },
+    );
+    expect(h.createConnector).not.toHaveBeenCalled();
+    expect(h.statusWrites).toEqual([]);
+    expect(h.events).toEqual([]);
+    expect(h.sent.creates).toHaveLength(0);
+    expect(h.sent.notes).toHaveLength(0);
+  });
+
+  it("a trigger lost after the status write is picked up by the next run of the finished ticket", async () => {
+    const first = harness();
+    first.triggerNotify.mockImplementationOnce(async () => {
+      throw new Error("process died");
+    });
+    await run(first);
+    const second = harness({ found: ticket("incident_created"), incidentExists: true });
+    await run(second);
+    expect(second.triggerNotify).toHaveBeenCalledTimes(1);
+    expect(second.triggerNotify.mock.calls[0]?.[1]).toEqual({ idempotencyKey: key });
+  });
+
+  it("starts nothing for a ticket that finished in shadow mode", async () => {
+    const h = harness({ found: ticket("incident_skipped_shadow") });
+    await expect(run(h)).resolves.toEqual({ ticketId: TICKET, skipped: true });
+    expect(h.triggerNotify).not.toHaveBeenCalled();
+  });
+
+  it("the payload and logs carry no address and no ticket text", async () => {
+    const h = harness({ notifyError: new Error(`boom ${MARK.email}`) });
+    await run(h);
+    expect(JSON.stringify(h.triggerNotify.mock.calls)).not.toContain(MARK.email);
+    expect(outbound(h)).not.toContain(MARK.email);
+    expect(outbound(h)).not.toContain(MARK.description);
   });
 });
