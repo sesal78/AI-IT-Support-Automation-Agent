@@ -83,6 +83,19 @@ export async function createHelpdeskTicket(
 export const serviceNowOf = (context: ScenarioContext): E2eServiceNow =>
   createE2eServiceNow(context.config.servicenow, context.fetch);
 
+/** The persona's ServiceNow email when the instance has one, else the fallback. */
+export async function personaEmail(
+  sn: E2eServiceNow,
+  personaName: string,
+  fallback: string,
+): Promise<string> {
+  try {
+    return (await sn.userByName(personaName))?.["email"] || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 /** The `not_run` result when a ServiceNow variable is unset, else undefined. */
 export function serviceNowNotRun(context: ScenarioContext): ScenarioResult | undefined {
   const missing = missingServiceNowEnv(context.config);

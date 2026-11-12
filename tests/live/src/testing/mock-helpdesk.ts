@@ -14,8 +14,16 @@ import { groupSysId, snStamp, sysId, type MockSnData } from "./mock-servicenow.t
 export interface MockHelpdeskFaults {
   /** Sync start -> incident, in ms (default 1 000). */
   readonly incidentAfterMs?: (testId: string) => number;
-  /** How many incidents to create for one ticket (default 1). */
+  /** The incident's `category` instead of the triage category (T5.L.01). */
+  readonly category?: (testId: string) => string;
+  /** The incident's `caller_id` instead of the persona lookup (T5.L.01). */
+  readonly caller?: (testId: string) => string;
+  /** How many incidents to create for one ticket (default 1, T5.L.03). */
   readonly incidents?: (testId: string) => number;
+  /** How many work notes to write (default 1, T5.L.01). */
+  readonly workNotes?: (testId: string) => number;
+  /** The incident's `correlation_display` instead of the ticket number. */
+  readonly correlationDisplay?: (testId: string) => string;
   /** Creates the incident although the ticket is in shadow mode (T5.L.05 negative). */
   readonly createInShadow?: boolean;
 }
@@ -117,24 +125,26 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
       const row: Record<string, string> = {
         sys_id: sysId(900 + n),
         number: `INC${String(n).padStart(7, "0")}`,
-        category: t.triage.category,
-        caller_id: mockCallerId(data, t.email),
+        category: faults.category?.(t.testId) ?? t.triage.category,
+        caller_id: faults.caller?.(t.testId) ?? mockCallerId(data, t.email),
         assignment_group: groupSysId(data, t.triage.assignmentGroup) ?? "",
         short_description: `${E2E_PREFIX} ${t.title}`,
         description: t.description,
         state: "1",
         correlation_id: t.ticketId,
-        correlation_display: t.number,
+        correlation_display: faults.correlationDisplay?.(t.testId) ?? t.number,
         sys_created_on: snStamp(at),
       };
       data.incidents.push(row);
       if (i === 0) t.incident = { number: row["number"]!, sysId: row["sys_id"]! };
       // The triage work note (DoD 5); its text carries no ticket text.
-      data.journal.push({
-        element_id: row["sys_id"]!,
-        element: "work_notes",
-        value: `Triage note: category ${row["category"]}, priority P3.`,
-      });
+      for (let note = 0; note < (faults.workNotes?.(t.testId) ?? 1); note++) {
+        data.journal.push({
+          element_id: row["sys_id"]!,
+          element: "work_notes",
+          value: `Triage note: category ${row["category"]}, priority P3.`,
+        });
+      }
     }
   }
 

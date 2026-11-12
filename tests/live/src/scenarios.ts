@@ -1,4 +1,5 @@
 import { browserFormScenario } from "./browser-form.ts";
+import { helpdeskScenarios } from "./helpdesk-scenarios.ts";
 import { observabilityScenarios } from "./observability.ts";
 import { pipelineScenarios } from "./pipeline.ts";
 import { reviewFlowScenarios } from "./review-flow.ts";
@@ -20,4 +21,5 @@ export const scenarios: readonly Scenario[] = [
   ...reviewSecurityScenarios,
   ...reviewHeavyScenarios,
   serviceNowContractScenario,
+  ...helpdeskScenarios,
 ];
