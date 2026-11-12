@@ -3,6 +3,7 @@ import {
   assertTransition,
   CATEGORIES,
   HELPDESK_STATES,
+  NOTIFICATION_KINDS,
   PRIORITIES,
   slackUserId as slackUserIdRule,
   ticketNumberSchema,
@@ -12,6 +13,7 @@ import {
   type HelpdeskState,
   type InternalTicketView,
   type KbArticle,
+  type NotificationKind,
   type Priority,
   type TicketStatus,
   type TriageResult,
@@ -153,6 +155,21 @@ export const helpdeskNoteSchema = z.strictObject({
   created_at: timestamp,
 });
 
+// A requester reply (migration 0006): one row per ticket, channel and kind. Strict:
+// a column the database returns beyond the named ones is a DbError, not silently dropped.
+const NOTIFICATION_STATUSES = ["sent", "skipped", "failed"] as const;
+const NOTIFICATION_REASONS = ["not_allow_listed", "provider_error"] as const;
+export const notificationSchema = z.strictObject({
+  id: z.uuid(),
+  ticket_id: z.uuid(),
+  channel: z.enum(["email"]),
+  kind: z.enum(NOTIFICATION_KINDS),
+  status: z.enum(NOTIFICATION_STATUSES),
+  provider_id: z.string().nullable(),
+  reason: z.enum(NOTIFICATION_REASONS).nullable(),
+  at: timestamp,
+});
+
 const kbTitleSchema = kbArticleRowSchema.pick({ id: true, slug: true, title: true });
 
 export const aiReservationSchema = z.object({
@@ -169,6 +186,20 @@ export type Triage = z.infer<typeof triageSchema>;
 export type Review = z.infer<typeof reviewSchema>;
 export type ReviewDecision = NonNullable<Review["decision"]>;
 export type KbArticleTitle = z.infer<typeof kbTitleSchema>;
+
+export type Notification = z.infer<typeof notificationSchema>;
+export type NotificationStatus = Notification["status"];
+export type NotificationReason = NonNullable<Notification["reason"]>;
+export interface NewNotification {
+  ticketId: string;
+  channel: "email";
+  kind: NotificationKind;
+  status: NotificationStatus;
+  /** The provider's message id: required for `sent`, `null` otherwise. */
+  providerId: string | null;
+  /** `not_allow_listed` for `skipped`, `provider_error` for `failed`, `null` for `sent`. */
+  reason: NotificationReason | null;
+}
 
 export type HelpdeskTicket = z.infer<typeof helpdeskTicketSchema>;
 export type HelpdeskNote = z.infer<typeof helpdeskNoteSchema>;
@@ -206,6 +237,7 @@ const HELPDESK_TICKET_COLUMNS =
   "id,ticket_id,seq,number,state,priority,category,assignee_id,created_at,updated_at";
 const HELPDESK_NOTE_COLUMNS = "id,helpdesk_ticket_id,author_kind,author_staff_id,body,created_at";
 const HELPDESK_NOTE_MAX_CHARS = 5000;
+const NOTIFICATION_COLUMNS = "id,ticket_id,channel,kind,status,provider_id,reason,at";
 const KB_TITLE_COLUMNS = "id,slug,title";
 const KB_ARTICLE_COLUMNS = "id,slug,title,content,category,assignment_group";
 const SECURITY_EVENT_COLUMNS = "source,kind,window_start,count";
@@ -379,6 +411,8 @@ function parseRow<T>(operation: string, schema: z.ZodType<T>, result: SupabaseRe
   return parsed.data;
 }
 
+// The provider message id: the same rule as the Resend client applies to its reply.
+const PROVIDER_ID = /^[A-Za-z0-9_-]{1,100}$/;
 const SYS_ID = /^[0-9a-f]{32}$/;
 const INCIDENT_NUMBER = /^[A-Za-z0-9]{1,40}$/;
 
@@ -391,6 +425,29 @@ function assertText(operation: string, name: string, value: unknown): asserts va
   if (typeof value !== "string" || value.trim() === "") {
     throw new TypeError(`${operation}: ${name} must be a non-empty string`);
   }
+}
+
+/** The same rules as the 0006 row checks, applied before any request. */
+function assertNewNotification(op: string, input: NewNotification): void {
+  assertUuid(op, "ticketId", input.ticketId);
+  if (input.channel !== "email") throw new TypeError(`${op}: unknown channel`);
+  if (!(NOTIFICATION_KINDS as readonly unknown[]).includes(input.kind)) {
+    throw new TypeError(`${op}: unknown kind`);
+  }
+  if (!(NOTIFICATION_STATUSES as readonly unknown[]).includes(input.status)) {
+    throw new TypeError(`${op}: unknown status`);
+  }
+  const { status, providerId, reason } = input;
+  if (status === "sent") {
+    if (typeof providerId !== "string" || !PROVIDER_ID.test(providerId)) {
+      throw new TypeError(`${op}: a sent notification needs a provider id`);
+    }
+    if (reason !== null) throw new TypeError(`${op}: a sent notification has no reason`);
+    return;
+  }
+  if (providerId !== null) throw new TypeError(`${op}: only a sent notification has a provider id`);
+  const wanted = status === "skipped" ? "not_allow_listed" : "provider_error";
+  if (reason !== wanted) throw new TypeError(`${op}: a ${status} notification needs ${wanted}`);
 }
 
 export function createRepositories(client: DbClient) {
@@ -995,6 +1052,61 @@ export function createRepositories(client: DbClient) {
       if (stored.helpdesk === null) throw new DbError(op, "unexpected response shape at helpdesk");
       if (stored.helpdesk !== kind) throw new HelpdeskConflictError(op);
       return { changed: false };
+    },
+
+    /**
+     * Inserts the reply notification of a ticket (P5-T8b). A ticket has at most
+     * one per channel and kind (unique key): on a duplicate the stored row is
+     * returned unchanged with created: false, and nothing is updated, so a
+     * sent row can never be overwritten by a later failed or skipped one. The
+     * values are checked like the 0006 row checks, before any request
+     * (TypeError, naming no value).
+     */
+    async recordNotification(
+      input: NewNotification,
+    ): Promise<{ created: boolean; notification: Notification }> {
+      const op = "recordNotification";
+      assertNewNotification(op, input);
+      const inserted = await client
+        .from("notifications")
+        .insert({
+          ticket_id: input.ticketId,
+          channel: input.channel,
+          kind: input.kind,
+          status: input.status,
+          provider_id: input.providerId,
+          reason: input.reason,
+        })
+        .select(NOTIFICATION_COLUMNS)
+        .single();
+      if (inserted.error?.code !== UNIQUE_VIOLATION) {
+        return { created: true, notification: parseRow(op, notificationSchema, inserted) };
+      }
+      const existing = await client
+        .from("notifications")
+        .select(NOTIFICATION_COLUMNS)
+        .eq("ticket_id", input.ticketId)
+        .eq("channel", input.channel)
+        .eq("kind", input.kind)
+        .single();
+      return { created: false, notification: parseRow(op, notificationSchema, existing) };
+    },
+
+    /** The ticket's email notification of this kind, or null when it has none. */
+    async getNotification(ticketId: string, kind: NotificationKind): Promise<Notification | null> {
+      const op = "getNotification";
+      assertUuid(op, "ticketId", ticketId);
+      if (!(NOTIFICATION_KINDS as readonly unknown[]).includes(kind)) {
+        throw new TypeError(`${op}: unknown kind`);
+      }
+      const result = await client
+        .from("notifications")
+        .select(NOTIFICATION_COLUMNS)
+        .eq("ticket_id", ticketId)
+        .eq("channel", "email")
+        .eq("kind", kind)
+        .maybeSingle();
+      return parseRow(op, notificationSchema.nullable(), result);
     },
 
     /**

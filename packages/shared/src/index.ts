@@ -109,6 +109,7 @@ export {
 export {
   HELPDESK_SYNC_TASK_ID,
   INTAKE_TICKET_TASK_ID,
+  NOTIFICATION_KINDS,
   REVIEW_TICKET_TASK_ID,
   TRIAGE_TICKET_TASK_ID,
   TICKET_NUMBER_RE,
@@ -116,6 +117,7 @@ export {
   ticketSubmissionSchema,
   type HelpdeskSyncPayload,
   type IntakeTicketPayload,
+  type NotificationKind,
   type ReviewTicketPayload,
   type TicketSubmission,
   type TriageTicketPayload,

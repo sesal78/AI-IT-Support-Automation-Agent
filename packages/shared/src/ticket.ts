@@ -71,3 +71,7 @@ export interface HelpdeskSyncPayload {
   /** Test switches; they take effect only in E2E mode on a test ticket. */
   testOverrides?: TestOverrides;
 }
+
+/** The two reply emails: the incident reply and the "more detail" request. */
+export const NOTIFICATION_KINDS = ["incident_reply", "needs_info"] as const;
+export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
