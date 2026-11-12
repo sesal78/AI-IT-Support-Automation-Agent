@@ -1,3 +1,4 @@
+import type { AlertFn } from "@ai-it-support/ai";
 import type { Redaction, Review, Ticket, Triage } from "@ai-it-support/db";
 import {
   SlackApiError,
@@ -15,6 +16,7 @@ import {
   type ReviewDeps,
   type ReviewWait,
 } from "./review-ticket.js";
+import type { TriggerNotifyFn } from "./notify-enqueue.js";
 
 const TICKET = "00000000-0000-4000-8000-000000000001";
 const REVIEW = "00000000-0000-4000-8000-0000000000aa";
@@ -123,6 +125,8 @@ interface Options {
   updateError?: unknown;
   /** Thrown by triggerHelpdeskSync. */
   syncTriggerError?: Error;
+  /** Thrown by triggerNotify (P5-T8b). */
+  notifyError?: unknown;
 }
 
 function harness(options: Options = {}) {
@@ -228,7 +232,7 @@ function harness(options: Options = {}) {
     ),
     forToken: vi.fn(track("forToken", async () => ({ ok: options.tokenOk ?? true }))),
   };
-  const alert = vi.fn(async () => undefined);
+  const alert = vi.fn<AlertFn>(async () => undefined);
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const deps: ReviewDeps = {
     repos,
@@ -245,6 +249,9 @@ function harness(options: Options = {}) {
         if (options.syncTriggerError) throw options.syncTriggerError;
       }),
     ),
+    triggerNotify: vi.fn<TriggerNotifyFn>(async () => {
+      if (options.notifyError) throw options.notifyError;
+    }),
   };
   return { deps, calls, repos, slack, wait, alert, logger, events, statuses };
 }
@@ -791,5 +798,75 @@ describe("onReviewFailure", () => {
 
   it("is wired as the task's onFailure", () => {
     expect(reviewTicketOptions.onFailure).toBe(onReviewFailure);
+  });
+});
+
+describe("runReviewTicket: the needs_info email (P5-T8b)", () => {
+  const needy = () => triage("review", 3);
+  const withFlag = () => ({ ...needy(), flags: ["needs_info"] });
+  const key = `notify-requester:${TICKET}:needs_info`;
+
+  it("starts notify-requester once with the needs_info kind, after review_requested and before the wait", async () => {
+    const h = harness({ triage: withFlag() });
+    await run(h);
+    expect(h.deps.triggerNotify).toHaveBeenCalledExactlyOnceWith(
+      { ticketId: TICKET, kind: "needs_info" },
+      { idempotencyKey: key },
+    );
+    const added = h.repos.addEvent.mock.invocationCallOrder[0]!;
+    const notified = vi.mocked(h.deps.triggerNotify).mock.invocationCallOrder[0]!;
+    const waited = h.wait.forToken.mock.invocationCallOrder[0]!;
+    expect(added).toBeLessThan(notified);
+    expect(notified).toBeLessThan(waited);
+  });
+
+  it("starts nothing for a ticket whose flags do not hold needs_info", async () => {
+    const h = harness({ triage: needy() });
+    await run(h);
+    expect(h.deps.triggerNotify).not.toHaveBeenCalled();
+  });
+
+  it("a trigger that throws leaves the statuses as they were, raises one alert, and the review goes on", async () => {
+    const h = harness({ triage: withFlag(), notifyError: new TypeError("trigger unavailable") });
+    await expect(run(h)).resolves.toEqual({
+      ticketId: TICKET,
+      skipped: false,
+      decision: "approve",
+    });
+    expect(h.statuses).toEqual(["review_pending", "approved"]);
+    expect(h.events.filter((type) => type === "notify_enqueue_failed")).toHaveLength(1);
+    expect(h.alert.mock.calls.filter(([kind]) => kind === "notify_enqueue_failed")).toEqual([
+      ["notify_enqueue_failed", { ticketId: TICKET }],
+    ]);
+  });
+
+  it("retry recovery: a crash after review_requested is recovered with the same key and no new Slack post", async () => {
+    const h = harness({
+      triage: withFlag(),
+      review: review({ slack_ts: "1700000000.000001" }),
+      events: ["review_requested"],
+    });
+    await run(h);
+    expect(h.slack.postMessage).not.toHaveBeenCalled();
+    expect(h.repos.setReviewSlackTs).not.toHaveBeenCalled();
+    expect(h.deps.triggerNotify).toHaveBeenCalledExactlyOnceWith(
+      { ticketId: TICKET, kind: "needs_info" },
+      { idempotencyKey: key },
+    );
+    expect(h.events.filter((type) => type === "review_requested")).toHaveLength(1);
+  });
+
+  it("an approved ticket starts only the sync, not an email", async () => {
+    const h = harness({ found: ticket("approved") });
+    await run(h);
+    expect(h.deps.triggerNotify).not.toHaveBeenCalled();
+    expect(h.deps.triggerHelpdeskSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("carries no address and no ticket text in the trigger or the logs", async () => {
+    const h = harness({ triage: withFlag(), notifyError: new Error(`boom ${MARK.pat}`) });
+    await run(h);
+    expect(JSON.stringify(vi.mocked(h.deps.triggerNotify).mock.calls)).not.toContain(MARK.pat);
+    expect(outbound(h)).not.toContain(MARK.pat);
   });
 });

@@ -120,6 +120,8 @@ function reviewDeps(wait: ReviewWait = broker): ReviewDeps {
     }),
     // P5-T5b: the helpdesk handoff is recorded, not sent.
     triggerHelpdeskSync: async () => undefined,
+    // P5-T8b: nor is the reply email trigger.
+    triggerNotify: async () => undefined,
     logger: quiet,
   };
 }
