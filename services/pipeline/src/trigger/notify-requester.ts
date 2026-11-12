@@ -47,6 +47,7 @@ const fixStepsSchema = z.object({ steps: z.array(z.string()) });
  * nothing without it, so a refused trigger can never fill the ticket's slot.
  */
 export function isEligible(kind: NotificationKind, ticket: Ticket, triage: Triage | null): boolean {
+  if (["rejected", "escalated_manual", "failed"].includes(ticket.status)) return false;
   return kind === "incident_reply"
     ? ticket.status === "incident_created"
     : triage?.flags?.includes("needs_info") === true;

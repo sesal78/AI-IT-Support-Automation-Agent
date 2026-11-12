@@ -313,6 +313,22 @@ describe("runNotifyRequester: refusals", () => {
 });
 
 describe("runNotifyRequester: needs_info", () => {
+  it.each(["rejected", "escalated_manual", "failed"] as const)(
+    "refuses needs_info for a %s ticket even with the flag",
+    async (status) => {
+      const h = harness({
+        ticket: ticket({ status }),
+        triage: triage({ route: "review", flags: ["needs_info"] }),
+      });
+      await expect(runNotifyRequester(payload("needs_info"), h.deps)).rejects.toBeInstanceOf(
+        AbortTaskRunError,
+      );
+      expect(h.requests).toEqual([]);
+      expect(h.rows.size).toBe(0);
+      expect(h.events).toEqual([]);
+    },
+  );
+
   const needy = () => ({
     ticket: ticket({ status: "review_pending", servicenow_number: null, servicenow_sys_id: null }),
     triage: triage({ route: "review", flags: ["needs_info"], suggested_fix: null }),
