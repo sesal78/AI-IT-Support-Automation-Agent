@@ -46,6 +46,10 @@ export interface Incident {
   readonly short_description: string;
   readonly description: string;
   readonly state: string;
+  /** The ticket number the connector copied into `correlation_display` (P5-T5c). */
+  readonly correlation_display: string;
+  /** Display time, `YYYY-MM-DD HH:MM:SS`, for the run-start window (P5-T5c, T5.O.01). */
+  readonly sys_created_on: string;
 }
 export type UserRow = Readonly<Record<string, string>>;
 
@@ -58,10 +62,27 @@ const INCIDENT_FIELDS = [
   "short_description",
   "description",
   "state",
+  "correlation_display",
+  "sys_created_on",
 ] as const;
+
+/** The most rows one incident read asks for; a full page is reported as truncated. */
+export const INCIDENT_PAGE_LIMIT = 1000;
+
+export interface IncidentPage {
+  readonly incidents: Incident[];
+  /** The instance returned a full page, so more rows may exist. */
+  readonly truncated: boolean;
+}
 
 export interface E2eServiceNow {
   incidentsByCorrelationId(ticketId: string): Promise<Incident[]>;
+  /**
+   * Every `[E2E]` incident with a `sys_created_on` at or after `sinceMs`, by a
+   * fixed `STARTSWITH` query. `truncated` is true when the page is full, so a
+   * caller never treats a partial list as complete (T5.O.01).
+   */
+  e2eIncidentsSince(sinceMs: number): Promise<IncidentPage>;
   workNotes(sysId: string): Promise<string[]>;
   userByName(name: string): Promise<UserRow | undefined>;
   /** Names of the roles a user holds directly (not inherited), sorted. */
@@ -79,6 +100,15 @@ const TICKET_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 // Plain names only: no `^`, `=`, `,` or control characters that change an encoded query.
 const USER_NAME = /^[A-Za-z0-9._-]{1,60}$/;
 const GROUP_NAME = /^[A-Za-z0-9 ._&-]{1,80}$/;
+
+/**
+ * A time in the display format an encoded query expects, `YYYY-MM-DD HH:MM:SS`
+ * in UTC. Only digits, dashes, colons and one space, so it adds no query syntax.
+ */
+export function serviceNowStamp(ms: number): string {
+  if (!Number.isFinite(ms)) throw new ServiceNowGuardError("bad_argument");
+  return new Date(Math.floor(ms / 1000) * 1000).toISOString().slice(0, 19).replace("T", " ");
+}
 
 function argument(value: string, rule: RegExp): string {
   if (typeof value !== "string" || !rule.test(value))
@@ -141,12 +171,13 @@ export function createE2eServiceNow(config: ServiceNowConfig, fetchImpl: FetchLi
     table: string,
     query: string,
     fields: readonly string[],
+    limit = 100,
   ): Promise<Array<Record<string, string>>> {
     const json = await send(operation, "GET", table, {
       sysparm_query: query,
       sysparm_fields: fields.join(","),
       sysparm_exclude_reference_link: "true",
-      sysparm_limit: "100",
+      sysparm_limit: String(limit),
     });
     const parsed = envelope.safeParse(json);
     if (!parsed.success) throw new ServiceNowApiError(operation, 0);
@@ -172,6 +203,19 @@ export function createE2eServiceNow(config: ServiceNowConfig, fetchImpl: FetchLi
         INCIDENT_FIELDS,
       );
       return rows.map((r) => toIncident("incidentsByCorrelationId", r));
+    },
+    async e2eIncidentsSince(sinceMs) {
+      const rows = await list(
+        "e2eIncidentsSince",
+        "incident",
+        `short_descriptionSTARTSWITH${E2E_PREFIX}^sys_created_on>=${serviceNowStamp(sinceMs)}`,
+        INCIDENT_FIELDS,
+        INCIDENT_PAGE_LIMIT,
+      );
+      return {
+        incidents: rows.map((r) => toIncident("e2eIncidentsSince", r)),
+        truncated: rows.length >= INCIDENT_PAGE_LIMIT,
+      };
     },
     async workNotes(sysId) {
       const rows = await list(
