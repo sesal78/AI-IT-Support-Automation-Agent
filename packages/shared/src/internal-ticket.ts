@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ASSIGNMENT_GROUPS, CATEGORIES, PRIORITIES, ROUTES, URGENCIES } from "./triage.js";
 import { TICKET_STATUSES } from "./status.js";
-import { ticketNumberSchema } from "./ticket.js";
+import { NOTIFICATION_KINDS, ticketNumberSchema } from "./ticket.js";
 
 const timestamp = z.iso.datetime({ offset: true });
 const nullable = <T extends z.ZodType>(schema: T) => schema.nullable();
@@ -21,10 +21,25 @@ export const internalReviewSchema = z.strictObject({
 });
 
 /**
+ * One reply email of a ticket (P5-T8b). Seven keys, no address and no text:
+ * `providerId` is the provider's message id, `reason` is a fixed word.
+ */
+export const internalNotificationSchema = z.strictObject({
+  id: z.uuid(),
+  channel: z.enum(["email"]),
+  kind: z.enum(NOTIFICATION_KINDS),
+  status: z.enum(["sent", "skipped", "failed"]),
+  reason: nullable(z.enum(["not_allow_listed", "provider_error"])),
+  providerId: nullable(z.string()),
+  at: timestamp,
+});
+
+/**
  * Body of GET /api/internal/tickets/:id. Strict on purpose: the view is the
  * PII boundary, so it has no key for the raw title, raw description, requester
  * name, requester email or department, and an unknown key is an error.
- * `notifications` and `autofix` stay empty lists until their tables exist.
+ * `notifications` lists the reply emails oldest first (P5-T8b); `autofix` stays
+ * an empty list until its table exists.
  * `incident` is the helpdesk pair or null (P5-T5b).
  */
 export const internalTicketViewSchema = z.strictObject({
@@ -58,7 +73,7 @@ export const internalTicketViewSchema = z.strictObject({
   aiCallCount: z.number().int().nonnegative(),
   events: z.array(z.strictObject({ type: z.string(), at: timestamp })),
   reviews: z.array(internalReviewSchema),
-  notifications: z.array(z.never()),
+  notifications: z.array(internalNotificationSchema),
   autofix: z.array(z.never()),
   // P5-T5b: the helpdesk incident, or null. Both fields or neither: the
   // database holds them as a pair, and a stray key here is an error.

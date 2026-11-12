@@ -137,3 +137,68 @@ describe("internalTicketViewSchema reviews", () => {
     expect(parse([{ ...review, id: "not-a-uuid" }])).toBe(false);
   });
 });
+
+describe("internalTicketViewSchema notifications (P5-T8b)", () => {
+  const id = "6f1e3c0e-5b8a-4d7e-9c52-0a1b2c3d4e5f";
+  const notification = {
+    id,
+    channel: "email",
+    kind: "incident_reply",
+    status: "sent",
+    reason: null,
+    providerId: "msg_01",
+    at: AT,
+  };
+
+  it("lists a notification with all seven keys", () => {
+    const view = { ...valid, notifications: [notification] };
+    expect(internalTicketViewSchema.parse(view).notifications).toEqual([notification]);
+  });
+
+  it("accepts a skipped and a failed entry", () => {
+    const skipped = {
+      ...notification,
+      status: "skipped",
+      reason: "not_allow_listed",
+      providerId: null,
+    };
+    const failed = {
+      ...notification,
+      kind: "needs_info",
+      status: "failed",
+      reason: "provider_error",
+      providerId: null,
+    };
+    expect(
+      internalTicketViewSchema.safeParse({ ...valid, notifications: [skipped, failed] }).success,
+    ).toBe(true);
+  });
+
+  it("rejects an entry with an unknown key (for example the address)", () => {
+    const view = { ...valid, notifications: [{ ...notification, to: "a@b.test" }] };
+    expect(internalTicketViewSchema.safeParse(view).success).toBe(false);
+  });
+
+  it.each(["id", "channel", "kind", "status", "reason", "providerId", "at"])(
+    "rejects an entry without %s",
+    (key) => {
+      const entry: Record<string, unknown> = { ...notification };
+      delete entry[key];
+      expect(internalTicketViewSchema.safeParse({ ...valid, notifications: [entry] }).success).toBe(
+        false,
+      );
+    },
+  );
+
+  it.each([
+    ["an unknown channel", { channel: "sms" }],
+    ["an unknown kind", { kind: "welcome" }],
+    ["an unknown status", { status: "queued" }],
+    ["an unknown reason", { reason: "bounced" }],
+    ["a non-UUID id", { id: "nope" }],
+    ["a bad timestamp", { at: "yesterday" }],
+  ])("rejects %s", (_name, patch) => {
+    const view = { ...valid, notifications: [{ ...notification, ...patch }] };
+    expect(internalTicketViewSchema.safeParse(view).success).toBe(false);
+  });
+});
