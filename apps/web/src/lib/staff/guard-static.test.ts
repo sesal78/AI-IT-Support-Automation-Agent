@@ -57,6 +57,7 @@ describe("staff guard coverage", () => {
       "src/app/staff/login/route.ts",
       "src/app/staff/logout/route.ts",
       "src/app/staff/session-ended/route.ts",
+      "src/app/staff/tickets/page.tsx",
     ]);
   });
 
