@@ -113,7 +113,10 @@ describe("resolveStaffAccess", () => {
 
   it.each([
     ["a missing row", { row: null }],
-    ["an inactive row", { row: { id: "staff-1", display_name: "A", role: "agent", active: false } }],
+    [
+      "an inactive row",
+      { row: { id: "staff-1", display_name: "A", role: "agent", active: false } },
+    ],
   ])("refuses %s", async (_label, fake) => {
     const { resolveStaffAccess } = await load();
     expect(await resolveStaffAccess(client(fake))).toEqual({ ok: false, reason: "no_staff" });

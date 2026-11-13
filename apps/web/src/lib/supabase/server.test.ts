@@ -16,9 +16,7 @@ type Options = {
   cookieOptions: Record<string, unknown>;
   cookies: {
     getAll: () => { name: string; value: string }[];
-    setAll: (
-      cookies: { name: string; value: string; options: Record<string, unknown> }[],
-    ) => void;
+    setAll: (cookies: { name: string; value: string; options: Record<string, unknown> }[]) => void;
   };
 };
 

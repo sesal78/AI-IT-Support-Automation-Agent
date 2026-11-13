@@ -41,9 +41,7 @@ afterEach(() => {
 
 describe("LoginForm", () => {
   it("shows the one generic message for bad credentials and stays put", async () => {
-    fetchMock.mockImplementation(() =>
-      reply(401, { message: "Email or password is wrong" }),
-    );
+    fetchMock.mockImplementation(() => reply(401, { message: "Email or password is wrong" }));
     await fillAndSubmit();
 
     expect(await screen.findByText("Email or password is wrong")).toBeTruthy();
