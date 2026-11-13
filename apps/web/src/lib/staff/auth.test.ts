@@ -77,4 +77,26 @@ describe("requireStaff", () => {
     await requireStaff();
     expect(createServerSupabaseClient).toHaveBeenCalledTimes(1);
   });
+
+  it("pins the exact routes it redirects to", async () => {
+    const { requireStaff, STAFF_LOGIN_PATH, STAFF_DENIED_PATH } = await load();
+    expect(STAFF_LOGIN_PATH).toBe("/staff/login");
+    expect(STAFF_DENIED_PATH).toBe("/staff/session-ended");
+
+    resolveStaffAccess.mockResolvedValue({ ok: false, reason: "no_user" });
+    await expect(requireStaff()).rejects.toThrow(/NEXT_REDIRECT/);
+    expect(redirect).toHaveBeenCalledWith("/staff/login");
+
+    resolveStaffAccess.mockResolvedValue({ ok: false, reason: "no_staff" });
+    await expect(requireStaff()).rejects.toThrow(/NEXT_REDIRECT/);
+    expect(redirect).toHaveBeenCalledWith("/staff/session-ended");
+  });
+
+  it("names the refusal in the error text and type", async () => {
+    const { StaffAccessError } = await load();
+    const error = new StaffAccessError(403, "wrong_role");
+    expect(error.message).toBe("staff access refused: wrong_role");
+    expect(error.name).toBe("StaffAccessError");
+    expect(error.status).toBe(403);
+  });
 });
