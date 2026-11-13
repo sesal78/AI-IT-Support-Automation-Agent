@@ -1,4 +1,14 @@
 [
+  {
+    "path": "apps/web/src/lib/staff/auth.ts",
+    "statements": 90,
+    "mutation": 80
+  },
+  {
+    "path": "apps/web/src/lib/staff/staff-access.ts",
+    "statements": 90,
+    "mutation": 80
+  },
   { "path": "packages/shared/src/redact.ts", "statements": 90, "mutation": 80, "related": false },
   {
     "path": "apps/web/src/lib/intake/request.ts",
