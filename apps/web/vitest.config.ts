@@ -29,6 +29,7 @@ export default defineProject({
       SLACK_REVIEWER_IDS: "U0000000000",
       SLACK_CHANNEL_ID: "C0000000000",
       HELPDESK: "servicenow",
+      SUPABASE_ANON_KEY: "fake-anon-key",
     },
   },
 });

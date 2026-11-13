@@ -18,6 +18,7 @@
     "@ai-it-support/pipeline": "workspace:*",
     "@ai-it-support/shared": "workspace:*",
     "@hookform/resolvers": "^5.9.1",
+    "@supabase/ssr": "^0.12.7",
     "@t3-oss/env-nextjs": "^0.13.11",
     "@trigger.dev/sdk": "4.6.4",
     "class-variance-authority": "^0.7.1",

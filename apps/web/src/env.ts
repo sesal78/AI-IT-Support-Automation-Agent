@@ -6,6 +6,7 @@ import {
   internalEnvShape,
   phase1EnvShape,
   slackInteractivityEnvShape,
+  staffAuthEnvShape,
 } from "@ai-it-support/shared";
 import { createEnv } from "@t3-oss/env-nextjs";
 import { PHASE_PRODUCTION_BUILD } from "next/constants";
@@ -20,6 +21,7 @@ export const env = createEnv({
     ...e2eEnvShape,
     ...slackInteractivityEnvShape,
     ...helpdeskEnvShape,
+    ...staffAuthEnvShape,
   },
   experimental__runtimeEnv: {},
   emptyStringAsUndefined: true,

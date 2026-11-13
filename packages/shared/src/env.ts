@@ -376,6 +376,15 @@ export const helpdeskEnvShape = {
   HELPDESK: z.enum(["servicenow", "builtin"]),
 };
 
+/**
+ * Staff auth (plan §6.3.1 P5-T16; apps/web only). The SSR client on the server
+ * and the browser use this anon key; row-level security, not the key, decides
+ * what a signed-in user may read. Required only where the staff screens exist.
+ */
+export const staffAuthEnvShape = {
+  SUPABASE_ANON_KEY: z.string().min(1),
+};
+
 export type HelpdeskEnv =
   | { HELPDESK: "builtin" }
   | ({ HELPDESK: "servicenow" } & z.output<z.ZodObject<typeof serviceNowEnvShape>>);
