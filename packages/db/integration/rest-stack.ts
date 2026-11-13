@@ -54,6 +54,8 @@ export interface RestStack {
   url: string;
   /** A service_role JWT signed with this run's random PostgREST secret. */
   serviceRoleKey: string;
+  /** The per-run secret GoTrue and PostgREST share; test-only, for forged tokens. */
+  jwtSecret: string;
   network: string;
   restContainer: string;
   authContainer: string;
@@ -196,6 +198,7 @@ export async function startRestStack(
     pg: { name: "", port: 0, password: "" },
     url: "",
     serviceRoleKey: mintJwt(jwtSecret, { role: "service_role" }),
+    jwtSecret,
     network,
     restContainer,
     authContainer,
