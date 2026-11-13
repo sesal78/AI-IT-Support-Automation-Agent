@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { scanStaffGuards, type GuardException, type SourceFile } from "./guard-scan";
 
@@ -7,7 +8,10 @@ import { scanStaffGuards, type GuardException, type SourceFile } from "./guard-s
 // action under app/staff may answer a request without `requireStaff` unless it
 // is one of these named public endpoints. The list is pinned below, so a new
 // file fails this test until it is guarded or added here with a reason.
-const STAFF_ROOT = join(process.cwd(), "src", "app", "staff");
+// Paths come from this file, so the test passes from the repo root and from
+// apps/web alike.
+const WEB_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const STAFF_ROOT = join(WEB_ROOT, "src", "app", "staff");
 
 const PUBLIC_ENDPOINTS: GuardException[] = [
   { path: "src/app/staff/login/page.tsx", reason: "public sign-in screen (G7, invite-only)" },
@@ -31,9 +35,8 @@ function walk(dir: string): string[] {
 }
 
 function staffFiles(): SourceFile[] {
-  const root = join(process.cwd());
   return walk(STAFF_ROOT).map((full) => ({
-    path: relative(root, full).replaceAll("\\", "/"),
+    path: relative(WEB_ROOT, full).replaceAll("\\", "/"),
     body: readFileSync(full, "utf8"),
   }));
 }
