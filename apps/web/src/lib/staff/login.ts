@@ -47,10 +47,7 @@ const json = (body: unknown, status: number) => Response.json(body, { status });
  * password"; `/staff` pages still call `requireStaff`, which is what checks the
  * active staff row.
  */
-export async function handleStaffLogin(
-  request: Request,
-  deps: StaffLoginDeps,
-): Promise<Response> {
+export async function handleStaffLogin(request: Request, deps: StaffLoginDeps): Promise<Response> {
   if (!deps.limiter.hit(clientIp(request.headers) ?? "unknown"))
     return json({ message: STAFF_LOGIN_RATE_LIMITED }, 429);
 
