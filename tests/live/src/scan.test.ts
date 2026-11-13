@@ -9,12 +9,16 @@ import { markerEnv } from "./testing/env.ts";
 const RUN = "run42abc";
 const canary = Object.fromEntries(buildCanaries(RUN).map((c) => [c.type, c.value]));
 const values = markerEnv("http://127.0.0.1:1");
+/** The ServiceNow password value the log scan matches (T5.S.02); built from pieces. */
+const SCAN_PASSWORD = `MarkerSnLogScan${"w".repeat(20)}`;
 const env = {
   LANGFUSE_PUBLIC_KEY: values.LANGFUSE_PUBLIC_KEY,
   LANGFUSE_SECRET_KEY: values.LANGFUSE_SECRET_KEY,
   LANGFUSE_BASE_URL: "https://langfuse.example",
 };
-const markers = [values.LANGFUSE_PUBLIC_KEY, values.LANGFUSE_SECRET_KEY];
+/** The env a log scan runs with: the traces keys, plus the password to match. */
+const logsEnv = { ...env, SERVICENOW_PASSWORD: SCAN_PASSWORD };
+const markers = [values.LANGFUSE_PUBLIC_KEY, values.LANGFUSE_SECRET_KEY, SCAN_PASSWORD];
 const SINCE = "2026-10-19T00:00:00.000Z";
 
 type Row = { id: string; input?: unknown; output?: unknown; metadata?: unknown };
@@ -247,10 +251,13 @@ describe("scan:logs", () => {
     writeFileSync(path, content);
     return path;
   }
+  /** A log scan carries the ServiceNow password it must match (T5.S.02). */
+  const logs = (argv: string[], options: Parameters<typeof runScan>[3] = {}) =>
+    run(argv, options, logsEnv);
 
   it("exits 1 naming the file, line 3 and the type of a canary", async () => {
     const path = file("trigger.log", `start\nok\nkey ${canary.api_key} used\nend\n`);
-    const { code, text } = await run(["logs", "--run", RUN, path]);
+    const { code, text } = await logs(["logs", "--run", RUN, path]);
     expect(code).toBe(1);
     expect(text).toContain(`HARD ${path}:3 canary:api_key`);
     expect(text).not.toContain(canary.api_key);
@@ -258,14 +265,14 @@ describe("scan:logs", () => {
 
   it("exits 0 on a clean file", async () => {
     const path = file("dokploy.log", "GET /api/health 200\r\ntriage done\r\n");
-    const { code, text } = await run(["logs", "--run", RUN, path]);
+    const { code, text } = await logs(["logs", "--run", RUN, path]);
     expect(code).toBe(0);
     expect(text).toContain("2 lines scanned; 0 hard hits");
   });
 
   it("exits 2 on a missing file", async () => {
     const missing = join(tmpdir(), "scan-logs-missing-file.log");
-    const { code, text } = await run(["logs", "--run", RUN, missing]);
+    const { code, text } = await logs(["logs", "--run", RUN, missing]);
     expect(code).toBe(2);
     expect(text).toContain("cannot read (ENOENT)");
   });
@@ -278,7 +285,7 @@ key ${canary.api_key}
       "utf16le",
     );
     const path = file("utf16.log", Buffer.concat([Buffer.from([0xff, 0xfe]), body]));
-    const { code, text } = await run(["logs", "--run", RUN, path]);
+    const { code, text } = await logs(["logs", "--run", RUN, path]);
     expect(code).toBe(1);
     expect(text).toContain(`HARD ${path}:2 canary:api_key`);
   });
@@ -292,14 +299,92 @@ key ${canary.api_key}
         "utf16le",
       ),
     );
-    const { code, text } = await run(["logs", "--run", RUN, path]);
+    const { code, text } = await logs(["logs", "--run", RUN, path]);
     expect(code).toBe(2);
     expect(text).toContain("NUL bytes without a UTF-16 BOM");
   });
 
   it("exits 2 on an empty file", async () => {
-    const { code } = await run(["logs", "--run", RUN, file("empty.log", "")]);
+    const { code } = await logs(["logs", "--run", RUN, file("empty.log", "")]);
     expect(code).toBe(2);
+  });
+});
+
+describe("scan:logs secret patterns (T5.S.02)", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+  function file(name: string, content: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "scan-secrets-"));
+    dirs.push(dir);
+    const path = join(dir, name);
+    writeFileSync(path, content);
+    return path;
+  }
+  const logs = (argv: string[], options: Parameters<typeof runScan>[3] = {}) =>
+    run(argv, options, logsEnv);
+
+  it("exits 0 on a clean log fixture", async () => {
+    const path = file("clean.log", "GET /api/health 200\nAuthorization: Bearer [REDACTED]\n");
+    const { code, text } = await logs(["logs", "--run", RUN, path]);
+    expect(code).toBe(0);
+    expect(text).toContain("0 hard hits");
+  });
+
+  it.each([
+    [
+      "an Authorization: Basic header",
+      "GET /api/now/table/incident 200 with Authorization: Basic dXNlcjpwYXNz\n",
+      "secret:authorization-basic",
+    ],
+    ["a Resend key", `send with key re_${"a".repeat(24)} returned 200\n`, "secret:resend-key"],
+    [
+      "the ServiceNow password",
+      `connecting with ${SCAN_PASSWORD} to the instance\n`,
+      "secret:servicenow-password",
+    ],
+  ])("exits 1 on %s, naming the type and printing no value", async (_case, line, type) => {
+    const path = file("leak.log", `ok\n${line}`);
+    const { code, text } = await logs(["logs", "--run", RUN, path]);
+    expect(code).toBe(1);
+    expect(text).toContain(`HARD ${path}:2 ${type}`);
+    expect(text).not.toContain(SCAN_PASSWORD);
+    expect(text).not.toContain("dXNlcjpwYXNz");
+    expect(text).not.toContain(`re_${"a".repeat(24)}`);
+  });
+
+  it("matches the password taken from the env at scan time, from either name", async () => {
+    const path = file("either.log", `password ${SCAN_PASSWORD}\n`);
+    for (const name of ["E2E_SERVICENOW_PASSWORD", "SERVICENOW_PASSWORD"]) {
+      const scanEnv = { ...env, [name]: SCAN_PASSWORD };
+      const { code, text } = await run(["logs", "--run", RUN, path], {}, scanEnv);
+      expect(code).toBe(1);
+      expect(text).toContain("secret:servicenow-password");
+    }
+  });
+
+  it("exits 2, naming the variable, when no password is in the env", async () => {
+    const path = file("clean2.log", "nothing here\n");
+    const { code, text } = await run(["logs", "--run", RUN, path]);
+    expect(code).toBe(2);
+    expect(text).toContain("SERVICENOW_PASSWORD");
+    expect(text).toContain("not proven clean");
+  });
+
+  it("exits 2 on a missing file, so nothing to scan is never a pass", async () => {
+    const { code } = await logs(["logs", "--run", RUN, join(tmpdir(), "missing-secret.log")]);
+    expect(code).toBe(2);
+  });
+
+  it("never prints the password, even when the file name carries it", async () => {
+    const path = file(`export-${SCAN_PASSWORD}.log`, `line ${SCAN_PASSWORD}\n`);
+    const { code, text } = await logs(["logs", "--run", RUN, path]);
+    expect(code).toBe(1);
+    expect(text).toContain("secret:servicenow-password");
+    // The path is reported, with the value masked.
+    expect(text).toContain("[REDACTED]");
+    expect(text).not.toContain(SCAN_PASSWORD);
   });
 });
 

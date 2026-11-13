@@ -33,6 +33,49 @@ export function scanText(text: string, runId: string): TextHits {
   return { hard, soft };
 }
 
+/** The two fixed secret shapes the log scan adds (T5.S.02). */
+const SECRET_PATTERNS: ReadonlyArray<{ readonly type: string; readonly pattern: RegExp }> = [
+  { type: "secret:authorization-basic", pattern: /authorization:[ \t]*basic\b/i },
+  { type: "secret:resend-key", pattern: /re_[A-Za-z0-9_]{20,}/ },
+];
+
+/** The env names that carry the ServiceNow password a log scan matches. */
+export const SERVICE_NOW_PASSWORD_NAMES = [
+  "SERVICENOW_PASSWORD",
+  "E2E_SERVICENOW_PASSWORD",
+] as const;
+
+/** The password values a log scan matches: every set name, each matched literally. */
+export function scanSecrets(env: Record<string, string | undefined>): string[] {
+  const values: string[] = [];
+  for (const name of SERVICE_NOW_PASSWORD_NAMES) {
+    const value = env[name];
+    if (value !== undefined && value !== "" && !values.includes(value)) values.push(value);
+  }
+  return values;
+}
+
+/**
+ * The secret hit types in `text`: the two fixed shapes, and the password values
+ * matched as the literal strings they are (never as a pattern). Never returns a
+ * value.
+ */
+export function scanSecretText(text: string, secrets: readonly string[]): string[] {
+  const hits = SECRET_PATTERNS.filter(({ pattern }) => pattern.test(text)).map(({ type }) => type);
+  if (secrets.some((secret) => text.includes(secret))) hits.push("secret:servicenow-password");
+  return hits;
+}
+
+/** What every printed line replaces a secret value with. */
+export const REDACTED_VALUE = "[REDACTED]";
+
+/** Wraps `out` so no line carries a secret value, a file name included. */
+function redactingOutput(out: ScanOutput, secrets: readonly string[]): ScanOutput {
+  const clean = (line: string): string =>
+    secrets.reduce((text, secret) => text.split(secret).join(REDACTED_VALUE), line);
+  return { stdout: (line) => out.stdout(clean(line)), stderr: (line) => out.stderr(clean(line)) };
+}
+
 /** Thrown for a bad command line; the message never quotes an argument. */
 export class ScanUsageError extends Error {
   override readonly name = "ScanUsageError";
@@ -354,14 +397,28 @@ function decodeLog(bytes: Buffer): string | undefined {
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
-/** Scans each log file line by line. Returns the exit code. */
+/**
+ * Scans each log file line by line for the canaries of the run and for the
+ * three secret shapes (T5.S.02). Returns the exit code. The password value to
+ * match comes from `env` at scan time and is matched literally; no printed line
+ * ever carries it, a file name included.
+ */
 export async function scanLogs(
   args: ScanArgs,
-  out: ScanOutput,
+  env: Record<string, string | undefined>,
+  rawOut: ScanOutput,
   options: { readFile?: (path: string) => Promise<Buffer> } = {},
 ): Promise<number> {
   if (args.since !== undefined) throw new ScanUsageError("scan:logs takes no --since");
   if (args.files.length === 0) throw new ScanUsageError("scan:logs needs at least one file");
+  const secrets = scanSecrets(env);
+  const out = redactingOutput(rawOut, secrets);
+  if (secrets.length === 0) {
+    out.stderr(
+      `scan:logs: ${SERVICE_NOW_PASSWORD_NAMES.join(" or ")} is required to scan for the password; not proven clean`,
+    );
+    return EXIT_NOT_SCANNED;
+  }
   const read = options.readFile ?? ((path: string) => readFile(path));
   let lines = 0;
   let hard = 0;
@@ -389,9 +446,12 @@ export async function scanLogs(
       if (line === "") return;
       lines++;
       const hits = scanText(line, args.runId);
-      for (const type of hits.hard) out.stdout(`HARD ${file}:${index + 1} ${type}`);
+      const secretHits = scanSecretText(line, secrets);
+      for (const type of [...hits.hard, ...secretHits]) {
+        out.stdout(`HARD ${file}:${index + 1} ${type}`);
+      }
       for (const type of hits.soft) out.stdout(`WARN ${file}:${index + 1} ${type}`);
-      hard += hits.hard.length;
+      hard += hits.hard.length + secretHits.length;
       soft += hits.soft.length;
     });
   }
@@ -426,7 +486,7 @@ export async function runScan(
     const args = parseScanArgs(rest);
     return command === "traces"
       ? await scanTraces(args, env, out, options)
-      : await scanLogs(args, out, options);
+      : await scanLogs(args, env, out, options);
   } catch (error) {
     if (error instanceof ScanUsageError) {
       out.stderr(`scan:${command}: ${error.message}`);
