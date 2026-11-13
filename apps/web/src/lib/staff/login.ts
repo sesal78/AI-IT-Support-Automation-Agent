@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { createRateLimiter } from "@/lib/intake/rate-limit";
 import { clientIp } from "@/lib/intake/request";
+import {
+  STAFF_LOGIN_BAD_INPUT,
+  STAFF_LOGIN_ERROR,
+  STAFF_LOGIN_RATE_LIMITED,
+} from "@/lib/staff/messages";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 /**
@@ -10,9 +15,11 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
  * status, so the form cannot be used to discover accounts. The per-IP limiter
  * is the intake one, so the sixth attempt in ten minutes is refused.
  */
-export const STAFF_LOGIN_ERROR = "Email or password is wrong";
-export const STAFF_LOGIN_BAD_INPUT = "Enter an email address and a password.";
-export const STAFF_LOGIN_RATE_LIMITED = "Too many attempts. Try again later.";
+export {
+  STAFF_LOGIN_BAD_INPUT,
+  STAFF_LOGIN_ERROR,
+  STAFF_LOGIN_RATE_LIMITED,
+} from "@/lib/staff/messages";
 
 /** Five attempts per IP per ten minutes; the sixth is a 429. */
 export const STAFF_LOGIN_LIMIT = { limit: 5, windowMs: 10 * 60 * 1000 } as const;
