@@ -8,15 +8,15 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
  * clears the local cookies, and sends the browser to the sign-in screen.
  * POST only — a link must not sign anyone out.
  */
-export async function POST(request: Request): Promise<NextResponse> {
+export async function POST(): Promise<NextResponse> {
   const supabase = await createServerSupabaseClient();
   const { error } = await supabase.auth.signOut();
   // A failed revoke still ends the local session, so the browser leaves with
   // no usable cookie.
   if (error) await supabase.auth.signOut({ scope: "local" });
 
-  return NextResponse.redirect(new URL("/staff/login", request.url), {
+  return new NextResponse(null, {
     status: 303,
-    headers: { "cache-control": "no-store" },
+    headers: { location: "/staff/login", "cache-control": "no-store" },
   });
 }
