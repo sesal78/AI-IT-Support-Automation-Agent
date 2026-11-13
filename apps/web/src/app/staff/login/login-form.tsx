@@ -40,7 +40,7 @@ export function LoginForm() {
   const onSubmit = handleSubmit(async (values) => {
     setMessage(undefined);
     try {
-      const response = await fetch("/staff/login", {
+      const response = await fetch("/staff/login/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(values),
