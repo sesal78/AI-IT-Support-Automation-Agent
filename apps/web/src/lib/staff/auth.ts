@@ -20,8 +20,7 @@ export interface StaffMember {
 export type StaffRefusal = "no_user" | "unconfirmed" | "no_staff" | "wrong_role";
 
 export type StaffAccess =
-  | { ok: true; userId: string; staff: StaffMember }
-  | { ok: false; reason: StaffRefusal };
+  { ok: true; userId: string; staff: StaffMember } | { ok: false; reason: StaffRefusal };
 
 export const STAFF_LOGIN_PATH = "/staff/login";
 /** The single place a refusal clears the session and answers 403. */
