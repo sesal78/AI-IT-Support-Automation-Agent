@@ -115,9 +115,17 @@ describe("web env module", () => {
     },
   );
 
-  it("throws at boot naming SUPABASE_ANON_KEY when it is unset", async () => {
-    stubAll({ SUPABASE_ANON_KEY: undefined });
+  it("throws at boot naming SUPABASE_ANON_KEY for builtin when it is unset", async () => {
+    stubAll({ HELPDESK: "builtin", SUPABASE_ANON_KEY: undefined });
     await expect(import("./env")).rejects.toThrow(/SUPABASE_ANON_KEY/);
+  });
+
+  it("boots ServiceNow without a staff key but refuses an auth client request", async () => {
+    stubAll({ HELPDESK: "servicenow", SUPABASE_ANON_KEY: undefined });
+    const { env, staffAuthKey } = await import("./env");
+    expect(env.HELPDESK).toBe("servicenow");
+    expect(env.SUPABASE_ANON_KEY).toBeUndefined();
+    expect(() => staffAuthKey()).toThrow("SUPABASE_ANON_KEY");
   });
 
   it("exposes the staff anon key", async () => {
