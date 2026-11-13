@@ -39,6 +39,10 @@ export interface MockHelpdeskFaults {
   readonly createInShadow?: boolean;
   /** Creates an incident for a rejected or timed-out ticket (T5.L.04 negative). */
   readonly syncRejected?: (testId: string) => boolean;
+  /** The incident's `description` instead of the redacted ticket text (T5.S.01 negative). */
+  readonly incidentDescription?: (testId: string, description: string) => string;
+  /** The work note's text instead of the fixed wording (T5.S.01 negative). */
+  readonly workNoteText?: (testId: string, value: string) => string;
   /** The `kind` the app records and sends instead of the one it should (T5.L.07 negative). */
   readonly notificationKind?: (testId: string, kind: "incident_reply" | "needs_info") => string;
   /** Records no row for this kind, as a task that never ran (T5.L.07 negative). */
@@ -266,7 +270,7 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
         assignment_group:
           groupSysId(data, faults.assignmentGroup?.(t.testId) ?? t.triage.assignmentGroup) ?? "",
         short_description: `${E2E_PREFIX} ${t.title}`,
-        description: t.description,
+        description: faults.incidentDescription?.(t.testId, t.description) ?? t.description,
         state: "1",
         correlation_id: t.ticketId,
         correlation_display: faults.correlationDisplay?.(t.testId) ?? t.number,
@@ -275,11 +279,12 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
       data.incidents.push(row);
       if (i === 0) t.incident = { number: row["number"]!, sysId: row["sys_id"]! };
       // The triage work note (DoD 5); its text carries no ticket text.
-      for (let note = 0; note < (faults.workNotes?.(t.testId) ?? 1); note++) {
+      const note = `Triage note: category ${row["category"]}, priority P3.`;
+      for (let i = 0; i < (faults.workNotes?.(t.testId) ?? 1); i++) {
         data.journal.push({
           element_id: row["sys_id"]!,
           element: "work_notes",
-          value: `Triage note: category ${row["category"]}, priority P3.`,
+          value: faults.workNoteText?.(t.testId, note) ?? note,
         });
       }
     }

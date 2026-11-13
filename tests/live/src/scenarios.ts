@@ -1,4 +1,5 @@
 import { browserFormScenario } from "./browser-form.ts";
+import { leakScenarios } from "./helpdesk-leak.ts";
 import { replyScenarios } from "./helpdesk-reply.ts";
 import { helpdeskScenarios, reconciliationScenario } from "./helpdesk-scenarios.ts";
 import { observabilityScenarios } from "./observability.ts";
@@ -27,5 +28,6 @@ export const scenarios: readonly Scenario[] = [
   serviceNowContractScenario,
   ...helpdeskScenarios,
   ...replyScenarios,
+  ...leakScenarios,
   reconciliationScenario,
 ];

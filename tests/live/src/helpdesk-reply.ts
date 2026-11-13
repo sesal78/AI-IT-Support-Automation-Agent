@@ -2,27 +2,23 @@
 // as the allow-listed mailbox. The reply email must be sent once, be delivered,
 // name both numbers, hold no canary, and read well (J1 on the steps, J4 on the
 // text). Evidence carries IDs, numbers, statuses, times and scores only.
-import {
-  canaryTicketText,
-  findCanaries,
-  type InternalTicketView,
-  type JsonState,
-  type JudgeDefinition,
-} from "@ai-it-support/shared";
-import { LiveContractError } from "./client.ts";
+import { canaryTicketText, findCanaries, type InternalTicketView } from "@ai-it-support/shared";
 import { missingResendEnv } from "./config.ts";
 import {
   createHelpdeskTicket,
   INCIDENT_WAIT_MS,
+  judged,
   PERSONAS,
   POLL_MS,
   PRINTER_FAULT,
   serviceNowNotRun,
   serviceNowOf,
   waitForIncident,
+  waitForNotification,
+  waitForReviewOrIncident,
   withCleanup,
 } from "./helpdesk.ts";
-import { createJudgeClient, loadJudge, type JudgeClient } from "./judge.ts";
+import { createJudgeClient, loadJudge } from "./judge.ts";
 import { canaryRunId } from "./observability.ts";
 import { createE2eResend, type E2eResend, type ResendEmail } from "./resend.ts";
 import { decideAndWait, SIGN, slackNotRun } from "./review-flow.ts";
@@ -51,53 +47,6 @@ export function resendNotRun(context: ScenarioContext): ScenarioResult | undefin
   return missing.length > 0 ? { status: "not_run", evidence: { missing } } : undefined;
 }
 
-/**
- * Polls until the ticket is `review_pending` with a card, or has reached an end
- * state of the sync (`incident_created`, skipped in shadow mode, failed).
- */
-async function waitForReviewOrIncident(
-  context: ScenarioContext,
-  ticketId: string,
-  limitMs: number,
-): Promise<InternalTicketView> {
-  const start = context.now();
-  for (;;) {
-    const view = await context.client.ticket(ticketId);
-    const cardReview = view.reviews.some((r) => r.kind === "triage" && r.slackTs !== null);
-    if (view.status === "review_pending" && cardReview) return view;
-    if (
-      view.status === "incident_created" ||
-      view.status === "incident_skipped_shadow" ||
-      view.status === "failed" ||
-      context.now() - start >= limitMs
-    ) {
-      return view;
-    }
-    await context.sleep(POLL_MS);
-  }
-}
-
-/** Polls the view until it holds a notification of `kind`, or the limit passes. */
-async function waitForNotification(
-  context: ScenarioContext,
-  ticketId: string,
-  kind: InternalTicketView["notifications"][number]["kind"],
-  limitMs: number,
-): Promise<{
-  view: InternalTicketView;
-  notification: InternalTicketView["notifications"][number] | undefined;
-}> {
-  const start = context.now();
-  for (;;) {
-    const view = await context.client.ticket(ticketId);
-    const notification = view.notifications.find((row) => row.kind === kind);
-    if (notification !== undefined || context.now() - start >= limitMs) {
-      return { view, notification };
-    }
-    await context.sleep(POLL_MS);
-  }
-}
-
 /** Reads the email until it is `delivered`, or the limit passes with null. */
 async function waitForDelivery(
   context: ScenarioContext,
@@ -113,35 +62,15 @@ async function waitForDelivery(
   }
 }
 
-/** The numbered steps of a reply email, in order; empty when it holds none. */
-export function emailSteps(text: string): string[] {
+/** The numbered steps of a reply email, in order; empty when it holds none. */ export function emailSteps(
+  text: string,
+): string[] {
   const steps: string[] = [];
   for (const line of text.split("\n")) {
     const match = /^\d{1,2}\. (.+)$/.exec(line.trim());
     if (match !== null) steps.push(match[1]!);
   }
   return steps;
-}
-
-export interface JudgeOutcome {
-  readonly status: string;
-  readonly score: number | null;
-}
-
-/** One judgment; the endpoint's refusal (422) is a status, never a throw. */
-export async function judged(
-  judge: JudgeClient,
-  definition: JudgeDefinition,
-  state: JsonState,
-): Promise<JudgeOutcome> {
-  try {
-    const result = await judge.judge(definition, state);
-    return { status: result.status, score: result.status === "completed" ? result.value : null };
-  } catch (error) {
-    // The judgments route refuses text redact() would change (422 unredacted_input).
-    if (error instanceof LiveContractError) return { status: "refused", score: null };
-    throw error;
-  }
 }
 
 /**

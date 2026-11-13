@@ -1,8 +1,10 @@
 // P5-T5c shared steps: create a helpdesk ticket on the test path, keep the
 // tickets a run created, and wait for the incident. Evidence carries IDs,
 // numbers, enums, counts and times only, never ticket text.
-import type { InternalTicketView } from "@ai-it-support/shared";
+import type { InternalTicketView, JsonState, JudgeDefinition } from "@ai-it-support/shared";
+import { LiveContractError } from "./client.ts";
 import { missingServiceNowEnv } from "./config.ts";
+import { type JudgeClient } from "./judge.ts";
 import { result } from "./pipeline.ts";
 import type { ScenarioContext, ScenarioResult, Evidence } from "./runner.ts";
 import { createE2eServiceNow, type E2eServiceNow } from "./servicenow.ts";
@@ -255,4 +257,73 @@ export async function withCleanup(
     cleanup = await closeIncidents(sn, ticketIds);
   }
   return result(outcome.checks, cleanupChecks(cleanup, outcome.checks, outcome.evidence));
+}
+
+/**
+ * Polls until the ticket is `review_pending` with a card, or has reached an end
+ * state of the sync (`incident_created`, skipped in shadow mode, failed). The
+ * canary scenarios use it, because their ticket text may route to review.
+ */
+export async function waitForReviewOrIncident(
+  context: ScenarioContext,
+  ticketId: string,
+  limitMs: number,
+): Promise<InternalTicketView> {
+  const start = context.now();
+  for (;;) {
+    const view = await context.client.ticket(ticketId);
+    const cardReview = view.reviews.some((r) => r.kind === "triage" && r.slackTs !== null);
+    if (view.status === "review_pending" && cardReview) return view;
+    if (
+      view.status === "incident_created" ||
+      view.status === "incident_skipped_shadow" ||
+      view.status === "failed" ||
+      context.now() - start >= limitMs
+    ) {
+      return view;
+    }
+    await context.sleep(POLL_MS);
+  }
+}
+
+/** Polls the view until it holds a notification of `kind`, or the limit passes. */
+export async function waitForNotification(
+  context: ScenarioContext,
+  ticketId: string,
+  kind: InternalTicketView["notifications"][number]["kind"],
+  limitMs: number,
+): Promise<{
+  view: InternalTicketView;
+  notification: InternalTicketView["notifications"][number] | undefined;
+}> {
+  const start = context.now();
+  for (;;) {
+    const view = await context.client.ticket(ticketId);
+    const notification = view.notifications.find((row) => row.kind === kind);
+    if (notification !== undefined || context.now() - start >= limitMs) {
+      return { view, notification };
+    }
+    await context.sleep(POLL_MS);
+  }
+}
+
+export interface JudgeOutcome {
+  readonly status: string;
+  readonly score: number | null;
+}
+
+/** One judgment; the endpoint's refusal (422) is a status, never a throw. */
+export async function judged(
+  judge: JudgeClient,
+  definition: JudgeDefinition,
+  state: JsonState,
+): Promise<JudgeOutcome> {
+  try {
+    const result = await judge.judge(definition, state);
+    return { status: result.status, score: result.status === "completed" ? result.value : null };
+  } catch (error) {
+    // The judgments route refuses text redact() would change (422 unredacted_input).
+    if (error instanceof LiveContractError) return { status: "refused", score: null };
+    throw error;
+  }
 }
