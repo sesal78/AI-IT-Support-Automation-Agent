@@ -43,7 +43,11 @@ describe("loadLiveConfig reply-email variables", () => {
   });
 
   it("names only the unset variable when one of the two is given", () => {
-    const config = loadLiveConfig({ ...base, E2E_RESEND_READ_KEY: READ_KEY });
+    const config = loadLiveConfig({
+      ...base,
+      E2E_RESEND_READ_KEY: READ_KEY,
+      E2E_REPLY_RECIPIENT: undefined,
+    });
     expect(missingResendEnv(config)).toEqual(["E2E_REPLY_RECIPIENT"]);
   });
 });
