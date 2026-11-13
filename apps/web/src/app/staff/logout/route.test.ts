@@ -7,21 +7,17 @@ const createServerSupabaseClient = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/supabase/server", () => ({ createServerSupabaseClient }));
 
-function request() {
-  return new Request("https://example.test/staff/logout", { method: "POST" });
-}
-
 describe("POST /staff/logout", () => {
   it("signs out and redirects to the sign-in screen", async () => {
     const signOut = vi.fn(async () => ({ error: null }));
     createServerSupabaseClient.mockResolvedValue({ auth: { signOut } });
     const route = await import("./route");
 
-    const response = await route.POST(request());
+    const response = await route.POST();
 
     expect(signOut).toHaveBeenCalledTimes(1);
     expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe("https://example.test/staff/login");
+    expect(response.headers.get("location")).toBe("/staff/login");
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
@@ -35,6 +31,6 @@ describe("POST /staff/logout", () => {
     createServerSupabaseClient.mockResolvedValue({ auth: { signOut } });
     const route = await import("./route");
 
-    expect((await route.POST(request())).status).toBe(303);
+    expect((await route.POST()).status).toBe(303);
   });
 });
