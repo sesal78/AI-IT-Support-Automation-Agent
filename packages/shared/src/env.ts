@@ -298,6 +298,21 @@ export const replyEnvShape = {
     ),
 };
 
+/**
+ * Live-suite reply-email variables (tests/live only, P5-T8c). Both are optional:
+ * a scenario that needs one reports `not_run`. The read key is the second,
+ * full-access Resend key that only ever sends `GET /emails/:id` (resolved
+ * point 14); `parseEnv` never echoes it. The recipient is the allow-listed
+ * mailbox the reply email goes to (resolved point 13, not a secret).
+ */
+export const liveResendEnvShape = {
+  E2E_RESEND_READ_KEY: z
+    .string()
+    .regex(/^re_[A-Za-z0-9_]{20,}$/, "must be a Resend API key")
+    .optional(),
+  E2E_REPLY_RECIPIENT: replyAddress().optional(),
+};
+
 const MINUTES_PER_UNIT = { m: 1, h: 60, d: 1440 } as const;
 
 /**

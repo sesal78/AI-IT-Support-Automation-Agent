@@ -2,6 +2,7 @@ import {
   internalEnvShape,
   langfuseEnvShape,
   liveEnvShape,
+  liveResendEnvShape,
   liveServiceNowEnvShape,
   liveSlackEnvShape,
   parseEnv,
@@ -17,6 +18,14 @@ export interface ServiceNowConfig {
   readonly instanceUrl: string | undefined;
   readonly username: string | undefined;
   readonly password: string | undefined;
+}
+
+/** The two live reply-email variables, each undefined when unset (P5-T8c). */
+export interface ResendConfig {
+  /** The full-access Resend key; the helper only ever sends `GET /emails/:id`. */
+  readonly readKey: string | undefined;
+  /** The allow-listed mailbox the reply email goes to (resolved point 13). */
+  readonly replyRecipient: string | undefined;
 }
 
 export interface LiveConfig {
@@ -43,6 +52,8 @@ export interface LiveConfig {
   };
   /** The e2e ServiceNow variables; each is undefined when unset (scenarios then report not_run). */
   readonly servicenow: ServiceNowConfig;
+  /** The reply-email variables; each is undefined when unset (P5-T8c). */
+  readonly resend: ResendConfig;
   /** Every secret-bearing value read from the environment, for leak checks. */
   readonly secrets: readonly string[];
 }
@@ -55,6 +66,7 @@ const shape = {
   LANGFUSE_BASE_URL: langfuseEnvShape.LANGFUSE_BASE_URL.optional(),
   ...liveSlackEnvShape,
   ...liveServiceNowEnvShape,
+  ...liveResendEnvShape,
 };
 
 // Lower-case, without one trailing dot: `qa.example.com.` is the same host as `qa.example.com`.
@@ -124,6 +136,10 @@ export function loadLiveConfig(env: Record<string, string | undefined>): LiveCon
     parsed.E2E_SLACK_SIGNING_SECRET,
     parsed.E2E_SERVICENOW_USERNAME,
     parsed.E2E_SERVICENOW_PASSWORD,
+    // The read key is a secret like any other. The recipient is a real mailbox:
+    // it may be reported nowhere either, so the same check covers it.
+    parsed.E2E_RESEND_READ_KEY,
+    parsed.E2E_REPLY_RECIPIENT,
   ].filter((value): value is string => value !== undefined);
 
   return {
@@ -148,6 +164,10 @@ export function loadLiveConfig(env: Record<string, string | undefined>): LiveCon
       instanceUrl: parsed.E2E_SERVICENOW_INSTANCE_URL,
       username: parsed.E2E_SERVICENOW_USERNAME,
       password: parsed.E2E_SERVICENOW_PASSWORD,
+    },
+    resend: {
+      readKey: parsed.E2E_RESEND_READ_KEY,
+      replyRecipient: parsed.E2E_REPLY_RECIPIENT,
     },
     secrets,
   };
@@ -196,4 +216,19 @@ export function missingServiceNowEnv(
   names: readonly ServiceNowEnvName[] = Object.keys(SERVICENOW_FIELDS) as ServiceNowEnvName[],
 ): string[] {
   return names.filter((name) => config.servicenow[SERVICENOW_FIELDS[name]] === undefined);
+}
+
+const RESEND_FIELDS = {
+  E2E_RESEND_READ_KEY: "readKey",
+  E2E_REPLY_RECIPIENT: "replyRecipient",
+} as const;
+
+export type ResendEnvName = keyof typeof RESEND_FIELDS;
+
+/** The names in `names` whose variable is unset, in the given order. */
+export function missingResendEnv(
+  config: { readonly resend: ResendConfig },
+  names: readonly ResendEnvName[] = Object.keys(RESEND_FIELDS) as ResendEnvName[],
+): string[] {
+  return names.filter((name) => config.resend[RESEND_FIELDS[name]] === undefined);
 }
