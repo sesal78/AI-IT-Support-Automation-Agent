@@ -1,7 +1,7 @@
 // T5.L.06 (P5-T8c) through runLive, against the mocks only: the positive case,
 // and every acceptance negative with the check it must name.
 import { describe, expect, it, afterEach } from "vitest";
-import { replyEmailScenario } from "./helpdesk-reply.ts";
+import { needsInfoScenario, replyEmailScenario } from "./helpdesk-reply.ts";
 import { startHelpdeskHarness, type HelpdeskHarness } from "./testing/helpdesk-harness.ts";
 
 const harnesses: HelpdeskHarness[] = [];
@@ -122,5 +122,49 @@ describe("T5.L.06 the reply email", () => {
     expect(report.scenarios[0]).toMatchObject({ status: "not_run" });
     expect(h.count("POST", "/api/internal/test-tickets")).toBe(0);
     expect(h.resendMethods()).toEqual([]);
+  });
+});
+
+describe("T5.L.07 the needs_info request", () => {
+  it("passes with the details variant sent, then a signed reject so nothing waits", async () => {
+    const h = await harness();
+    const { code, report } = await h.run([], [needsInfoScenario]);
+    expect(code).toBe(0);
+    expect(evidenceOf(report)).toMatchObject({
+      status: "rejected",
+      notificationKind: "needs_info",
+      notificationStatus: "sent",
+      subjectVariant: true,
+      aiCallCount: 1,
+      cleanupClosed: 0,
+      cleanupOpen: 0,
+      failedChecks: [],
+    });
+    expect(h.judgeIds()).toEqual([]);
+    expect(h.count("POST", "/api/slack/interactivity")).toBe(1);
+    expect(h.resendMethods().every((method) => method === "GET")).toBe(true);
+    // A vague report creates no incident, and the review is decided.
+    expect(h.data.incidents).toEqual([]);
+    expect([...h.helpdesk.tickets.values()][0]!.review!.decision).toBe("reject");
+  });
+
+  it.each([
+    ["the recorded kind is incident_reply", { notificationKind: () => "incident_reply" }],
+    ["the row is missing", { omitNotification: () => true }],
+  ] as const)("fails, naming the check, when %s, and still rejects", async (_case, faults) => {
+    const h = await harness({ faults });
+    const { code, report } = await h.run([], [needsInfoScenario]);
+    expect(code).toBe(1);
+    expect(failedChecks(report)).toEqual(["needs-info-notification", "needs-info-subject"]);
+    expect(evidenceOf(report)["status"]).toBe("rejected");
+    expect(h.count("POST", "/api/slack/interactivity")).toBe(1);
+  });
+
+  it("is not_run, with no request, when the reply-email variables are unset", async () => {
+    const h = await harness({ withResend: false });
+    const { code, report } = await h.run([], [needsInfoScenario]);
+    expect(code).toBe(2);
+    expect(report.scenarios[0]).toMatchObject({ status: "not_run" });
+    expect(h.count("POST", "/api/internal/test-tickets")).toBe(0);
   });
 });
