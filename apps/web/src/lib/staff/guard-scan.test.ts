@@ -26,7 +26,10 @@ describe("scanStaffGuards", () => {
   });
 
   it("reports a page that does not call requireStaff", () => {
-    const result = scanStaffGuards([file("src/app/staff/tickets/page.tsx", "export default 1")], []);
+    const result = scanStaffGuards(
+      [file("src/app/staff/tickets/page.tsx", "export default 1")],
+      [],
+    );
     expect(result.missing).toEqual(["src/app/staff/tickets/page.tsx"]);
   });
 
