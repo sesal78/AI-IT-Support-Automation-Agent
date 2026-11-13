@@ -33,6 +33,7 @@ export {
   slackChannelId,
   slackInteractivityEnvShape,
   slackUserId,
+  staffAuthEnvShape,
   sensitiveCheckEnvShape,
   serviceNowEnvShape,
   slackClientEnvShape,

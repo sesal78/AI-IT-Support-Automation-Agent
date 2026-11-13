@@ -15,6 +15,7 @@ import {
   slackChannelId,
   slackClientEnvShape,
   slackUserId,
+  staffAuthEnvShape,
   triggerProjectEnvShape,
 } from "./env.js";
 
@@ -76,6 +77,20 @@ describe("intakeEnvShape", () => {
 
   it.each(["TURNSTILE_SECRET_KEY", "TURNSTILE_SITE_KEY"])("names %s when it is unset", (key) => {
     expect(() => parseEnv(intakeEnvShape, { ...turnstile, [key]: "" })).toThrow(key);
+  });
+});
+
+describe("staffAuthEnvShape", () => {
+  it("parses the web staff anon key", () => {
+    expect(parseEnv(staffAuthEnvShape, { SUPABASE_ANON_KEY: "fake-anon-key" })).toEqual({
+      SUPABASE_ANON_KEY: "fake-anon-key",
+    });
+  });
+
+  it.each([undefined, ""])("names SUPABASE_ANON_KEY when it is %j", (value) => {
+    expect(() => parseEnv(staffAuthEnvShape, { SUPABASE_ANON_KEY: value })).toThrow(
+      /SUPABASE_ANON_KEY/,
+    );
   });
 });
 
