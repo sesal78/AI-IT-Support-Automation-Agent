@@ -356,7 +356,7 @@ describe("T5.F.01 asleep instance and T5.O.01 reconciliation", () => {
     const reconciliation = report.scenarios.find((s) => s.id === "T5.O.01")!;
     expect(reconciliation.status).toBe("pass");
     expect(reconciliation.evidence).toMatchObject({
-      tickets: 7,
+      tickets: 8,
       withIncident: 4,
       ticketIncidents: 4,
       wrongCount: [],
@@ -455,6 +455,7 @@ describe("the phase 5 selection", () => {
       "T5.L.04",
       "T5.L.05",
       "T5.L.06",
+      "T5.L.07",
       "T5.O.01",
     ]);
   });
@@ -468,13 +469,13 @@ describe("the phase 5 selection", () => {
     }
   });
 
-  it("--phase 5 creates 7 tickets with 8 test-ticket requests and no form submit", async () => {
+  it("--phase 5 creates 8 tickets with 9 test-ticket requests and no form submit", async () => {
     const h = await harness();
     const { code } = await h.run(["--phase", "5"]);
     expect(code).toBe(0);
     // The spec's "6 requests" counts tickets; T5.L.03 sends its testId twice.
-    expect(h.helpdesk.tickets.size).toBe(7);
-    expect(h.count("POST", "/api/internal/test-tickets")).toBe(8);
+    expect(h.helpdesk.tickets.size).toBe(8);
+    expect(h.count("POST", "/api/internal/test-tickets")).toBe(9);
     expect(h.count("POST", "/api/tickets")).toBe(0);
   });
 });

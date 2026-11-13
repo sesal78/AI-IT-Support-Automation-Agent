@@ -35,6 +35,15 @@ export const NOTIFICATION_LIMIT_MS = 60_000;
 /** J1 (fix steps) and J4 (message clarity) must score this value or more. */
 export const J1_MIN_SCORE = 0.7;
 export const J4_MIN_SCORE = 0.7;
+/** A report with no detail at all: the app asks for more instead of triaging. */
+export const VAGUE_TICKET = {
+  title: "It's broken",
+  description: "it's broken, please fix",
+};
+/** Every test ticket's subject opens with this (resolved point 16). */
+export const E2E_SUBJECT_PREFIX = "[E2E] ";
+/** The fixed needs_info subject, before the ticket number (resolved points 15-16). */
+export const NEEDS_INFO_SUBJECT = "More detail needed for your IT ticket ";
 
 /** The `not_run` result when a reply-email variable is unset, else undefined. */
 export function resendNotRun(context: ScenarioContext): ScenarioResult | undefined {
@@ -283,4 +292,93 @@ export const replyEmailScenario: Scenario = {
   },
 };
 
-export const replyScenarios: readonly Scenario[] = [replyEmailScenario];
+/**
+ * T5.L.07: a vague report ("it's broken, please fix") from demo.carol at the
+ * allow-listed mailbox. The triage flags hold `needs_info`, the status is
+ * `review_pending`, one `sent` `needs_info` email whose subject is the details
+ * variant; then a signed reject, so the ticket does not wait on a review. The
+ * reject is signed even when a check above failed.
+ */
+export const needsInfoScenario: Scenario = {
+  id: "T5.L.07",
+  async run(context) {
+    const notRun = slackNotRun(context, SIGN) ?? serviceNowNotRun(context) ?? resendNotRun(context);
+    if (notRun) return notRun;
+    const sn = serviceNowOf(context);
+    return withCleanup(context, sn, async (ticketIds) => {
+      const checks: string[] = [];
+      const evidence: Evidence = {};
+      const recipient = context.config.resend.replyRecipient!;
+      const resend = createE2eResend(context.config.resend, context.fetch);
+
+      const ticket = await createHelpdeskTicket(context, "L07", {
+        persona: { ...PERSONAS.carol, email: recipient },
+        text: VAGUE_TICKET,
+      });
+      ticketIds.push(ticket.ticketId);
+
+      let view = await waitForReviewOrIncident(context, ticket.ticketId, INCIDENT_WAIT_MS);
+      const reviewStatus = view.status;
+      const flags = view.triage?.flags ?? [];
+      let notification: InternalTicketView["notifications"][number] | undefined;
+      let email: ResendEmail | undefined;
+      let decision: Awaited<ReturnType<typeof decideAndWait>> | undefined;
+      try {
+        const notified = await waitForNotification(
+          context,
+          ticket.ticketId,
+          "needs_info",
+          NOTIFICATION_LIMIT_MS,
+        );
+        view = notified.view;
+        notification = notified.notification;
+        if (notification?.providerId != null) {
+          email = await resend.getEmail(notification.providerId);
+        }
+      } finally {
+        // The ticket must not wait on a review, whatever the checks found.
+        const review = view.reviews.find((r) => r.kind === "triage" && r.slackTs !== null);
+        if (review !== undefined && review.slackTs !== null) {
+          decision = await decideAndWait(
+            context,
+            ticket.ticketId,
+            { id: review.id, slackTs: review.slackTs },
+            "reject",
+          );
+        }
+      }
+
+      const subjectVariant =
+        email !== undefined &&
+        email.subject === `${E2E_SUBJECT_PREFIX}${NEEDS_INFO_SUBJECT}${view.number}`;
+      if (reviewStatus !== "review_pending") checks.push("review-pending");
+      if (!flags.includes("needs_info")) checks.push("triage-flags-needs-info");
+      if (
+        notification === undefined ||
+        notification.kind !== "needs_info" ||
+        notification.status !== "sent" ||
+        notification.providerId === null
+      ) {
+        checks.push("needs-info-notification");
+      }
+      if (!subjectVariant) checks.push("needs-info-subject");
+      if (decision === undefined || decision.view.status !== "rejected") checks.push("rejected");
+
+      Object.assign(evidence, {
+        ticketId: ticket.ticketId,
+        ticketNumber: view.number,
+        status: decision?.view.status ?? view.status,
+        route: view.triage?.route ?? null,
+        triageFlags: [...flags],
+        notificationKind: notification?.kind ?? null,
+        notificationStatus: notification?.status ?? null,
+        subjectVariant,
+        decisionOutcome: decision?.outcome ?? null,
+        aiCallCount: view.aiCallCount,
+      });
+      return { checks, evidence };
+    });
+  },
+};
+
+export const replyScenarios: readonly Scenario[] = [replyEmailScenario, needsInfoScenario];
