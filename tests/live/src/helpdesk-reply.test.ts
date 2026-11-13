@@ -55,6 +55,34 @@ describe("T5.L.06 the reply email", () => {
     expect(text).not.toContain("078-05-1120");
   });
 
+  it.each([
+    [120_000, "pass"],
+    [120_001, "fail"],
+  ] as const)("checks the deadline after a delivered read takes %i ms", async (readMs, status) => {
+    const h = await harness();
+    const { report } = await h.run(
+      [],
+      [
+        {
+          id: "T9.L.01",
+          run(context) {
+            return replyEmailScenario.run({
+              ...context,
+              async fetch(input, init) {
+                if (input.origin === "https://api.resend.com") await context.sleep(readMs);
+                return context.fetch(input, init);
+              },
+            });
+          },
+        },
+      ],
+    );
+    expect(report.scenarios[0]!.status).toBe(status);
+    expect(evidenceOf(report)["deliveredMs"]).toBe(readMs);
+    expect(failedChecks(report)).toEqual(status === "fail" ? ["email-delivered-within-120s"] : []);
+    expect(evidenceOf(report)["cleanupOpen"]).toBe(0);
+  });
+
   it("signs an approve and goes on when the canary text routes the ticket to review", async () => {
     const h = await harness({ faults: { route: () => "review" } });
     const { code, report } = await h.run([], [replyEmailScenario]);
