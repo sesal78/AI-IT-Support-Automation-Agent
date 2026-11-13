@@ -3,6 +3,7 @@
 // numbers, enums, counts and times only, never ticket text.
 import type { InternalTicketView } from "@ai-it-support/shared";
 import { missingServiceNowEnv } from "./config.ts";
+import { result } from "./pipeline.ts";
 import type { ScenarioContext, ScenarioResult, Evidence } from "./runner.ts";
 import { createE2eServiceNow, type E2eServiceNow } from "./servicenow.ts";
 
@@ -124,6 +125,18 @@ export function serviceNowNotRun(context: ScenarioContext): ScenarioResult | und
 /** How long a ticket may take to reach `incident_created` (T5.L.01). */
 export const INCIDENT_LIMIT_MS = 60_000;
 export const POLL_MS = 1_000;
+/** DoD table entry 1 and 2: a printer fault reaches its incident this fast. */
+export const INCIDENT_DEADLINE_MS = 60_000;
+/** A ticket still without an incident after this is also reported as late. */
+export const INCIDENT_WAIT_MS = 120_000;
+
+/** The printer fault of the spec, as demo.carol reports it. */
+export const PRINTER_FAULT = {
+  title: "Printer on level 2 is offline",
+  description:
+    "The printer by the second floor stairs shows a paper jam and will not print. " +
+    "Two people cannot print their boarding passes.",
+};
 
 /**
  * Polls one ticket's view until it is `incident_created`, `incident_skipped_shadow`
@@ -221,4 +234,25 @@ export function cleanupChecks(
     cleanupFailed: cleanup.failed,
     cleanupOpen: cleanup.open,
   };
+}
+
+/**
+ * Runs `body`, closes every incident the tickets it names created, and merges
+ * the cleanup counts. The cleanup runs in `finally`, so a failed check or a
+ * thrown error cannot leave an `[E2E]` incident open.
+ */
+export async function withCleanup(
+  context: ScenarioContext,
+  sn: E2eServiceNow,
+  body: (ticketIds: string[]) => Promise<{ checks: string[]; evidence: Evidence }>,
+): Promise<ScenarioResult> {
+  const ticketIds: string[] = [];
+  let outcome: { checks: string[]; evidence: Evidence } = { checks: [], evidence: {} };
+  let cleanup: IncidentCleanup | undefined;
+  try {
+    outcome = await body(ticketIds);
+  } finally {
+    cleanup = await closeIncidents(sn, ticketIds);
+  }
+  return result(outcome.checks, cleanupChecks(cleanup, outcome.checks, outcome.evidence));
 }

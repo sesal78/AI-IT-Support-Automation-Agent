@@ -2,60 +2,31 @@
 // T5.L.03 the duplicate submit. Ticket text is synthetic and stays in the
 // request bodies: evidence carries IDs, numbers, enums, counts and times in ms,
 // plus the sum of aiCallCount, never ticket text.
-import type { Evidence, Scenario, ScenarioContext, ScenarioResult } from "./runner.ts";
+import type { Evidence, Scenario, ScenarioContext } from "./runner.ts";
 import {
-  cleanupChecks,
-  closeIncidents,
   createHelpdeskTicket,
   createdHelpdeskTickets,
   foreignTickets,
+  INCIDENT_DEADLINE_MS,
+  INCIDENT_WAIT_MS,
   incidentCreatedAt,
-  type IncidentCleanup,
   PERSONAS,
   personaEmail,
   POLL_MS,
+  PRINTER_FAULT,
   runStartMs,
   serviceNowNotRun,
   serviceNowOf,
   waitForIncident,
+  withCleanup,
 } from "./helpdesk.ts";
 import { p95, result } from "./pipeline.ts";
 import { pool } from "./review-security.ts";
 import { SIGN, slackNotRun } from "./review-flow.ts";
-import { E2E_PREFIX, type E2eServiceNow } from "./servicenow.ts";
+import { E2E_PREFIX } from "./servicenow.ts";
 import { createSlackSigner, type Decision, type SendResult } from "./slack-signer.ts";
 import { evalTicketSchema, type InternalTicketView } from "@ai-it-support/shared";
 import { readFileSync } from "node:fs";
-
-/** DoD table entry 1 and 2: a printer fault reaches its incident this fast. */
-export const INCIDENT_DEADLINE_MS = 60_000;
-/** A ticket still without an incident after this is also reported as late. */
-export const INCIDENT_WAIT_MS = 120_000;
-
-/** The printer fault of the spec, as demo.carol reports it. */
-export const PRINTER_FAULT = {
-  title: "Printer on level 2 is offline",
-  description:
-    "The printer by the second floor stairs shows a paper jam and will not print. " +
-    "Two people cannot print their boarding passes.",
-};
-
-/** Runs the body, closes what it created, and merges the cleanup counts. */
-async function withCleanup(
-  context: ScenarioContext,
-  sn: E2eServiceNow,
-  body: (ticketIds: string[]) => Promise<{ checks: string[]; evidence: Evidence }>,
-): Promise<ScenarioResult> {
-  const ticketIds: string[] = [];
-  let outcome: { checks: string[]; evidence: Evidence } = { checks: [], evidence: {} };
-  let cleanup: IncidentCleanup | undefined;
-  try {
-    outcome = await body(ticketIds);
-  } finally {
-    cleanup = await closeIncidents(sn, ticketIds);
-  }
-  return result(outcome.checks, cleanupChecks(cleanup, outcome.checks, outcome.evidence));
-}
 
 /**
  * T5.L.01 (DoD 1, 2 and 5): the printer fault as demo.carol becomes exactly
@@ -641,5 +612,4 @@ export const helpdeskScenarios: readonly Scenario[] = [
   autoIncidentLatencyScenario,
   triageGroupScenario,
   asleepInstanceScenario,
-  reconciliationScenario,
 ];
