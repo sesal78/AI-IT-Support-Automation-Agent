@@ -1,4 +1,10 @@
-import { judgePayloadOf, type JsonState, type JudgeDefinition } from "@ai-it-support/shared";
+import { readFileSync } from "node:fs";
+import {
+  judgeDefinitionSchema,
+  judgePayloadOf,
+  type JsonState,
+  type JudgeDefinition,
+} from "@ai-it-support/shared";
 import type { InternalClient } from "./client.ts";
 
 export const DEFAULT_JUDGE_POLL_INTERVAL_MS = 1_000;
@@ -25,6 +31,14 @@ export interface JudgeClient {
    * expected shape throws the internal client's error.
    */
   judge(definition: JudgeDefinition, state: JsonState): Promise<JudgeResult>;
+}
+
+const JUDGE_DIR = new URL("../../../evals/judges/", import.meta.url);
+
+/** The calibrated phase 3 judge definition (`J1`…`J4`) from `evals/judges`. */
+export function loadJudge(id: "J1" | "J2" | "J3" | "J4"): JudgeDefinition {
+  const file = new URL(`${id}.v1.json`, JUDGE_DIR);
+  return judgeDefinitionSchema.parse(JSON.parse(readFileSync(file, "utf8")));
 }
 
 export function createJudgeClient(
