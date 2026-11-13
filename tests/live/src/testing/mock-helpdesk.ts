@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { redact } from "@ai-it-support/shared";
 import { E2E_PREFIX } from "../servicenow.ts";
 import type { MockReply, MockRequest } from "./mock-e2e.ts";
+import type { MockResend } from "./mock-resend.ts";
 import { groupSysId, snStamp, sysId, type MockSnData } from "./mock-servicenow.ts";
 
 /** Ways the mock can misbehave, so each scenario's negative cases can be shown. */
@@ -38,6 +39,12 @@ export interface MockHelpdeskFaults {
   readonly createInShadow?: boolean;
   /** Creates an incident for a rejected or timed-out ticket (T5.L.04 negative). */
   readonly syncRejected?: (testId: string) => boolean;
+  /** The `kind` the app records and sends instead of the one it should (T5.L.07 negative). */
+  readonly notificationKind?: (testId: string, kind: "incident_reply" | "needs_info") => string;
+  /** Records no row for this kind, as a task that never ran (T5.L.07 negative). */
+  readonly omitNotification?: (testId: string, kind: string) => boolean;
+  /** Sends the email although the address is off the list (T5.S.01 negative). */
+  readonly sentWhenNotAllowListed?: (testId: string) => boolean;
 }
 
 export interface MockHelpdeskOptions {
@@ -48,6 +55,10 @@ export interface MockHelpdeskOptions {
   readonly channelId?: string;
   /** The 2-minute review timeout of the e2e app (H14). */
   readonly reviewTimeoutMs?: number;
+  /** The Resend mock a sent email goes to; without it no email row is written. */
+  readonly resend?: MockResend;
+  /** The one allow-listed mailbox; without it every address is skipped. */
+  readonly replyRecipient?: string;
   readonly faults?: MockHelpdeskFaults;
 }
 
@@ -56,6 +67,21 @@ interface MockTriage {
   readonly assignmentGroup: string;
   readonly route: "auto" | "review";
   readonly sensitiveFlags: readonly string[];
+  /** Policy flags, for example `needs_info` (P5-T8b). */
+  readonly flags: readonly string[];
+}
+
+/**
+ * One reply email the mock app holds: `sent` with the provider's id, or
+ * `skipped` with the reason (P5-T8b).
+ */
+export interface MockNotification {
+  readonly id: string;
+  readonly kind: string;
+  readonly status: "sent" | "skipped";
+  readonly reason: "not_allow_listed" | null;
+  readonly providerId: string | null;
+  readonly at: number;
 }
 
 /** A ticket the mock app is holding, with the time of each step. */
@@ -74,6 +100,7 @@ export interface MockHelpdeskTicket {
   readonly asleepMinutes: number | null;
   status: string;
   events: Array<{ type: string; at: number }>;
+  notifications: MockNotification[];
   review: {
     id: string;
     slackTs: string;
@@ -110,6 +137,13 @@ export const REVIEW_DELAY_MS = 1_000;
 export const DECISION_LAG_MS = 500;
 /** The e2e review timeout, H14. */
 export const REVIEW_TIMEOUT_MS = 120_000;
+/** A report at most this long, with no device or fault named, is too vague to triage. */
+export const VAGUE_MAX_CHARS = 120;
+/** Words that name a device, an app or a fault: enough for the mock to triage. */
+const SPECIFIC_DETAIL =
+  /\b(?:printer|monitor|screen|laptop|keyboard|docking|vpn|wi-?fi|password|outlook|teams|network|email|mailbox|server|database|backup|export|report|account|login|app|software|hardware|update|error)\b/i;
+/** The drafted steps the mock triage suggests and the reply email lists. */
+export const TRIAGE_STEPS = ["step 1", "step 2"] as const;
 
 const INTERACTIVITY = "/api/slack/interactivity";
 const NO_STORE = { "Cache-Control": "no-store" };
@@ -118,8 +152,9 @@ const iso = (ms: number) => new Date(ms).toISOString();
 /**
  * What the mock triage decides from the ticket text: a printer, screen or
  * laptop fault is `hardware` on the `auto` route; an HR complaint is sensitive
- * and goes to `review`; anything else is `software` on the `auto` route. The
- * real app uses the model (P3-T2); this is the deterministic stand-in.
+ * and goes to `review`; a report too short to name a device, app or fault is
+ * too vague to triage, so it asks for detail (`needs_info`, resolved point 15).
+ * The real app uses the model (P3-T2); this is the deterministic stand-in.
  */
 export function defaultHelpdeskTriage(title: string, description: string): MockTriage {
   const text = `${title} ${description}`;
@@ -129,12 +164,34 @@ export function defaultHelpdeskTriage(title: string, description: string): MockT
       assignmentGroup: "Software",
       route: "review",
       sensitiveFlags: ["hr"],
+      flags: [],
     };
   }
   if (/printer|monitor|screen|laptop|keyboard|docking/i.test(text)) {
-    return { category: "hardware", assignmentGroup: "Hardware", route: "auto", sensitiveFlags: [] };
+    return {
+      category: "hardware",
+      assignmentGroup: "Hardware",
+      route: "auto",
+      sensitiveFlags: [],
+      flags: [],
+    };
   }
-  return { category: "software", assignmentGroup: "Software", route: "auto", sensitiveFlags: [] };
+  if (text.length <= VAGUE_MAX_CHARS && !SPECIFIC_DETAIL.test(text)) {
+    return {
+      category: "software",
+      assignmentGroup: "Software",
+      route: "review",
+      sensitiveFlags: [],
+      flags: ["needs_info"],
+    };
+  }
+  return {
+    category: "software",
+    assignmentGroup: "Software",
+    route: "auto",
+    sensitiveFlags: [],
+    flags: [],
+  };
 }
 
 /** The `sys_id` of the active user with this email, or of `svc.itsupport`. */
@@ -151,6 +208,51 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
 
   const ticketById = (id: string) => [...tickets.values()].find((t) => t.ticketId === id);
   const push = (t: MockHelpdeskTicket, type: string, at: number) => t.events.push({ type, at });
+
+  /** True when the address is the one allow-listed mailbox (resolved point 13). */
+  function allowListed(t: MockHelpdeskTicket): boolean {
+    return options.replyRecipient !== undefined && t.email.toLowerCase() === options.replyRecipient;
+  }
+
+  /**
+   * Sends one reply email of this kind, or records the skip: once per kind, and
+   * only when the mock can send at all. `incident_reply` needs the incident
+   * number, so it is never sent before the incident (resolved point 16).
+   */
+  function notify(t: MockHelpdeskTicket, kind: "incident_reply" | "needs_info", at: number): void {
+    if (options.resend === undefined) return;
+    if (t.notifications.some((row) => row.kind === kind)) return;
+    const recorded = faults.notificationKind?.(t.testId, kind) ?? kind;
+    if (faults.omitNotification?.(t.testId, kind) === true) return;
+    const allowed = allowListed(t) || faults.sentWhenNotAllowListed?.(t.testId) === true;
+    if (!allowed) {
+      t.notifications.push({
+        id: randomUUID(),
+        kind: recorded,
+        status: "skipped",
+        reason: "not_allow_listed",
+        providerId: null,
+        at,
+      });
+      return;
+    }
+    if (kind === "incident_reply" && t.incident === null) return;
+    const providerId = options.resend.send({
+      to: t.email,
+      ticketNumber: t.number,
+      incidentNumber: t.incident?.number ?? "",
+      kind: recorded === "needs_info" ? "needs_info" : "incident_reply",
+      steps: [...TRIAGE_STEPS],
+    });
+    t.notifications.push({
+      id: randomUUID(),
+      kind: recorded,
+      status: "sent",
+      reason: null,
+      providerId,
+      at,
+    });
+  }
 
   /** Creates `count` incidents for the ticket at `at`, like the connector. */
   function createIncidents(t: MockHelpdeskTicket, at: number, count: number): void {
@@ -227,6 +329,8 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
           t.reviewPendingAt = pendingAt;
           push(t, "review_requested", pendingAt);
           t.status = "review_pending";
+          // The `needs_info` email starts after `review_requested` (resolved point 15).
+          if (t.triage.flags.includes("needs_info")) notify(t, "needs_info", pendingAt);
         } else {
           t.status = "auto";
           t.syncAt = triagedAt + SYNC_DELAY_MS;
@@ -297,6 +401,7 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
         push(t, "incident_created", incidentAt);
         push(t, "helpdesk_note_added", incidentAt);
         t.status = "incident_created";
+        notify(t, "incident_reply", incidentAt);
         continue;
       }
 
@@ -312,6 +417,7 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
         push(t, "incident_created", doneAt);
         push(t, "helpdesk_note_added", doneAt);
         t.status = "incident_created";
+        notify(t, "incident_reply", doneAt);
       }
     }
   }
@@ -354,6 +460,7 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
           : null,
       status: "new",
       events: [],
+      notifications: [],
       review: null,
       reviewPendingAt: null,
       syncAt: null,
@@ -389,11 +496,11 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
             urgency: "medium",
             assignmentGroup: t.triage.assignmentGroup,
             route: t.triage.route,
-            flags: [],
+            flags: [...t.triage.flags],
             probabilities: null,
             groundingScore: 0.9,
             kbArticleIds: [],
-            suggestedFix: { steps: ["step 1", "step 2"], caveats: [] },
+            suggestedFix: { steps: [...TRIAGE_STEPS], caveats: [] },
             modelVersions: null,
             triagedAt: iso(t.createdAt + TRIAGE_MS),
           }
@@ -414,7 +521,15 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
                 createdAt: iso(t.review.createdAt),
               },
             ],
-      notifications: [],
+      notifications: t.notifications.map((row) => ({
+        id: row.id,
+        channel: "email",
+        kind: row.kind,
+        status: row.status,
+        reason: row.reason,
+        providerId: row.providerId,
+        at: iso(row.at),
+      })),
       autofix: [],
       incident: t.incident === null ? null : { number: t.incident.number, sysId: t.incident.sysId },
     };

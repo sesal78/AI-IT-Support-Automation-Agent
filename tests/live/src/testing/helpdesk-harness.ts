@@ -11,6 +11,8 @@ import { scenarios } from "../scenarios.ts";
 import { markerEnv, markerSlackEnv, markerServiceNowEnv, TEST_SLACK } from "./env.ts";
 import { startMockE2e, type MockE2e } from "./mock-e2e.ts";
 import { createMockHelpdesk, type MockHelpdesk, type MockHelpdeskFaults } from "./mock-helpdesk.ts";
+import { mockJudgments } from "./mock-judgments.ts";
+import { mockResend, RESEND_URL, type MockResend, type MockResendOptions } from "./mock-resend.ts";
 import {
   fullInstance,
   mockServiceNow,
@@ -20,22 +22,32 @@ import {
 } from "./mock-servicenow.ts";
 import { createMockSlack, type MockSlack } from "./mock-slack.ts";
 
+/** What the mock answers for each judge: J1 and J4 pass, J3 is not personal data. */
+export const DEFAULT_JUDGE_SCORES: Readonly<Record<string, number>> = { J1: 0.8, J3: 0.2, J4: 0.8 };
+
 export interface HelpdeskHarnessOptions {
   readonly faults?: MockHelpdeskFaults;
   /** Failure paths of the Table API mock (a refused read or close). */
   readonly sn?: MockServiceNowOptions;
+  /** Changes the email mock (a late delivery, a fault in a subject or a body). */
+  readonly resend?: Omit<MockResendOptions, "now">;
+  /** Changes the value one judge gives, by judge ID; another value fails a scenario. */
+  readonly judge?: (judgeId: string) => number;
   /** Real delay of every e2e reply, so concurrency shows in the peak. */
   readonly delayMs?: number;
   /** False leaves the three ServiceNow variables unset (a `not_run` case). */
   readonly withServiceNow?: boolean;
   /** False leaves the four Slack variables unset (a `not_run` case). */
   readonly withSlack?: boolean;
+  /** False leaves the two reply-email variables unset (a `not_run` case). */
+  readonly withResend?: boolean;
 }
 
 export interface HelpdeskHarness {
   readonly e2e: MockE2e;
   readonly slack: MockSlack;
   readonly helpdesk: MockHelpdesk;
+  readonly resend: MockResend;
   readonly data: MockSnData;
   /** The fake clock at the run's start (before any scenario). */
   readonly startedAt: number;
@@ -56,6 +68,10 @@ export interface HelpdeskHarness {
   serviceNowMethods(): string[];
   /** Table API requests whose encoded query starts with `prefix`. */
   serviceNowQueries(prefix: string): number;
+  /** Methods of the Resend requests, in order (the helper's reads are GET). */
+  resendMethods(): string[];
+  /** The judge IDs of every judgment the mock answered, in order. */
+  judgeIds(): string[];
   close(): Promise<void>;
 }
 
@@ -74,6 +90,11 @@ export async function startHelpdeskHarness(
   const snVars = markerServiceNowEnv();
   const data = fullInstance();
   const serviceNow = mockServiceNow(data, { now, ...options.sn });
+  const resend = mockResend({ now, ...options.resend });
+  const judgements = mockJudgments((_n, body) => {
+    const judgeId = String((body as { judgeId?: unknown } | undefined)?.judgeId ?? "");
+    return options.judge?.(judgeId) ?? DEFAULT_JUDGE_SCORES[judgeId] ?? 0.8;
+  });
   const slack = createMockSlack({
     token: slackVars.E2E_SLACK_BOT_TOKEN,
     botUserId: TEST_SLACK.botUserId,
@@ -84,6 +105,8 @@ export async function startHelpdeskHarness(
     now,
     data,
     channelId: TEST_SLACK.channelId,
+    resend,
+    replyRecipient: values.E2E_REPLY_RECIPIENT,
     ...(options.faults === undefined ? {} : { faults: options.faults }),
   });
   const e2e = await startMockE2e({
@@ -93,16 +116,23 @@ export async function startHelpdeskHarness(
     slackSigningSecret: slackVars.E2E_SLACK_SIGNING_SECRET,
     now,
     delayMs: options.delayMs,
-    override: helpdesk.override,
+    override: (request) => judgements.override(request) ?? helpdesk.override(request),
   });
   const env = {
     ...values,
+    ...(options.withResend === false
+      ? { E2E_RESEND_READ_KEY: undefined, E2E_REPLY_RECIPIENT: undefined }
+      : {}),
     ...(options.withSlack === false ? {} : slackVars),
     ...(options.withServiceNow === false ? {} : snVars),
     E2E_BASE_URL: e2e.origin,
   };
-  const routed = (input: URL, init: RequestInit) =>
-    new URL(input).origin === SN_URL ? serviceNow.fetch(input, init) : slack.fetch(input, init);
+  const routed = (input: URL, init: RequestInit) => {
+    const origin = new URL(input).origin;
+    if (origin === SN_URL) return serviceNow.fetch(input, init);
+    if (origin === RESEND_URL) return resend.fetch(input, init);
+    return slack.fetch(input, init);
+  };
   const stdout: string[] = [];
   const stderr: string[] = [];
   const exitCode = (
@@ -126,6 +156,7 @@ export async function startHelpdeskHarness(
     e2e,
     slack,
     helpdesk,
+    resend,
     data,
     startedAt,
     dir,
@@ -145,6 +176,11 @@ export async function startHelpdeskHarness(
       serviceNow.requests.filter((r) =>
         (r.url.searchParams.get("sysparm_query") ?? "").startsWith(prefix),
       ).length,
+    resendMethods: () => resend.methods(),
+    judgeIds: () =>
+      judgements.bodies.map((body) =>
+        String((body as { judgeId?: unknown } | undefined)?.judgeId ?? ""),
+      ),
     async close() {
       await e2e.close();
       rmSync(dirname(dir), { recursive: true, force: true });
