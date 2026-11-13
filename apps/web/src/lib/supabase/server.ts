@@ -1,6 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
-import { env } from "@/env";
+import { env, staffAuthKey } from "@/env";
 import { STAFF_COOKIE_OPTIONS } from "./cookies";
 
 /**
@@ -12,7 +12,7 @@ import { STAFF_COOKIE_OPTIONS } from "./cookies";
  */
 export async function createServerSupabaseClient() {
   const store = await cookies();
-  return createServerClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
+  return createServerClient(env.SUPABASE_URL, staffAuthKey(), {
     db: { schema: env.SUPABASE_DB_SCHEMA },
     cookieOptions: STAFF_COOKIE_OPTIONS,
     cookies: {
