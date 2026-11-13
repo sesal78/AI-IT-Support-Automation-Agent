@@ -27,7 +27,7 @@ function loginRequest(body: unknown, headers: Record<string, string> = {}) {
 const good = { email: "Agent@Example.test", password: "a-long-password" };
 
 function gate() {
-  let now = 0;
+  const now = 0;
   return createRateLimiter({ limit: 5, windowMs: 10 * 60 * 1000, now: () => now, maxKeys: 10 });
 }
 
