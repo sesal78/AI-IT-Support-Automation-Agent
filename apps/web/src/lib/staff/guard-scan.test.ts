@@ -33,6 +33,32 @@ describe("scanStaffGuards", () => {
     expect(result.missing).toEqual(["src/app/staff/tickets/page.tsx"]);
   });
 
+  it.each([
+    "// await requireStaff()",
+    "/* await requireStaff() */",
+    'const help = "await requireStaff()";',
+    "function requireStaff() {}",
+    "requireStaff();",
+  ])("refuses text or an unawaited call as guard proof: %s", (body) => {
+    const path = "src/app/staff/tickets/page.tsx";
+    expect(scanStaffGuards([file(path, body)], []).missing).toEqual([path]);
+  });
+
+  it("finds a server-action directive after a comment", () => {
+    const path = "src/app/staff/actions.ts";
+    const body = '/* actions */\n"use server";\nexport async function submit() {}';
+    expect(scanStaffGuards([file(path, body)], []).missing).toEqual([path]);
+  });
+
+  it.each([
+    "export async function guarded() { await requireStaff(); } export async function open() {}",
+    "export const guarded = async () => { await requireStaff(); }; export const open = async () => {};",
+    "export async function open() { const unused = async () => { await requireStaff(); }; }",
+  ])("requires a guard in each exported handler, not an unused helper", (handlers) => {
+    const path = "src/app/staff/actions.ts";
+    expect(scanStaffGuards([file(path, '"use server";\n' + handlers)], []).missing).toEqual([path]);
+  });
+
   it("reports an action with no guard", () => {
     const result = scanStaffGuards(
       [file("src/app/staff/tickets/actions.ts", '"use server";\nexport const a = 1;')],
