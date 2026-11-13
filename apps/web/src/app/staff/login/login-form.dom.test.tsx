@@ -46,7 +46,7 @@ describe("LoginForm", () => {
 
     expect(await screen.findByText("Email or password is wrong")).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledWith(
-      "/staff/login",
+      "/staff/login/submit",
       expect.objectContaining({ method: "POST" }),
     );
     expect(push).not.toHaveBeenCalled();
