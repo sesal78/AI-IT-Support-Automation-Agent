@@ -1,6 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import { env } from "@/env";
+import { env, staffAuthKey } from "@/env";
 import { STAFF_COOKIE_OPTIONS } from "./cookies";
 
 /**
@@ -13,7 +13,7 @@ import { STAFF_COOKIE_OPTIONS } from "./cookies";
  */
 export async function refreshStaffSession(request: NextRequest): Promise<NextResponse> {
   let response = NextResponse.next({ request });
-  const supabase = createServerClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
+  const supabase = createServerClient(env.SUPABASE_URL, staffAuthKey(), {
     cookieOptions: STAFF_COOKIE_OPTIONS,
     cookies: {
       getAll: () => request.cookies.getAll(),
