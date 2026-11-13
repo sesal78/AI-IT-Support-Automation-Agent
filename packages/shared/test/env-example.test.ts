@@ -24,6 +24,7 @@ import {
   serviceNowEnvShape,
   slackClientEnvShape,
   slackInteractivityEnvShape,
+  staffAuthEnvShape,
   triggerProjectEnvShape,
 } from "../src/env.js";
 
@@ -50,6 +51,7 @@ const allEnvShapes = {
   ...helpdeskEnvShape,
   ...serviceNowEnvShape,
   ...replyEnvShape,
+  ...staffAuthEnvShape,
   // Every value the bot token rule accepts starts with xoxb-, which the secret
   // check below bans, so its placeholder is empty (the key store fills it). The
   // parse treats it as optional here only; the "empty" test pins that.
