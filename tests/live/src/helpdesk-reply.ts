@@ -167,7 +167,9 @@ export const replyEmailScenario: Scenario = {
       ) {
         checks.push("notification-sent");
       }
-      if (deliveredMs === null) checks.push("email-delivered-within-120s");
+      if (deliveredMs === null || deliveredMs > DELIVERY_LIMIT_MS) {
+        checks.push("email-delivered-within-120s");
+      }
       if (!subjectNumber) checks.push("subject-ticket-number");
       if (!textNumbers) checks.push("text-holds-numbers");
       if (!htmlNumbers) checks.push("html-holds-numbers");
