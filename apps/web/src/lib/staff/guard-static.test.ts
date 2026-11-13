@@ -15,7 +15,10 @@ const STAFF_ROOT = join(WEB_ROOT, "src", "app", "staff");
 
 const PUBLIC_ENDPOINTS: GuardException[] = [
   { path: "src/app/staff/login/page.tsx", reason: "public sign-in screen (G7, invite-only)" },
-  { path: "src/app/staff/login/route.ts", reason: "sign-in endpoint; answers 400/401/429 itself" },
+  {
+    path: "src/app/staff/login/submit/route.ts",
+    reason: "sign-in endpoint; answers 400/401/429 itself",
+  },
   {
     path: "src/app/staff/logout/route.ts",
     reason: "sign-out must work for a stale or non-staff session; a guard would block it",
@@ -57,7 +60,7 @@ describe("staff guard coverage", () => {
       .sort();
     expect(answering).toEqual([
       "src/app/staff/login/page.tsx",
-      "src/app/staff/login/route.ts",
+      "src/app/staff/login/submit/route.ts",
       "src/app/staff/logout/route.ts",
       "src/app/staff/session-ended/route.ts",
       "src/app/staff/tickets/page.tsx",
