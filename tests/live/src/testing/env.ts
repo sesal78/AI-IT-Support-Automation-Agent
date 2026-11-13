@@ -4,6 +4,7 @@
  * (the internal token rule); the others carry regex-special characters.
  */
 import { SN_PASSWORD, SN_URL, SN_USER } from "./mock-servicenow.ts";
+import { RESEND_READ_KEY, TEST_REPLY_RECIPIENT } from "./mock-resend.ts";
 
 export function markerEnv(origin: string) {
   return {
@@ -15,6 +16,8 @@ export function markerEnv(origin: string) {
     LANGFUSE_SECRET_KEY: `MarkerLangfuseSecret${"s".repeat(20)}`,
     LANGFUSE_BASE_URL: `https://markerlangfuse${"l".repeat(10)}.example`,
     STAGING_BASE_URL: `https://markerstaging${"q".repeat(10)}.example`,
+    E2E_RESEND_READ_KEY: RESEND_READ_KEY,
+    E2E_REPLY_RECIPIENT: TEST_REPLY_RECIPIENT,
   };
 }
 
