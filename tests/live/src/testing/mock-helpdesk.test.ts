@@ -3,7 +3,8 @@
 // cases the scenarios use.
 import { beforeEach, describe, expect, it } from "vitest";
 import type { MockRequest } from "./mock-e2e.ts";
-import { createMockHelpdesk, type MockHelpdesk } from "./mock-helpdesk.ts";
+import { createMockHelpdesk, type MockHelpdesk, type MockHelpdeskFaults } from "./mock-helpdesk.ts";
+import { mockResend, type MockResend } from "./mock-resend.ts";
 import { fullInstance, type MockSnData } from "./mock-servicenow.ts";
 
 const T0 = Date.parse("2026-11-13T00:00:00Z");
@@ -123,5 +124,114 @@ describe("the mock phase 5 flow", () => {
       undefined,
     );
     expect(helpdesk.tickets.size).toBe(0);
+  });
+});
+
+describe("the mock reply emails (P5-T8c)", () => {
+  const RECIPIENT = "marker-recipient@example.test";
+  const VAGUE = { title: "It's broken", description: "it's broken, please fix" };
+  let resend: MockResend;
+
+  /** The mock helpdesk, now able to send the two emails through the Resend mock. */
+  function withEmails(faults: MockHelpdeskFaults = {}): MockHelpdesk {
+    resend = mockResend({ now: () => now });
+    return createMockHelpdesk({
+      now: () => now,
+      data,
+      replyRecipient: RECIPIENT,
+      resend,
+      faults,
+    });
+  }
+
+  const notifications = (mock: MockHelpdesk, testId: string) =>
+    viewOf(mock, testId)["notifications"] as Array<Record<string, unknown>>;
+
+  const subjects = () => [...resend.emails.values()].map((email) => email.subject);
+
+  it("sends one incident reply with a provider id once the incident exists", () => {
+    helpdesk = withEmails();
+    create({ testId: "run:L06:1", email: RECIPIENT, ...PRINTER });
+    at(7_000);
+    const sent = notifications(helpdesk, "run:L06:1");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      channel: "email",
+      kind: "incident_reply",
+      status: "sent",
+      reason: null,
+    });
+    expect(typeof sent[0]!["providerId"]).toBe("string");
+    expect(subjects()).toEqual(["[E2E] Your IT ticket ITS-000001"]);
+    expect([...resend.emails.values()][0]!.text).toContain("INC0000001");
+    // A later read does not send a second email.
+    at(8_000);
+    expect(notifications(helpdesk, "run:L06:1")).toHaveLength(1);
+    expect(resend.emails.size).toBe(1);
+  });
+
+  it("sends needs_info for a vague report before any incident, with the details subject", () => {
+    helpdesk = withEmails();
+    create({ testId: "run:L07:1", email: RECIPIENT, ...VAGUE });
+    at(6_000);
+    const view = viewOf(helpdesk, "run:L07:1");
+    expect(view).toMatchObject({
+      status: "review_pending",
+      triage: { route: "review", flags: ["needs_info"] },
+    });
+    expect(view["notifications"]).toEqual([
+      expect.objectContaining({
+        kind: "needs_info",
+        status: "sent",
+        providerId: expect.any(String),
+      }),
+    ]);
+    expect(subjects()).toEqual(["[E2E] More detail needed for your IT ticket ITS-000001"]);
+  });
+
+  it("skips the email as not_allow_listed for an address off the list, and sends nothing", () => {
+    helpdesk = withEmails();
+    create({ testId: "run:S01:1", email: "canary+run1234@example.com", ...VAGUE });
+    at(6_000);
+    expect(notifications(helpdesk, "run:S01:1")).toEqual([
+      expect.objectContaining({
+        kind: "needs_info",
+        status: "skipped",
+        reason: "not_allow_listed",
+        providerId: null,
+      }),
+    ]);
+    expect(resend.emails.size).toBe(0);
+  });
+
+  it("skips every address when no mailbox is configured, and sends nothing", () => {
+    resend = mockResend({ now: () => now });
+    helpdesk = createMockHelpdesk({ now: () => now, data, resend });
+    create({ testId: "run:L01:1", email: RECIPIENT, ...PRINTER });
+    at(7_000);
+    expect(notifications(helpdesk, "run:L01:1")).toEqual([
+      expect.objectContaining({ kind: "incident_reply", status: "skipped" }),
+    ]);
+    expect(resend.emails.size).toBe(0);
+  });
+
+  it("faults: a forced kind, a dropped row, and a send despite the list", () => {
+    helpdesk = withEmails({
+      notificationKind: (id) => (id.endsWith(":L07:1") ? "incident_reply" : "needs_info"),
+      omitNotification: (id) => id.endsWith(":L07:2"),
+      sentWhenNotAllowListed: (id) => id.endsWith(":S01:1"),
+    });
+    create({ testId: "run:L07:1", email: RECIPIENT, ...VAGUE });
+    create({ testId: "run:L07:2", email: RECIPIENT, ...VAGUE });
+    create({ testId: "run:S01:1", email: "canary+run1234@example.com", ...VAGUE });
+    at(6_000);
+    expect(notifications(helpdesk, "run:L07:1")).toEqual([
+      expect.objectContaining({ kind: "incident_reply" }),
+    ]);
+    expect(notifications(helpdesk, "run:L07:2")).toEqual([]);
+    expect(notifications(helpdesk, "run:S01:1")).toEqual([
+      expect.objectContaining({ kind: "needs_info", status: "sent" }),
+    ]);
+    expect(resend.emails.size).toBe(2);
   });
 });
