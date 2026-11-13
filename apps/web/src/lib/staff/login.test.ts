@@ -108,9 +108,9 @@ describe("handleStaffLogin", () => {
     for (let i = 0; i < 5; i += 1) {
       await handleStaffLogin(loginRequest(good), { supabase: supabase(), limiter });
     }
-    expect((await handleStaffLogin(loginRequest(good), { supabase: supabase(), limiter })).status).toBe(
-      429,
-    );
+    expect(
+      (await handleStaffLogin(loginRequest(good), { supabase: supabase(), limiter })).status,
+    ).toBe(429);
   });
 
   it.each([
