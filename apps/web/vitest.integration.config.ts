@@ -9,8 +9,12 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": here("./src"),
+      // The staff review suite imports the pipeline runner on a clean checkout.
+      "@ai-it-support/ai": here("../../packages/ai/src/index.ts"),
       "@ai-it-support/shared": here("../../packages/shared/src/index.ts"),
       "@ai-it-support/db": here("../../packages/db/src/index.ts"),
+      "@ai-it-support/helpdesk": here("../../packages/helpdesk/src/index.ts"),
+      "@ai-it-support/slack": here("../../packages/slack/src/index.ts"),
     },
   },
   test: {
