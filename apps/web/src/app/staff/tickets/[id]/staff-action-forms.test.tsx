@@ -63,11 +63,14 @@ it("submits once while a note is in flight, then refreshes the detail page", asy
 });
 
 it("shows the refusal and refreshes an out-of-date state", async () => {
-  const message = "That change is not allowed from on hold; the page was refreshed";
+  const message = "That change is not allowed from closed; the page was refreshed";
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ message }, { status: 409 })));
-  render(<StaffActionForms ticketId={ticketId} state="new" assignees={staff} />);
+  const view = render(<StaffActionForms ticketId={ticketId} state="new" assignees={staff} />);
   fireEvent.change(screen.getByLabelText("Next state"), { target: { value: "closed" } });
   fireEvent.submit(screen.getByRole("form", { name: "Change state" }));
   expect((await screen.findByRole("alert")).textContent).toBe(message);
   expect(refresh).toHaveBeenCalledOnce();
+  view.rerender(<StaffActionForms ticketId={ticketId} state="closed" assignees={staff} />);
+  expect(screen.queryByRole("form", { name: "Change state" })).toBeNull();
+  expect(screen.getByRole("alert").textContent).toBe(message);
 });

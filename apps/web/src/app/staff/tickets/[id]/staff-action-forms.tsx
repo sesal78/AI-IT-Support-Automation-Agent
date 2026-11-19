@@ -50,23 +50,26 @@ export function StaffActionForms({
             </label>
           </ActionForm>
         )}
-        {nextStates.length > 0 && (
-          <ActionForm ticketId={ticketId} kind="state" label="Change state">
-            <label className="grid gap-1 text-sm">
-              Next state
-              <select key={state} name="toState" defaultValue="" required className={selectClass}>
-                <option value="" disabled>
-                  Choose a state
+        <ActionForm
+          ticketId={ticketId}
+          kind="state"
+          label="Change state"
+          available={nextStates.length > 0}
+        >
+          <label className="grid gap-1 text-sm">
+            Next state
+            <select key={state} name="toState" defaultValue="" required className={selectClass}>
+              <option value="" disabled>
+                Choose a state
+              </option>
+              {nextStates.map((next) => (
+                <option key={next} value={next}>
+                  {next.charAt(0).toUpperCase() + next.slice(1).replaceAll("_", " ")}
                 </option>
-                {nextStates.map((next) => (
-                  <option key={next} value={next}>
-                    {next.charAt(0).toUpperCase() + next.slice(1).replaceAll("_", " ")}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </ActionForm>
-        )}
+              ))}
+            </select>
+          </label>
+        </ActionForm>
       </div>
     </section>
   );
@@ -76,11 +79,13 @@ function ActionForm({
   ticketId,
   kind,
   label,
+  available = true,
   children,
 }: {
   ticketId: string;
   kind: "note" | "assign" | "state";
   label: string;
+  available?: boolean;
   children: ReactNode;
 }) {
   const router = useRouter();
@@ -127,18 +132,22 @@ function ActionForm({
   }
 
   return (
-    <form aria-label={label} method="post" action={actionUrl} onSubmit={submit}>
-      <fieldset disabled={pending} className="space-y-2">
-        {children}
-        <Button type="submit" variant="outline">
-          {label}
-        </Button>
-      </fieldset>
+    <div>
+      {available && (
+        <form aria-label={label} method="post" action={actionUrl} onSubmit={submit}>
+          <fieldset disabled={pending} className="space-y-2">
+            {children}
+            <Button type="submit" variant="outline">
+              {label}
+            </Button>
+          </fieldset>
+        </form>
+      )}
       {feedback && (
         <p role={feedback.error ? "alert" : "status"} className="mt-2 text-sm">
           {feedback.message}
         </p>
       )}
-    </form>
+    </div>
   );
 }
