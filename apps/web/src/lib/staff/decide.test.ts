@@ -29,35 +29,40 @@ function harness() {
   };
 }
 
-it("records the decision as the authenticated admin and sends no token to the client", async () => {
-  const deps = harness();
-  const response = await decideStaffReview(deps, admin, ticketId, click());
-  expect(response.status).toBe(200);
-  expect(await response.json()).toEqual({ outcome: "recorded" });
-  expect(response.headers.get("cache-control")).toBe("no-store");
-  expect(deps.repos.getTicket).toHaveBeenCalledExactlyOnceWith(ticketId);
-  expect(deps.repos.getTriageReview).toHaveBeenCalledExactlyOnceWith(ticketId);
-  expect(deps.repos.decideReview).toHaveBeenCalledExactlyOnceWith(reviewId, "approve", {
-    source: "helpdesk",
-    staffId: admin.id,
-  });
-  expect(deps.completeToken).toHaveBeenCalledExactlyOnceWith(token, {
-    reviewId,
-    decision: "approve",
-  });
-});
+it.each(["approve", "reject"] as const)(
+  "records %s as the authenticated admin and hides the token",
+  async (decision) => {
+    const deps = harness();
+    const response = await decideStaffReview(deps, admin, ticketId, click(decision));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ outcome: "recorded" });
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(deps.repos.getTicket).toHaveBeenCalledExactlyOnceWith(ticketId);
+    expect(deps.repos.getTriageReview).toHaveBeenCalledExactlyOnceWith(ticketId);
+    expect(deps.repos.decideReview).toHaveBeenCalledExactlyOnceWith(reviewId, decision, {
+      source: "helpdesk",
+      staffId: admin.id,
+    });
+    expect(deps.completeToken).toHaveBeenCalledExactlyOnceWith(token, {
+      reviewId,
+      decision,
+    });
+  },
+);
 
 it.each([
-  [{ ...admin, role: "agent" } as const, ticketId, click(), 403],
-  [{ ...admin, active: false }, ticketId, click(), 403],
-  [admin, "ITS-000001", click(), 404],
-  [admin, ticketId, { decision: "timeout" }, 400],
-  [admin, ticketId, { ...click(), staffId: admin.id }, 400],
+  [{ ...admin, role: "agent" } as const, ticketId, click(), 403, "forbidden"],
+  [{ ...admin, active: false }, ticketId, click(), 403, "forbidden"],
+  [admin, "ITS-000001", click(), 404, "not_found"],
+  [admin, ticketId, { decision: "timeout" }, 400, "bad_request"],
+  [admin, ticketId, { ...click(), staffId: admin.id }, 400, "bad_request"],
 ])(
   "rejects invalid authority or input before privileged reads",
-  async (staff, id, input, status) => {
+  async (staff, id, input, status, error) => {
     const deps = harness();
-    expect((await decideStaffReview(deps, staff, id, input)).status).toBe(status);
+    const response = await decideStaffReview(deps, staff, id, input);
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual({ error });
     expect(deps.repos.getTicket).not.toHaveBeenCalled();
     expect(deps.completeToken).not.toHaveBeenCalled();
   },
@@ -68,7 +73,9 @@ it.each([null, { status: "review_pending", is_test: true }])(
   async (ticket) => {
     const deps = harness();
     deps.repos.getTicket.mockResolvedValue(ticket);
-    expect((await decideStaffReview(deps, admin, ticketId, click())).status).toBe(404);
+    const response = await decideStaffReview(deps, admin, ticketId, click());
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "not_found" });
     expect(deps.repos.getTriageReview).not.toHaveBeenCalled();
   },
 );
@@ -82,9 +89,13 @@ it("permits test tickets only in E2E mode", async () => {
 it("rejects a missing or not yet waiting review without writes", async () => {
   const deps = harness();
   deps.repos.getTriageReview.mockResolvedValueOnce(null);
-  expect((await decideStaffReview(deps, admin, ticketId, click())).status).toBe(404);
+  const absent = await decideStaffReview(deps, admin, ticketId, click());
+  expect(absent.status).toBe(404);
+  expect(await absent.json()).toEqual({ error: "not_found" });
   deps.repos.getTicket.mockResolvedValueOnce({ status: "triaged", is_test: false });
-  expect((await decideStaffReview(deps, admin, ticketId, click())).status).toBe(409);
+  const pending = await decideStaffReview(deps, admin, ticketId, click());
+  expect(pending.status).toBe(409);
+  expect(await pending.json()).toEqual({ error: "not_waiting_for_review" });
   expect(deps.repos.decideReview).not.toHaveBeenCalled();
 });
 
