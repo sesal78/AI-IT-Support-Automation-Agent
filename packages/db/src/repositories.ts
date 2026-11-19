@@ -124,6 +124,7 @@ export const reviewSchema = z.object({
   kind: z.enum(["triage", "autofix"]),
   proposal_id: z.uuid().nullable(),
   slack_user_id: z.string().nullable(),
+  staff_id: z.uuid().nullable().optional(),
   decision: z.enum(["approve", "reject", "timeout"]).nullable(),
   decided_at: timestamp.nullable(),
   wait_token_id: z.string(),
@@ -236,7 +237,7 @@ const VIEW_NOTIFICATION_COLUMNS = "id,channel,kind,status,provider_id,reason,at"
 const VIEW_NOTIFICATION_LIMIT = 10;
 // The full row for the review functions (the decision handler needs wait_token_id).
 const REVIEW_COLUMNS =
-  "id,ticket_id,kind,proposal_id,slack_user_id,decision,decided_at,wait_token_id,slack_ts,created_at";
+  "id,ticket_id,kind,proposal_id,slack_user_id,staff_id,decision,decided_at,wait_token_id,slack_ts,created_at";
 const HELPDESK_TICKET_COLUMNS =
   "id,ticket_id,seq,number,state,priority,category,assignee_id,created_at,updated_at";
 const HELPDESK_NOTE_COLUMNS = "id,helpdesk_ticket_id,author_kind,author_staff_id,body,created_at";
@@ -375,6 +376,11 @@ const HELPDESK_KINDS = ["servicenow", "builtin"] as const;
 export type HelpdeskKind = (typeof HELPDESK_KINDS)[number];
 // A Slack user ID: the one shared rule (packages/shared env.ts), also used by the reviewer allow-list.
 const SLACK_USER_ID = slackUserIdRule();
+const reviewActorSchema = z.discriminatedUnion("source", [
+  z.strictObject({ source: z.literal("slack"), slackUserId: SLACK_USER_ID }),
+  z.strictObject({ source: z.literal("helpdesk"), staffId: z.uuid() }),
+]);
+export type ReviewActor = z.infer<typeof reviewActorSchema>;
 const uuidSchema = z.uuid();
 const PROBE_TIMEOUT_MS = 3000;
 
@@ -900,26 +906,30 @@ export function createRepositories(client: DbClient) {
      * Records a review decision with ONE conditional UPDATE (`where decision
      * is null`), so exactly one of any number of parallel callers wins. The
      * winner gets `changed: true`; everyone else gets `changed: false` and the
-     * stored row. `timeout` needs `slackUserId` null; `approve` and `reject`
-     * need a Slack user ID (`U` or `W` plus 8 to 12 capitals or digits). Anything
-     * else throws a TypeError before any database call. An unknown id throws DbError.
+     * stored row. A timeout has no actor. A decision names either a Slack
+     * reviewer or an admin's staff row. Legacy Slack callers can pass the ID.
      */
     async decideReview(
       id: string,
       decision: ReviewDecision,
-      slackUserId: string | null,
+      actor: string | ReviewActor | null,
     ): Promise<{ changed: boolean; review: Review }> {
       const op = "decideReview";
       assertUuid(op, "id", id);
       if (!REVIEW_DECISIONS.includes(decision)) throw new TypeError(`${op}: unknown decision`);
-      if (decision === "timeout") {
-        if (slackUserId !== null) throw new TypeError(`${op}: a timeout has no Slack user`);
-      } else if (typeof slackUserId !== "string" || !SLACK_USER_ID.safeParse(slackUserId).success) {
-        throw new TypeError(`${op}: ${decision} needs a Slack user ID`);
+      const parsed = reviewActorSchema.safeParse(
+        typeof actor === "string" ? { source: "slack", slackUserId: actor } : actor,
+      );
+      if (decision === "timeout" ? actor !== null : !parsed.success) {
+        throw new TypeError(`${op}: invalid actor for the review decision`);
       }
+      const attribution =
+        parsed.data?.source === "helpdesk"
+          ? { staff_id: parsed.data.staffId }
+          : { slack_user_id: parsed.data?.slackUserId ?? null };
       const result = await client
         .from("reviews")
-        .update({ decision, decided_at: new Date().toISOString(), slack_user_id: slackUserId })
+        .update({ decision, decided_at: new Date().toISOString(), ...attribution })
         .eq("id", id)
         .is("decision", null)
         .select(REVIEW_COLUMNS);

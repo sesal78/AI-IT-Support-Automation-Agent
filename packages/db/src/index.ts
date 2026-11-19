@@ -41,6 +41,7 @@ export {
   type Redaction,
   type Repositories,
   type Review,
+  type ReviewActor,
   type ReviewDecision,
   type SchemaProbe,
   type SecurityEventRow,
