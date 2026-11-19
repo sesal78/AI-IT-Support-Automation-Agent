@@ -398,6 +398,22 @@ export async function startLocalRunner(options: LocalRunnerOptions): Promise<Loc
       send(res, 200, { runs: [...runs.values()].map((run) => ({ ...run })) });
       return;
     }
+    const lookup = /^\/api\/v1\/waitpoints\/tokens\/([^/]+)$/.exec(path);
+    if (req.method === "GET" && lookup) {
+      const token = broker.get(decodeURIComponent(lookup[1] ?? ""));
+      if (!token) {
+        send(res, 404, { error: "Waitpoint not found" });
+        return;
+      }
+      send(res, 200, {
+        id: token.id,
+        url: `${url}${path}`,
+        status: token.state.toUpperCase(),
+        tags: token.tags,
+        createdAt: new Date().toISOString(),
+      });
+      return;
+    }
     const completion = /^\/api\/v1\/waitpoints\/tokens\/([^/]+)\/complete$/.exec(path);
     if (req.method === "POST" && completion) {
       await completeToken(req, res, decodeURIComponent(completion[1] ?? ""));

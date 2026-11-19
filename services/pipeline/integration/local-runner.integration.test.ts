@@ -181,6 +181,7 @@ describe("local Trigger.dev runner", () => {
     const token = runner.broker.tokens().find((t) => t.idempotencyKey === `review:${ticketId}`);
     expect(token?.state).toBe("waiting");
     expect(review?.waitingOn).toBe(token?.id);
+    await expect(wait.retrieveToken(token!.id)).resolves.toMatchObject({ status: "WAITING" });
     expect(requestsTo("slack.com").map((r) => r.path)).toEqual(["/api/chat.postMessage"]);
 
     // As the interactivity handler does it: the row first, then the token.
@@ -191,6 +192,7 @@ describe("local Trigger.dev runner", () => {
     ).resolves.toEqual({
       success: true,
     });
+    await expect(wait.retrieveToken(token!.id)).resolves.toMatchObject({ status: "COMPLETED" });
     await runner.idle();
 
     expect(runner.runs().find((run) => run.id === review?.id)).toMatchObject({
