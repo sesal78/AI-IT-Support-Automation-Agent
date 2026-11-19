@@ -27,6 +27,9 @@ beforeAll(async () => {
       'web', 'Private seed title', 'Private seed description', 'requester@example.test',
       'staff-detail-' || n, n = 3
     from generate_series(1,3) as n;
+    update itsupport.tickets set status = 'review_pending' where id in ('${id(1)}', '${id(2)}');
+    insert into itsupport.reviews (ticket_id, kind, wait_token_id)
+    values ('${id(1)}', 'triage', 'staff-detail-fixture-token');
     insert into itsupport.ticket_redactions (ticket_id, redacted_title, redacted_description)
     values ('${id(1)}', 'Safe seed title', 'Safe seed description');
     insert into itsupport.kb_articles (id, slug, title, content, category, assignment_group)
@@ -62,6 +65,7 @@ it("reads the safe detail and orders the three histories using the staff JWT", a
   const detail = await getStaffTicket(agent.supabase, id(1), false);
   expect(detail).toMatchObject({
     ticket_number: expect.stringMatching(/^ITS-\d{6}$/),
+    waitingForReview: true,
     redaction: { redacted_title: "Safe seed title", redacted_description: "Safe seed description" },
     triage: {
       route: "review",
@@ -76,12 +80,17 @@ it("reads the safe detail and orders the three histories using the staff JWT", a
     "Review requested",
     "Assigned to Test agent",
   ]);
-  expect(JSON.stringify(detail)).not.toMatch(/Private|requester@example/);
+  expect(JSON.stringify(detail)).not.toMatch(/Private|requester@example|fixture-token/);
 });
 
 it("handles manual tickets, multiple history pages and hidden or absent rows", async () => {
   const manual = await getStaffTicket(agent.supabase, id(2), false);
-  expect(manual).toMatchObject({ helpdesk: null, redaction: null, triage: null });
+  expect(manual).toMatchObject({
+    helpdesk: null,
+    redaction: null,
+    triage: null,
+    waitingForReview: false,
+  });
   expect(manual?.history).toHaveLength(251);
   expect(manual?.history[0]?.label).toBe("Escalated manual");
   expect(await getStaffTicket(agent.supabase, id(3), false)).toBeNull();
