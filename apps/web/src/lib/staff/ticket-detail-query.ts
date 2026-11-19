@@ -1,4 +1,4 @@
-import { HELPDESK_STATES, ticketNumberSchema } from "@ai-it-support/shared";
+import { HELPDESK_STATES, TICKET_STATUSES, ticketNumberSchema } from "@ai-it-support/shared";
 import { z } from "zod";
 import type { createServerSupabaseClient } from "@/lib/supabase/server";
 
@@ -9,6 +9,7 @@ const timestamp = z.iso.datetime({ offset: true });
 const articleSchema = z.strictObject({ slug: z.string(), title: z.string() });
 const ticketSchema = z.strictObject({
   ticket_number: ticketNumberSchema,
+  status: z.enum(TICKET_STATUSES),
   redaction: z
     .strictObject({ redacted_title: z.string(), redacted_description: z.string() })
     .nullable(),
@@ -58,6 +59,7 @@ function secondsFraction(at: string) {
 const HISTORY_BATCH = 250;
 const DETAIL_SELECT = [
   "ticket_number",
+  "status",
   "redaction:ticket_redactions(redacted_title,redacted_description)",
   "triage:triage_results(category,priority,urgency,route,probabilities,sensitive_flags,kb_article_ids,suggested_fix)",
   "helpdesk:helpdesk_tickets(id,number,state,assignee:staff!helpdesk_tickets_assignee_id_fkey(display_name))",
@@ -181,7 +183,9 @@ export async function getStaffTicket(client: StaffClient, id: string, showTestTi
   history.sort(
     (a, b) => Date.parse(a.at) - Date.parse(b.at) || secondsFraction(a.at) - secondsFraction(b.at),
   );
-  return { ...ticket, articles, history };
+  const waitingForReview =
+    ticket.status === "review_pending" && eventRows.some((row) => row.type === "review_requested");
+  return { ...ticket, articles, history, waitingForReview };
 }
 
 async function readArticleSummaries(client: StaffClient, ids: string[]) {

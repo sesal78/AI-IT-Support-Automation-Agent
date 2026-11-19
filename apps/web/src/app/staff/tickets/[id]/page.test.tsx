@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import StaffTicketPage from "./page";
 
 const { requireStaff, createServerSupabaseClient, getStaffTicket, listActiveStaff } = vi.hoisted(
@@ -20,6 +20,7 @@ vi.mock("./staff-action-forms", () => ({
 }));
 vi.mock("@/env", () => ({ env: { E2E_MODE: false } }));
 vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: vi.fn() }),
   notFound: () => {
     throw new Error("NEXT_HTTP_ERROR_FALLBACK;404");
   },
@@ -49,6 +50,8 @@ const record = {
   raw_title: "Private fixture title",
 };
 const page = (pathId: string) => StaffTicketPage({ params: Promise.resolve({ id: pathId }) });
+
+beforeEach(() => requireStaff.mockResolvedValue({ staff: { role: "agent" } }));
 
 afterEach(() => {
   cleanup();
@@ -112,6 +115,19 @@ describe("staff ticket detail", () => {
     expect(screen.getByText("No history yet")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
     expect(listActiveStaff).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["agent", true, false],
+    ["admin", true, true],
+    ["admin", false, false],
+  ] as const)("renders review controls for %s when waiting=%s", async (role, waiting, controls) => {
+    requireStaff.mockResolvedValue({ staff: { role } });
+    getStaffTicket.mockResolvedValue({ ...record, helpdesk: null, waitingForReview: waiting });
+    render(await page(id));
+    expect(Boolean(screen.queryByRole("heading", { name: "Waiting for review" }))).toBe(waiting);
+    expect(Boolean(screen.queryByRole("button", { name: "Approve" }))).toBe(controls);
+    expect(Boolean(screen.queryByRole("button", { name: "Reject" }))).toBe(controls);
   });
 
   it.each(["ITS-000042", "junk"])("returns 404 for %s without a database read", async (invalid) => {

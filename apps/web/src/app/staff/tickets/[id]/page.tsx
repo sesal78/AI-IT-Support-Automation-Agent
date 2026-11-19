@@ -7,6 +7,7 @@ import { requireStaff } from "@/lib/staff/auth";
 import { getStaffTicket, listActiveStaff } from "@/lib/staff/ticket-detail-query";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { StaffActionForms } from "./staff-action-forms";
+import { StaffReviewControls } from "./staff-review-controls";
 
 const timestamp = new Intl.DateTimeFormat("en-AU", {
   dateStyle: "medium",
@@ -19,7 +20,7 @@ const percent = new Intl.NumberFormat("en-AU", {
 });
 
 export default async function StaffTicketPage({ params }: { params: Promise<{ id: string }> }) {
-  await requireStaff();
+  const { staff } = await requireStaff();
   const { id } = await params;
   if (!z.uuid().safeParse(id).success) notFound();
 
@@ -140,6 +141,15 @@ export default async function StaffTicketPage({ params }: { params: Promise<{ id
               {caveat}
             </p>
           ))}
+        </section>
+      )}
+
+      {record.waitingForReview && (
+        <section aria-labelledby="ticket-review" className="space-y-3 rounded-lg border p-4">
+          <h2 id="ticket-review" className="text-lg font-semibold">
+            Waiting for review
+          </h2>
+          {staff.role === "admin" && <StaffReviewControls ticketId={id} />}
         </section>
       )}
 
