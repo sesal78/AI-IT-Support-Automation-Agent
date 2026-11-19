@@ -147,7 +147,8 @@ function harness(options: Options = {}) {
   const stored = (): Review => ({
     ...row,
     decision,
-    slack_user_id: decision === "approve" || decision === "reject" ? REVIEWER : null,
+    slack_user_id:
+      !row.staff_id && (decision === "approve" || decision === "reject") ? REVIEWER : null,
     decided_at: decision === null ? null : NOW,
   });
   const repos = {
@@ -539,11 +540,43 @@ describe("runReviewTicket after the wait (P4-T4b)", () => {
     expect(h.repos.addEvent).toHaveBeenLastCalledWith(TICKET, "review_decided", {
       reviewId: REVIEW,
       decision: "approve",
+      source: "slack",
+      decidedBy: REVIEWER,
     });
     expect(h.repos.setTicketStatus).toHaveBeenLastCalledWith(TICKET, "approved");
     const update = h.slack.updateMessage.mock.calls[0]?.[0];
     expect(update).toMatchObject({ channel: CHANNEL, ts: TS });
     expect(JSON.stringify(update?.blocks)).toContain(`Approved by <@${REVIEWER}>`);
+  });
+
+  it("attributes the event to the staff member and updates the Slack card once", async () => {
+    const staffId = "11111111-1111-4111-8111-000000000042";
+    const h = harness({ review: review({ staff_id: staffId }) });
+    await expect(run(h)).resolves.toMatchObject({ decision: "approve" });
+    expect(h.repos.addEvent).toHaveBeenLastCalledWith(TICKET, "review_decided", {
+      reviewId: REVIEW,
+      decision: "approve",
+      source: "helpdesk",
+      decidedBy: staffId,
+    });
+    expect(h.slack.updateMessage).toHaveBeenCalledTimes(1);
+    const blocks = JSON.stringify(h.slack.updateMessage.mock.calls[0]?.[0].blocks);
+    expect(blocks).toContain("Decided in the helpdesk");
+    expect(blocks).not.toContain(staffId);
+    expect(blocks).not.toContain("<@");
+  });
+
+  it("closes the staff-decided card even if the helpdesk handoff fails", async () => {
+    const h = harness({
+      review: review({ staff_id: "11111111-1111-4111-8111-000000000042" }),
+      syncTriggerError: new TypeError("Helpdesk runner unavailable"),
+    });
+    await expect(run(h)).rejects.toBeInstanceOf(AbortTaskRunError);
+    expect(h.slack.updateMessage).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(h.slack.updateMessage.mock.calls[0]?.[0].blocks)).toContain(
+      "Decided in the helpdesk",
+    );
+    expect(h.repos.setTicketStatus).toHaveBeenLastCalledWith(TICKET, "failed");
   });
 
   it("reject: rejected, and nothing is triggered (T4.I.02 unit half)", async () => {
