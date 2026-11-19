@@ -3,15 +3,21 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import StaffTicketPage from "./page";
 
-const { requireStaff, createServerSupabaseClient, getStaffTicket } = vi.hoisted(() => ({
-  requireStaff: vi.fn(),
-  createServerSupabaseClient: vi.fn(),
-  getStaffTicket: vi.fn(),
-}));
+const { requireStaff, createServerSupabaseClient, getStaffTicket, listActiveStaff } = vi.hoisted(
+  () => ({
+    requireStaff: vi.fn(),
+    createServerSupabaseClient: vi.fn(),
+    getStaffTicket: vi.fn(),
+    listActiveStaff: vi.fn(),
+  }),
+);
 
 vi.mock("@/lib/staff/auth", () => ({ requireStaff }));
 vi.mock("@/lib/supabase/server", () => ({ createServerSupabaseClient }));
-vi.mock("@/lib/staff/ticket-detail-query", () => ({ getStaffTicket }));
+vi.mock("@/lib/staff/ticket-detail-query", () => ({ getStaffTicket, listActiveStaff }));
+vi.mock("./staff-action-forms", () => ({
+  StaffActionForms: () => <button type="button">Staff actions</button>,
+}));
 vi.mock("@/env", () => ({ env: { E2E_MODE: false } }));
 vi.mock("next/navigation", () => ({
   notFound: () => {
@@ -50,10 +56,11 @@ afterEach(() => {
 });
 
 describe("staff ticket detail", () => {
-  it("shows permitted fields in a read-only view and renders unsafe-looking text inertly", async () => {
+  it("shows permitted fields and staff actions and renders unsafe-looking text inertly", async () => {
     const client = {};
     createServerSupabaseClient.mockResolvedValue(client);
     getStaffTicket.mockResolvedValue(record);
+    listActiveStaff.mockResolvedValue([]);
     const { container } = render(await page(id));
 
     expect(requireStaff).toHaveBeenCalledBefore(createServerSupabaseClient);
@@ -79,7 +86,9 @@ describe("staff ticket detail", () => {
     ]) {
       expect(screen.getByText(value, { exact: true })).toBeTruthy();
     }
-    expect(container.querySelector("script, a[href^='javascript:'], form")).toBeNull();
+    expect(container.querySelector("script, a[href^='javascript:']")).toBeNull();
+    expect(listActiveStaff).toHaveBeenCalledWith(client);
+    expect(screen.getByRole("button", { name: "Staff actions" })).toBeTruthy();
     expect(container.textContent).not.toContain("Private fixture title");
     const history = screen.getByRole("region", { name: "History" }).textContent!;
     expect(history.indexOf("Review requested")).toBeLessThan(history.indexOf("Note by Test agent"));
@@ -102,6 +111,7 @@ describe("staff ticket detail", () => {
     expect(screen.getByText("No triage result")).toBeTruthy();
     expect(screen.getByText("No history yet")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
+    expect(listActiveStaff).not.toHaveBeenCalled();
   });
 
   it.each(["ITS-000042", "junk"])("returns 404 for %s without a database read", async (invalid) => {
