@@ -1276,7 +1276,7 @@ describe("reviews", () => {
   const decidedRow = { ...reviewRow, slack_user_id: USER, decision: "approve", decided_at: now };
   const selectOf = (call: Captured | undefined) => call?.url.searchParams.get("select");
   const COLUMNS =
-    "id,ticket_id,kind,proposal_id,slack_user_id,decision,decided_at,wait_token_id,slack_ts,created_at";
+    "id,ticket_id,kind,proposal_id,slack_user_id,staff_id,decision,decided_at,wait_token_id,slack_ts,created_at";
 
   describe("createTriageReview", () => {
     it("inserts a triage review, selecting named columns", async () => {
@@ -1431,6 +1431,40 @@ describe("reviews", () => {
   });
 
   describe("decideReview", () => {
+    it("records a helpdesk actor without impersonating a Slack user", async () => {
+      const staffId = randomUUID();
+      const stored = { ...decidedRow, slack_user_id: null, staff_id: staffId };
+      const calls = respond(ok([stored]));
+      const outcome = await repos.decideReview(reviewId, "approve", {
+        source: "helpdesk",
+        staffId,
+      });
+      expect(outcome).toEqual({ changed: true, review: stored });
+      expect(calls[0]?.body).toEqual({
+        decision: "approve",
+        decided_at: expect.any(String),
+        staff_id: staffId,
+      });
+      expect(calls[0]?.url.searchParams.get("decision")).toBe("is.null");
+    });
+
+    it("refuses a malformed helpdesk actor and an actor for a timeout before any write", async () => {
+      const calls = respond();
+      await expect(
+        repos.decideReview(reviewId, "approve", {
+          source: "helpdesk",
+          staffId: "not-a-uuid",
+        }),
+      ).rejects.toThrow(TypeError);
+      await expect(
+        repos.decideReview(reviewId, "timeout", {
+          source: "helpdesk",
+          staffId: randomUUID(),
+        }),
+      ).rejects.toThrow(TypeError);
+      expect(calls).toHaveLength(0);
+    });
+
     it("sets the decision with one conditional update and returns the winner's row", async () => {
       const calls = respond(ok([decidedRow]));
       const outcome = await repos.decideReview(reviewId, "approve", USER);

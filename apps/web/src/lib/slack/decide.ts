@@ -1,4 +1,4 @@
-import type { Repositories, Review } from "@ai-it-support/db";
+import type { Repositories } from "@ai-it-support/db";
 import {
   errorName,
   json,
@@ -8,12 +8,13 @@ import {
   type RequestSample,
 } from "@/lib/slack/handler";
 import { checkReviewBinding, type Interaction } from "@/lib/slack/interaction";
+import { decideAndResume, ReviewResumeError, type Outcome } from "@/lib/review-resume";
 
 // Records an allowed Approve / Reject click and completes the review's wait
 // token (P4-T3d). The token ID is read from the stored row only: it never
 // comes from the payload and never reaches a response or a log line.
 
-export type Outcome = "recorded" | "already_decided" | "late";
+export type { Outcome } from "@/lib/review-resume";
 
 export interface DecideDeps {
   repos: Pick<Repositories, "getReview" | "getTicket" | "decideReview">;
@@ -62,8 +63,7 @@ export function createDecide(deps: DecideDeps) {
   return async (interaction: Interaction, sample: RequestSample): Promise<Response> => {
     const { reviewId, decision } = interaction;
     let ids: { reviewId: string; ticketId?: string } = { reviewId };
-    let stored: Review;
-    let changed: boolean;
+    let outcome: Outcome;
     try {
       const review = await deps.repos.getReview(reviewId);
       const ticket = review ? await deps.repos.getTicket(review.ticket_id) : null;
@@ -79,33 +79,16 @@ export function createDecide(deps: DecideDeps) {
         return json({ error: check.status === 404 ? "not_found" : "forbidden" }, check.status);
       }
       ids = { reviewId, ticketId: review!.ticket_id };
-      ({ changed, review: stored } = await deps.repos.decideReview(
-        reviewId,
-        decision,
-        interaction.userId,
-      ));
+      outcome = await decideAndResume(deps, reviewId, decision, interaction.userId);
     } catch (error) {
-      log("error", "decision failed", { ...ids, error: errorName(error) });
+      if (error instanceof ReviewResumeError) {
+        log("error", "token completion failed", { ...ids, error: errorName(error.cause) });
+      } else {
+        log("error", "decision failed", { ...ids, error: errorName(error) });
+      }
       return json({ error: "internal_error" }, 500);
     }
-
-    // Another decision is stored: answer, never complete the token.
-    if (!changed && stored.decision !== decision) {
-      const outcome = stored.decision === "timeout" ? "late" : "already_decided";
-      await notify(interaction.responseUrl, outcome, ids);
-      log("info", "decision", { ...ids, outcome });
-      return json({ outcome }, 200);
-    }
-
-    // This decision is stored (now or before): complete the token, again if need be.
-    try {
-      await deps.completeToken(stored.wait_token_id, { reviewId, decision });
-    } catch (error) {
-      log("error", "token completion failed", { ...ids, error: errorName(error) });
-      return json({ error: "internal_error" }, 500);
-    }
-    const outcome: Outcome = changed ? "recorded" : "already_decided";
-    if (!changed) await notify(interaction.responseUrl, "already_decided", ids);
+    if (outcome !== "recorded") await notify(interaction.responseUrl, outcome, ids);
     log("info", "decision", { ...ids, outcome });
     return json({ outcome }, 200);
   };
