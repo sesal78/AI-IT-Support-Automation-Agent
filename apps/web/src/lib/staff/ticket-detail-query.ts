@@ -1,4 +1,4 @@
-import { ticketNumberSchema } from "@ai-it-support/shared";
+import { HELPDESK_STATES, ticketNumberSchema } from "@ai-it-support/shared";
 import { z } from "zod";
 import type { createServerSupabaseClient } from "@/lib/supabase/server";
 
@@ -30,7 +30,7 @@ const ticketSchema = z.strictObject({
     .strictObject({
       id: z.uuid(),
       number: z.string(),
-      state: z.string(),
+      state: z.enum(HELPDESK_STATES),
       assignee: staffName,
     })
     .nullable(),
@@ -69,8 +69,8 @@ function parseRows<T>(schema: z.ZodType<T>, value: unknown): T {
   return parsed.data;
 }
 
-// Read bounded ranges so the API row cap cannot silently cut off the timeline.
-async function readHistoryRows<T>(
+// Read bounded ranges so the API row cap cannot silently omit results.
+async function readStaffRows<T>(
   schema: z.ZodType<T>,
   request: (
     start: number,
@@ -87,13 +87,25 @@ async function readHistoryRows<T>(
   do {
     const end = Math.min(rows.length + HISTORY_BATCH, total ?? Infinity) - 1;
     const { data, error, count } = await request(rows.length, end);
-    if (error || count === null) throw new Error("Could not load staff ticket history");
+    if (error || count === null) throw new Error("Could not load staff ticket data");
     total ??= count;
     const batch = parseRows(rowSchema, data);
-    if (!batch.length && rows.length < total) throw new Error("Incomplete staff ticket history");
+    if (!batch.length && rows.length < total) throw new Error("Incomplete staff ticket data");
     rows.push(...batch);
   } while (rows.length < total);
   return rows;
+}
+
+export function listActiveStaff(client: StaffClient) {
+  return readStaffRows(z.strictObject({ id: z.uuid(), display_name: z.string() }), (start, end) =>
+    client
+      .from("staff")
+      .select("id,display_name", { count: "exact" })
+      .eq("active", true)
+      .order("display_name")
+      .order("id")
+      .range(start, end),
+  );
 }
 
 export async function getStaffTicket(client: StaffClient, id: string, showTestTickets: boolean) {
@@ -107,7 +119,7 @@ export async function getStaffTicket(client: StaffClient, id: string, showTestTi
   const kbArticleIds = ticket.triage?.kb_article_ids ?? [];
 
   const [eventRows, noteRows, assignmentRows, articles] = await Promise.all([
-    readHistoryRows(eventSchema, (start, end) =>
+    readStaffRows(eventSchema, (start, end) =>
       client
         .from("ticket_events")
         .select("id,type,at", { count: "exact" })
@@ -116,7 +128,7 @@ export async function getStaffTicket(client: StaffClient, id: string, showTestTi
         .range(start, end),
     ),
     helpdeskId
-      ? readHistoryRows(noteSchema, (start, end) =>
+      ? readStaffRows(noteSchema, (start, end) =>
           client
             .from("helpdesk_notes")
             .select(
@@ -130,7 +142,7 @@ export async function getStaffTicket(client: StaffClient, id: string, showTestTi
         )
       : [],
     helpdeskId
-      ? readHistoryRows(assignmentSchema, (start, end) =>
+      ? readStaffRows(assignmentSchema, (start, end) =>
           client
             .from("helpdesk_assignments")
             .select(
