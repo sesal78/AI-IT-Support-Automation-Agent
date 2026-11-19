@@ -4,8 +4,9 @@ import { notFound } from "next/navigation";
 import { z } from "zod";
 import { env } from "@/env";
 import { requireStaff } from "@/lib/staff/auth";
-import { getStaffTicket } from "@/lib/staff/ticket-detail-query";
+import { getStaffTicket, listActiveStaff } from "@/lib/staff/ticket-detail-query";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { StaffActionForms } from "./staff-action-forms";
 
 const timestamp = new Intl.DateTimeFormat("en-AU", {
   dateStyle: "medium",
@@ -27,6 +28,7 @@ export default async function StaffTicketPage({ params }: { params: Promise<{ id
   if (!record) notFound();
   const { redaction, triage, helpdesk, articles, history } = record;
   const fix = triage?.suggested_fix;
+  const assignees = helpdesk ? await listActiveStaff(client) : [];
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-8 px-4 py-10">
@@ -140,6 +142,8 @@ export default async function StaffTicketPage({ params }: { params: Promise<{ id
           ))}
         </section>
       )}
+
+      {helpdesk && <StaffActionForms ticketId={id} state={helpdesk.state} assignees={assignees} />}
 
       <section aria-labelledby="ticket-history" className="space-y-2">
         <h2 id="ticket-history" className="text-lg font-semibold">
