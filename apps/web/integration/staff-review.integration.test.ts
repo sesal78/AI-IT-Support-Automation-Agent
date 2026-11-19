@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createDbClient, createRepositories } from "@ai-it-support/db";
 import { INTAKE_TICKET_TASK_ID, signSlackRequest } from "@ai-it-support/shared";
-import { auth, tasks } from "@trigger.dev/sdk";
+import { auth, tasks, wait } from "@trigger.dev/sdk";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { POST as postSlack } from "@/app/api/slack/interactivity/route";
 import { POST as postStaff } from "@/app/staff/tickets/[id]/decide/route";
@@ -17,7 +17,7 @@ import {
   SLACK_REVIEWER,
   mockSensitiveAnswer,
 } from "../../../services/pipeline/test-support/provider-mocks.js";
-import { signIn, startStaffStack, stopStaffStack, type SignedIn } from "./staff-stack.js";
+import { getStack, signIn, startStaffStack, stopStaffStack, type SignedIn } from "./staff-stack.js";
 
 const { createServerSupabaseClient, env } = vi.hoisted(() => ({
   createServerSupabaseClient: vi.fn(),
@@ -193,3 +193,112 @@ it.each(["approve", "reject"] as const)(
     expect(staffCard[0]!.body.includes(staff.review.wait_token_id)).toBe(false);
   },
 );
+
+it("T5.I.08: a simultaneous Slack and staff decision completes the wait token once", async () => {
+  const ticket = await waitingTicket();
+  createServerSupabaseClient.mockResolvedValue(admin.supabase);
+  egress.mock("https://hooks.slack.com", () => new Response(null, { status: 200 }));
+  const complete = vi.spyOn(wait, "completeToken");
+  const info = vi.spyOn(console, "info").mockImplementation(() => {});
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const replies = await Promise.all([
+      slackDecision(ticket, "approve"),
+      staffDecision(ticket, "reject"),
+    ]);
+    expect(replies.map((reply) => reply.status)).toEqual([200, 200]);
+    const outcomes = await Promise.all(replies.map((reply) => reply.json()));
+    expect(outcomes).toContainEqual({ outcome: "recorded" });
+    expect(outcomes).toContainEqual({ outcome: "already_decided" });
+    await runner.idle();
+    expect(complete).toHaveBeenCalledTimes(1);
+    const { decided, decision } = await result(ticket);
+    expect(decided).toEqual([
+      outcomes[0].outcome === "recorded"
+        ? {
+            reviewId: ticket.review.id,
+            decision: "approve",
+            source: "slack",
+            decidedBy: SLACK_REVIEWER,
+          }
+        : {
+            reviewId: ticket.review.id,
+            decision: "reject",
+            source: "helpdesk",
+            decidedBy: adminId,
+          },
+    ]);
+    expect(decision).toBe(outcomes[0].outcome === "recorded" ? "approve" : "reject");
+    const logs = JSON.stringify([...info.mock.calls, ...warn.mock.calls, ...error.mock.calls]);
+    expect(logs.includes(ticket.review.wait_token_id)).toBe(false);
+  } finally {
+    complete.mockRestore();
+    info.mockRestore();
+    warn.mockRestore();
+    error.mockRestore();
+  }
+});
+
+it("an agent session gets 403 before any review or token changes", async () => {
+  const user = await createTestStaffUser(getStack(), { role: "agent" });
+  const agent = await signIn(user.email, user.password);
+  expect(agent.response.status).toBe(200);
+  createServerSupabaseClient.mockResolvedValue(agent.supabase);
+  const ticket = await waitingTicket();
+  const before = await result(ticket);
+  try {
+    expect((await staffDecision(ticket, "approve")).status).toBe(403);
+    expect(await result(ticket)).toEqual(before);
+    expect(runner.broker.get(ticket.review.wait_token_id)?.state).toBe("waiting");
+  } finally {
+    runner.broker.timeOut(ticket.review.wait_token_id);
+    await runner.idle();
+  }
+});
+
+it("an admin gets late after the timeout without changing the result", async () => {
+  const ticket = await waitingTicket();
+  createServerSupabaseClient.mockResolvedValue(admin.supabase);
+  expect(runner.broker.timeOut(ticket.review.wait_token_id)).toBe(true);
+  await runner.idle();
+  const before = await result(ticket);
+  expect(before).toMatchObject({ status: "escalated_manual", decision: "timeout" });
+  const response = await staffDecision(ticket, "approve");
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ outcome: "late" });
+  expect(await result(ticket)).toEqual(before);
+  expect(runner.broker.get(ticket.review.wait_token_id)?.state).toBe("timed_out");
+});
+
+it("refuses an expired waitpoint while the review row is still undecided", async () => {
+  const { ticket } = await repos.createTicket({
+    source: "web",
+    raw_title: "Pending review fixture",
+    raw_description: "Waiting for the pipeline to record a timeout",
+    requester_email: "requester@example.test",
+    idempotency_key: randomUUID(),
+    is_test: true,
+  });
+  const { error } = await db
+    .from("tickets")
+    .update({ status: "review_pending" })
+    .eq("id", ticket.id);
+  expect(error).toBeNull();
+  const token = await runner.broker.createToken({
+    timeout: "24h",
+    idempotencyKey: `review:${ticket.id}`,
+    tags: [],
+  });
+  const review = await repos.createTriageReview({ ticketId: ticket.id, waitTokenId: token.id });
+  await repos.setReviewSlackTs(review.id, "1800000000.000100");
+  expect(runner.broker.timeOut(token.id)).toBe(true);
+
+  createServerSupabaseClient.mockResolvedValue(admin.supabase);
+  const response = await staffDecision({ id: ticket.id, review }, "approve");
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ outcome: "late" });
+  expect(await repos.getTriageReview(ticket.id)).toMatchObject({ decision: null, staff_id: null });
+  expect((await repos.getTicket(ticket.id))?.status).toBe("review_pending");
+  expect(runner.broker.get(token.id)?.state).toBe("timed_out");
+});
