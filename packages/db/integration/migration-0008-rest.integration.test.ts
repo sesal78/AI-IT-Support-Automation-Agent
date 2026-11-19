@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { SEED, UP } from "./migration-0008-harness.js";
-import { runSql } from "./pg-container.js";
+import { clientFor, runSql } from "./pg-container.js";
 import { removeRestStack, startRestStack, type RestStack } from "./rest-stack.js";
 import { createTestStaffUser } from "./test-users.js";
 
@@ -102,6 +102,34 @@ describe("migration 0008 staff read access (PostgREST + JWT)", () => {
     }
     for (const fn of ["current_staff", "is_staff", "is_admin"])
       expect((await rest(`rpc/${fn}`, undefined, "POST")).code, fn).toBe("42501");
+  });
+  it("T5.S.04: an outsider cannot read any table in itsupport", async () => {
+    const db = clientFor(stack.pg);
+    await db.connect();
+    try {
+      const { rows } = await db.query<{ table: string; column: string | null }>(`
+        select tablename as "table", (
+          select column_name from information_schema.columns
+          where table_schema = schemaname and table_name = tablename
+            and has_column_privilege('authenticated', format('%I.%I', schemaname, tablename),
+                                     column_name, 'select')
+          order by ordinal_position limit 1
+        ) as "column"
+        from pg_tables where schemaname = 'itsupport'
+      `);
+      expect(
+        rows
+          .filter(({ column }) => column !== null)
+          .map(({ table }) => table)
+          .sort(),
+      ).toEqual(Object.keys(READ).sort());
+      for (const { table, column } of rows) {
+        const result = await rest(`${table}?select=${column ?? "*"}`, tokens.none);
+        expect(result.code ?? result, table).toEqual(column ? [] : "42501");
+      }
+    } finally {
+      await db.end();
+    }
   });
   it("refuses authenticated insert, update and delete with 42501", async () => {
     for (const table of Object.keys(READ)) {

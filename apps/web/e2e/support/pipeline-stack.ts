@@ -16,6 +16,7 @@ import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  mintJwt,
   removeRestStack,
   startRestStack,
   type RestStack,
@@ -32,6 +33,7 @@ const preload = resolve(here, "../../../../services/pipeline/test-support/web-eg
 
 export interface PipelineStack {
   baseURL: string;
+  restStack: RestStack;
   /** The bearer token of the internal API (a fake). */
   internalToken: string;
   runner: LocalRunner;
@@ -68,7 +70,10 @@ function stopProcess(child: ChildProcess | undefined): Promise<void> {
   });
 }
 
-export async function startPipelineStack(baseURL: string): Promise<PipelineStack> {
+export async function startPipelineStack(
+  baseURL: string,
+  helpdesk: "servicenow" | "builtin" = "servicenow",
+): Promise<PipelineStack> {
   let stack: RestStack | undefined;
   let runner: LocalRunner | undefined;
   let web: ChildProcess | undefined;
@@ -83,7 +88,10 @@ export async function startPipelineStack(baseURL: string): Promise<PipelineStack
   try {
     stack = await startRestStack();
     await seedKnowledgeBase(stack);
-    runner = await startLocalRunner({ restStack: stack });
+    runner = await startLocalRunner({
+      restStack: stack,
+      env: { HELPDESK: helpdesk, SHADOW_MODE: helpdesk === "builtin" ? "false" : "true" },
+    });
 
     const internalToken = "e".repeat(32);
     const nextBin = createRequire(resolve(webDir, "package.json")).resolve("next/dist/bin/next");
@@ -97,6 +105,7 @@ export async function startPipelineStack(baseURL: string): Promise<PipelineStack
         NEXT_TELEMETRY_DISABLED: "1",
         SUPABASE_URL: stack.url,
         SUPABASE_SERVICE_ROLE_KEY: stack.serviceRoleKey,
+        SUPABASE_ANON_KEY: mintJwt(stack.jwtSecret, { role: "anon" }),
         SUPABASE_DB_SCHEMA: "itsupport",
         TRIGGER_SECRET_KEY: "x".repeat(32),
         TRIGGER_API_URL: runner.url,
@@ -111,7 +120,7 @@ export async function startPipelineStack(baseURL: string): Promise<PipelineStack
         SLACK_SIGNING_SECRET: "f".repeat(32),
         SLACK_REVIEWER_IDS: "U0000000000",
         SLACK_CHANNEL_ID: "C0000000000",
-        HELPDESK: "servicenow",
+        HELPDESK: helpdesk,
       },
     });
     // Kept for the error message only; the app never logs request data.
@@ -126,6 +135,7 @@ export async function startPipelineStack(baseURL: string): Promise<PipelineStack
     const child = web;
     return {
       baseURL,
+      restStack: stack,
       internalToken,
       runner,
       forbid: (value) => child.send({ type: "forbid", value }),
