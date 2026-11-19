@@ -64,6 +64,7 @@ describe("staff guard coverage", () => {
       "src/app/staff/logout/route.ts",
       "src/app/staff/session-ended/route.ts",
       "src/app/staff/tickets/[id]/actions/route.ts",
+      "src/app/staff/tickets/[id]/decide/route.ts",
       "src/app/staff/tickets/[id]/page.tsx",
       "src/app/staff/tickets/page.tsx",
     ]);
