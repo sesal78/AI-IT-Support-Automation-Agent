@@ -40,11 +40,11 @@ beforeAll(async () => {
     insert into itsupport.helpdesk_tickets (ticket_id, state, priority, category, assignee_id)
     values ('${id(1)}', 'in_progress', 'P2', 'network', (select id from itsupport.staff));
     insert into itsupport.ticket_events (ticket_id, type, at, payload)
-    values ('${id(1)}', 'review_requested', '2026-11-19T00:00:00Z', '{"private":"Private payload"}'),
+    values ('${id(1)}', 'review_requested', '2026-11-19T00:00:00.000002Z', '{"private":"Private payload"}'),
       ('${id(2)}', 'escalated_manual', '2026-11-19T00:02:00Z', '{}');
     insert into itsupport.helpdesk_notes (helpdesk_ticket_id, author_kind, author_staff_id, body, created_at)
     values ((select id from itsupport.helpdesk_tickets), 'staff', (select id from itsupport.staff),
-      'Staff note', '2026-11-19T00:01:00Z');
+      'Staff note', '2026-11-19T00:00:00.000001Z');
     insert into itsupport.helpdesk_assignments (helpdesk_ticket_id, assignee_id, at)
     values ((select id from itsupport.helpdesk_tickets), (select id from itsupport.staff),
       '2026-11-19T00:02:00Z');
@@ -72,8 +72,8 @@ it("reads the safe detail and orders the three histories using the staff JWT", a
     helpdesk: { state: "in_progress", assignee: { display_name: "Test agent" } },
   });
   expect(detail?.history.map((row) => row.label)).toEqual([
-    "Review requested",
     "Note by Test agent",
+    "Review requested",
     "Assigned to Test agent",
   ]);
   expect(JSON.stringify(detail)).not.toMatch(/Private|requester@example/);

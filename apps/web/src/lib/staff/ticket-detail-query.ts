@@ -50,6 +50,11 @@ const assignmentSchema = z.strictObject({
 });
 
 type HistoryEntry = { key: string; label: string; at: string; body?: string };
+
+function secondsFraction(at: string) {
+  return Number(at.match(/\.\d+/)?.[0] ?? 0);
+}
+
 const HISTORY_BATCH = 250;
 const DETAIL_SELECT = [
   "ticket_number",
@@ -160,7 +165,10 @@ export async function getStaffTicket(client: StaffClient, id: string, showTestTi
       at,
     })),
   ];
-  history.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  // Date.parse drops the microseconds retained in Postgres timestamps.
+  history.sort(
+    (a, b) => Date.parse(a.at) - Date.parse(b.at) || secondsFraction(a.at) - secondsFraction(b.at),
+  );
   return { ...ticket, articles, history };
 }
 
