@@ -1,4 +1,5 @@
 [
+  { "path": "apps/web/src/lib/staff/decide.ts", "statements": 90, "mutation": 80 },
   {
     "path": "apps/web/src/lib/staff/auth.ts",
     "statements": 90,
