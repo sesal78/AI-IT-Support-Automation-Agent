@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import StaffTicketsPage from "./page";
 
-// The ticket list screen (P5-T17). The guard (requireStaff) and the
-// supabase client are mocked; the query/filter/pagination logic itself is
-// unit-tested in ./../../../lib/staff/ticket-list-query.test.ts and
-// ticket-list-filters.test.ts. This file proves what the page renders:
+// The ticket list screen (P5-T17). The guard, client and query are mocked.
+// The query has separate request and database integration tests.
+// This file proves what the page renders:
 // the guard still runs, the number/title/status/priority/category/assignee/
 // created columns show up, the row link holds the UUID (never the ticket
 // number), no raw-title canary leaks, an invalid filter shows a message
@@ -16,12 +16,7 @@ const createServerSupabaseClient = vi.hoisted(() => vi.fn());
 const push = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/staff/auth", () => ({ requireStaff }));
-vi.mock("@/lib/staff/ticket-list-query", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/staff/ticket-list-query")>(
-    "@/lib/staff/ticket-list-query",
-  );
-  return { ...actual, listStaffTickets };
-});
+vi.mock("@/lib/staff/ticket-list-query", () => ({ listStaffTickets }));
 vi.mock("@/lib/supabase/server", () => ({ createServerSupabaseClient }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
 // @/env uses t3-env's client/server split, which throws on a server var once
@@ -37,7 +32,6 @@ function emptyPage(overrides: Partial<Awaited<ReturnType<typeof listStaffTickets
 }
 
 async function renderPage(searchParams: Record<string, string | string[] | undefined> = {}) {
-  const { default: StaffTicketsPage } = await import("./page");
   return render(await StaffTicketsPage({ searchParams: Promise.resolve(searchParams) }));
 }
 
@@ -79,7 +73,6 @@ describe("/staff/tickets page", () => {
 
   it("lets the guard's refusal through instead of rendering", async () => {
     requireStaff.mockRejectedValue(new Error("NEXT_REDIRECT:/staff/login"));
-    const { default: StaffTicketsPage } = await import("./page");
     await expect(StaffTicketsPage({ searchParams: Promise.resolve({}) })).rejects.toThrow(
       "NEXT_REDIRECT:/staff/login",
     );
