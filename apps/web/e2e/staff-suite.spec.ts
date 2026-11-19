@@ -14,6 +14,7 @@ import { startPipelineStack, type PipelineStack } from "./support/pipeline-stack
 
 const base = "http://127.0.0.1:3005";
 const ticket = randomUUID();
+const otherTicket = randomUUID();
 const ticketPath = `/staff/tickets/${ticket}`;
 const title = "Staff suite printer fixture";
 let stack: PipelineStack;
@@ -42,16 +43,18 @@ test.beforeAll(async () => {
       `insert into itsupport.tickets
          (id, source, status, helpdesk, raw_title, raw_description, requester_email, idempotency_key)
        values ($1, 'web', 'incident_created', 'builtin', 'Private title', 'Private body',
-               'staff-suite@example.test', 'staff-suite-printer')`,
-      [ticket],
+               'staff-suite@example.test', 'staff-suite-printer'),
+              ($2, 'web', 'incident_created', 'builtin', 'Other private title', 'Other private body',
+               'staff-suite@example.test', 'staff-suite-network')`,
+      [ticket, otherTicket],
     );
     await db.query(
       "insert into itsupport.ticket_redactions (ticket_id, redacted_title, redacted_description) values ($1, $2, $3)",
       [ticket, title, "The printer shows an error."],
     );
     await db.query(
-      "insert into itsupport.helpdesk_tickets (ticket_id, priority, category, state) values ($1, 'P2', 'network', 'new')",
-      [ticket],
+      "insert into itsupport.helpdesk_tickets (ticket_id, priority, category, state) values ($1, 'P2', 'network', 'new'), ($2, 'P3', 'network', 'new')",
+      [ticket, otherTicket],
     );
   });
 });
@@ -222,6 +225,8 @@ test("T5.E.02 and T5.X.01: staff journey with keyboard and narrow-screen axe che
   await keyboardLogin(page, admin);
   await audit(page);
 
+  const nonmatching = page.locator(`a[href="/staff/tickets/${otherTicket}"]`);
+  await expect(nonmatching).toBeVisible();
   await activate(page, page.getByRole("combobox", { name: "Priority" }));
   const p2 = page.getByRole("option", { name: "P2", exact: true });
   await expect(p2).toBeVisible();
@@ -232,6 +237,7 @@ test("T5.E.02 and T5.X.01: staff journey with keyboard and narrow-screen axe che
   await expect(p2).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/[?&]priority=P2/);
+  await expect(nonmatching).toHaveCount(0);
   const row = page.getByRole("row").filter({ hasText: title });
   await activate(page, row.getByRole("link"));
   await expect(page).toHaveURL(base + ticketPath);
@@ -290,17 +296,31 @@ test("T5.S.05: 30 markup fixtures remain text in staff ticket titles and descrip
   page,
 }) => {
   const signal = "STAFF_RENDER_FIXTURE";
-  const wrappers = [
-    (marker: string) => "<script>console.log('" + marker + "')</script>",
-    (marker: string) => '<img alt="' + marker + '">',
-    (marker: string) => '<a href="#fixture">' + marker + "</a>",
-    (marker: string) => '<svg aria-label="' + marker + '"></svg>',
-    (marker: string) => '<strong data-fixture="' + marker + '">' + marker + "</strong>",
+  const tags = [
+    "script",
+    "style",
+    "textarea",
+    "template",
+    "svg",
+    "math",
+    "a",
+    "img",
+    "input",
+    "button",
   ];
-  const fixtures = Array.from({ length: 30 }, (_, index) => ({
-    id: randomUUID(),
-    text: wrappers[index % wrappers.length]!(signal + "_" + index),
-  }));
+  const wrappers = [
+    (tag: string, text: string) => `<${tag}>${text}</${tag}>`,
+    (tag: string, text: string) => `"<${tag} title="fixture">${text}</${tag}>&"`,
+    (tag: string, text: string) => `<!--fixture--><${tag} data-fixture='yes'>${text}</${tag}>`,
+  ];
+  const fixtures = tags.flatMap((tag, index) =>
+    wrappers.map((wrap, context) => {
+      const marker = `${signal}_${index}_${context}`;
+      const text = tag === "script" ? `console.log("${marker}")` : marker;
+      return { id: randomUUID(), text: wrap(tag, text) };
+    }),
+  );
+  expect(fixtures).toHaveLength(30);
   await withDb(async (db) => {
     for (const { id, text } of fixtures) {
       await db.query(
