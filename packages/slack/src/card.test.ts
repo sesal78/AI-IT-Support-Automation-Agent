@@ -620,6 +620,26 @@ describe("ticket number on the cards (T5.U.05)", () => {
 });
 
 describe("buildDecidedCard", () => {
+  it("identifies a helpdesk decision as plain text without a Slack mention", () => {
+    const card = buildDecidedCard(base(), {
+      source: "helpdesk",
+      decision: "approve",
+      decidedAt: DECIDED_AT,
+    });
+    expect(card.blocks).toContainEqual({
+      type: "context",
+      block_id: "review_decision",
+      elements: [
+        {
+          type: "plain_text",
+          text: `Decided in the helpdesk. Approved at ${DECIDED_AT.toISOString()}`,
+          emoji: false,
+        },
+      ],
+    });
+    expect(JSON.stringify(card)).not.toContain("<@");
+  });
+
   const decided = (decision: "approve" | "reject" = "approve") =>
     buildDecidedCard(base(), { decision, slackUserId: REVIEWER, decidedAt: DECIDED_AT });
 

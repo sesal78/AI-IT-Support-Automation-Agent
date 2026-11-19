@@ -234,9 +234,16 @@ export async function runReviewTicket(
     await escalate(deps, ticketId, stored, timeout);
   } else {
     if (!(await hasEvent(deps, ticketId, "review_decided"))) {
-      await repos.addEvent(ticketId, "review_decided", { reviewId: stored.id, decision });
+      await repos.addEvent(ticketId, "review_decided", {
+        reviewId: stored.id,
+        decision,
+        source: stored.staff_id ? "helpdesk" : "slack",
+        decidedBy: stored.staff_id ?? stored.slack_user_id,
+      });
     }
     await repos.setTicketStatus(ticketId, decision === "approve" ? "approved" : "rejected");
+    // An enqueue failure must not leave the staff-decided Slack card open.
+    if (stored.staff_id) await updateCard(deps, ticket, triage, stored, timeout);
     // P5-T5b: only an approval hands the ticket to the helpdesk; a rejection
     // and a timeout start nothing.
     if (decision === "approve") {
@@ -249,7 +256,7 @@ export async function runReviewTicket(
       });
     }
   }
-  await updateCard(deps, ticket, triage, stored, timeout);
+  if (!stored.staff_id) await updateCard(deps, ticket, triage, stored, timeout);
   log.info("review-ticket: decided", { ticketId, reviewId: stored.id, attempt, decision });
   return { ticketId, skipped: false, decision };
 }
@@ -318,7 +325,9 @@ async function updateCard(
         ? buildTimedOutCard(input)
         : buildDecidedCard(input, {
             decision: review.decision as "approve" | "reject",
-            slackUserId: review.slack_user_id ?? "",
+            ...(review.staff_id
+              ? { source: "helpdesk" }
+              : { slackUserId: review.slack_user_id ?? "" }),
             decidedAt: review.decided_at ?? "",
           });
     await deps.slack.updateMessage({

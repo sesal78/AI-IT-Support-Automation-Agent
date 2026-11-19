@@ -54,12 +54,10 @@ export interface ReviewCard extends CardMessage {
   threadSteps: CardMessage | null;
 }
 
-export interface Decision {
+export type Decision = {
   decision: "approve" | "reject";
-  /** The reviewer's own Slack user ID (already allow-listed by the caller). */
-  slackUserId: string;
   decidedAt: Date | string;
-}
+} & ({ source: "helpdesk" } | { source?: "slack"; slackUserId: string });
 
 const DESCRIPTION_MAX = 600;
 const KB_MAX = 3;
@@ -300,7 +298,7 @@ export function buildDecidedCard(input: ReviewCardInput, decision: Decision): Ca
     ["reject", "Rejected"],
   ]).get(decision?.decision);
   if (words === undefined) throw bad("decision", "must be approve or reject");
-  if (!slackUserId().safeParse(decision.slackUserId).success) {
+  if (decision.source !== "helpdesk" && !slackUserId().safeParse(decision.slackUserId).success) {
     throw bad("slackUserId", "must be a Slack user ID");
   }
   const at = new Date(decision.decidedAt);
@@ -311,10 +309,15 @@ export function buildDecidedCard(input: ReviewCardInput, decision: Decision): Ca
     blocks: [
       header,
       fieldsBlock(card),
-      context("review_decision", {
-        type: "mrkdwn",
-        text: `${words} by <@${decision.slackUserId}> at ${at.toISOString()}`,
-      }),
+      context(
+        "review_decision",
+        decision.source === "helpdesk"
+          ? plain(`Decided in the helpdesk. ${words} at ${at.toISOString()}`)
+          : {
+              type: "mrkdwn",
+              text: `${words} by <@${decision.slackUserId}> at ${at.toISOString()}`,
+            },
+      ),
       summaryBlock(card),
     ],
   };
