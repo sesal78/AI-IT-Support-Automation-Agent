@@ -240,13 +240,13 @@ describe("local Trigger.dev runner", () => {
   // T5.E.03: with the network off (every non-127.0.0.1 host is mocked or
   // blocked by the egress recorder), an `auto` ticket still ends
   // `incident_created` against the in-memory ServiceNow.
-  it("T5.E.03: an auto test ticket reaches incident_created with the ServiceNow mock", async () => {
+  it("T5.E.03: switches from mocked ServiceNow to built-in using the same runner code", async () => {
     // Shadow mode off is the one thing this runner changes: every other test in
     // this file keeps the safe default (`true`), which skips the create.
     const own = await startLocalRunner({
       restStack: testStack(),
       egress,
-      env: { SHADOW_MODE: "false" },
+      env: { HELPDESK: "servicenow", SHADOW_MODE: "false" },
     });
     try {
       useRunner(own);
@@ -279,6 +279,11 @@ describe("local Trigger.dev runner", () => {
       expect(own.serviceNow.incidents[0]?.["correlation_display"]).toMatch(/^ITS-\d{6}$/);
       expect(own.serviceNow.incidents[0]?.["short_description"]).toMatch(/^\[E2E\] /);
       expect(own.serviceNow.notes).toHaveLength(1);
+      const builtinRows = await sql().query(
+        "select id from itsupport.helpdesk_tickets where ticket_id = $1",
+        [ticketId],
+      );
+      expect(builtinRows.rows).toEqual([]);
 
       const types = await eventTypes(ticketId);
       expect(types.slice(types.indexOf("triaged") + 1)).toEqual([
@@ -321,6 +326,32 @@ describe("local Trigger.dev runner", () => {
       ]);
     } finally {
       await own.stop();
+    }
+
+    const builtin = await startLocalRunner({
+      restStack: testStack(),
+      egress,
+      env: { HELPDESK: "builtin", SHADOW_MODE: "false" },
+    });
+    try {
+      useRunner(builtin);
+      const ticketId = await createCanaryTicket({ isTest: true });
+      await tasks.trigger<typeof intakeTicket>(INTAKE_TICKET_TASK_ID, { ticketId });
+      await vi.waitFor(async () => expect(await ticketStatus(ticketId)).toBe("incident_created"), {
+        timeout: 20_000,
+        interval: 100,
+      });
+      await builtin.idle();
+      const { rows } = await sql().query(
+        `select t.helpdesk, t.servicenow_sys_id, h.state
+         from itsupport.tickets t join itsupport.helpdesk_tickets h on h.ticket_id = t.id
+         where t.id = $1`,
+        [ticketId],
+      );
+      expect(rows).toEqual([{ helpdesk: "builtin", servicenow_sys_id: null, state: "new" }]);
+      expect(builtin.serviceNow.incidents).toEqual([]);
+    } finally {
+      await builtin.stop();
     }
   });
 
