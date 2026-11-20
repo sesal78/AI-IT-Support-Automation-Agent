@@ -44,6 +44,7 @@ const view = {
   notifications: [],
   autofix: [],
   incident: null,
+  helpdesk: null,
 };
 
 type Route = typeof import("./route");

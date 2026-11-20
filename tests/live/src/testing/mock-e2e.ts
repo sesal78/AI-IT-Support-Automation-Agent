@@ -102,6 +102,7 @@ export function defaultTicketOutcome(ticket: MockTicketInput): MockTicketOutcome
 }
 
 export interface MockE2eOptions {
+  readonly builtinHelpdesk?: boolean;
   readonly token: string;
   readonly accessClientId: string;
   readonly accessClientSecret: string;
@@ -277,6 +278,7 @@ function ticketView(ticket: MockTicketInput, outcome: MockTicketOutcome, at: num
     autofix: [],
     // P5-T5b: a mock ticket has no helpdesk incident yet.
     incident: null,
+    helpdesk: null,
   };
 }
 
@@ -389,7 +391,7 @@ function createDefaultRoute(
         status: 200,
         json: {
           version: "0.0.0-mock",
-          helpdesk: "servicenow",
+          helpdesk: options.builtinHelpdesk === true ? "builtin" : "servicenow",
           features: {
             database: true,
             migration0003: true,
@@ -402,7 +404,7 @@ function createDefaultRoute(
             slackInteractivity: true,
             helpdeskReachable: true,
             helpdeskAsleep: false,
-            builtinHelpdesk: false,
+            builtinHelpdesk: options.builtinHelpdesk === true,
           },
         },
       };
@@ -478,6 +480,7 @@ function createDefaultRoute(
           notifications: [],
           autofix: [],
           incident: null,
+          helpdesk: null,
         },
       };
     }

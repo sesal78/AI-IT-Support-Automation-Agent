@@ -221,7 +221,7 @@ export type SensitiveCheck = z.infer<typeof sensitiveCheckSchema>;
 // Named columns for the internal ticket view. The raw title, raw description,
 // requester name, requester email and department are never in these lists.
 const VIEW_TICKET_COLUMNS =
-  "id,ticket_number,status,is_test,source,created_at,servicenow_number,servicenow_sys_id";
+  "id,ticket_number,status,is_test,source,created_at,servicenow_number,servicenow_sys_id,helpdesk_tickets(number,state)";
 const VIEW_REDACTION_COLUMNS = "redacted_title,redacted_description";
 const VIEW_TRIAGE_COLUMNS =
   "sensitive,sensitive_flags,category,subcategory,priority,urgency,assignment_group,route," +
@@ -258,6 +258,9 @@ const viewTicketSchema = z
     created_at: timestamp,
     servicenow_number: z.string().nullable(),
     servicenow_sys_id: z.string().nullable(),
+    helpdesk_tickets: z
+      .object({ number: z.string().regex(/^HD[0-9]{7}$/), state: z.enum(HELPDESK_STATES) })
+      .nullable(),
   })
   // P5-T5b: the view's `incident` is the pair or null, so a row with only one
   // of the two columns is a shape error, not a half incident.
@@ -827,6 +830,15 @@ export function createRepositories(client: DbClient) {
           at: row.at,
         })),
         autofix: [],
+        helpdesk: ticket.helpdesk_tickets
+          ? {
+              kind: "builtin",
+              number: ticket.helpdesk_tickets.number,
+              state: ticket.helpdesk_tickets.state,
+            }
+          : ticket.servicenow_number === null
+            ? null
+            : { kind: "servicenow", number: ticket.servicenow_number, state: null },
         incident:
           ticket.servicenow_number === null || ticket.servicenow_sys_id === null
             ? null

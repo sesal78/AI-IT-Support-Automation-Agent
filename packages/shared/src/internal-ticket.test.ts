@@ -35,11 +35,26 @@ const valid = {
   notifications: [],
   autofix: [],
   incident: null,
+  helpdesk: null,
 };
 
 describe("internalTicketViewSchema", () => {
   it("accepts a triaged ticket", () => {
     expect(internalTicketViewSchema.parse(valid)).toEqual(valid);
+  });
+
+  it("allows only the safe helpdesk fields", () => {
+    const builtin = { kind: "builtin", number: "HD0000042", state: "new" };
+    expect(internalTicketViewSchema.parse({ ...valid, helpdesk: builtin }).helpdesk).toEqual(
+      builtin,
+    );
+    for (const helpdesk of [
+      { ...builtin, title: "private" },
+      { ...builtin, number: "ITS-000042" },
+      { ...builtin, state: "unknown" },
+    ]) {
+      expect(internalTicketViewSchema.safeParse({ ...valid, helpdesk }).success).toBe(false);
+    }
   });
 
   it("rejects a view without a number, or with a bad one", () => {

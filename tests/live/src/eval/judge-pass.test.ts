@@ -79,6 +79,7 @@ function viewOf(id: string, noFix: boolean) {
     notifications: [],
     autofix: [],
     incident: null,
+    helpdesk: null,
   };
 }
 

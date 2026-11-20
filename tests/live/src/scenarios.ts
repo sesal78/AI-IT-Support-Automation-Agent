@@ -1,3 +1,4 @@
+import { builtinScenarios } from "./helpdesk-builtin.ts";
 import { browserFormScenario } from "./browser-form.ts";
 import { leakScenarios } from "./helpdesk-leak.ts";
 import { replyScenarios } from "./helpdesk-reply.ts";
@@ -29,5 +30,6 @@ export const scenarios: readonly Scenario[] = [
   ...helpdeskScenarios,
   ...replyScenarios,
   ...leakScenarios,
+  ...builtinScenarios,
   reconciliationScenario,
 ];
