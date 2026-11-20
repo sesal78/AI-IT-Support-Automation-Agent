@@ -354,6 +354,24 @@ describe("privacy boundary with E2E_MODE=true", () => {
     expect(parsed.isTest).toBe(true);
     expect(parsed.events.map((event) => event.type)).toEqual(["received"]);
 
+    const builtin = await sql().query<{ number: string }>(
+      "insert into itsupport.helpdesk_tickets (ticket_id, priority, category) " +
+        "values ($1, 'P3', 'hardware') returning number",
+      [ticketId],
+    );
+    const withHelpdesk = await app.ticket.GET(
+      get(`/internal/tickets/${ticketId}`, authed),
+      idContext(ticketId),
+    );
+    expect(withHelpdesk.status).toBe(200);
+    const builtinText = await withHelpdesk.text();
+    expect(JSON.parse(builtinText).helpdesk).toEqual({
+      kind: "builtin",
+      number: builtin.rows[0]?.number,
+      state: "new",
+    });
+    for (const value of forbidden) expect(builtinText).not.toContain(value);
+
     const usage = await app.usage.GET(get(`/internal/usage?month=${thisMonth()}`, authed));
     expect(usage.status).toBe(200);
     const events = await app.events.GET(

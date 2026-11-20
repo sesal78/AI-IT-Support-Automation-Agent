@@ -26,6 +26,8 @@ import { createMockSlack, type MockSlack } from "./mock-slack.ts";
 export const DEFAULT_JUDGE_SCORES: Readonly<Record<string, number>> = { J1: 0.8, J3: 0.2, J4: 0.8 };
 
 export interface HelpdeskHarnessOptions {
+  readonly builtinHelpdesk?: boolean;
+  readonly reviewThreadText?: string;
   readonly faults?: MockHelpdeskFaults;
   /** Failure paths of the Table API mock (a refused read or close). */
   readonly sn?: MockServiceNowOptions;
@@ -107,10 +109,23 @@ export async function startHelpdeskHarness(
     channelId: TEST_SLACK.channelId,
     resend,
     replyRecipient: values.E2E_REPLY_RECIPIENT,
+    builtinHelpdesk: options.builtinHelpdesk ?? false,
+    onReviewCard(ts) {
+      if (options.builtinHelpdesk !== true) return;
+      slack.messages.push({ ts, text: "Test review" });
+      if (options.reviewThreadText !== undefined) {
+        slack.messages.push({
+          ts: `${Number(ts.split(".")[0]) + 1}.000001`,
+          text: options.reviewThreadText,
+          thread_ts: ts,
+        });
+      }
+    },
     ...(options.faults === undefined ? {} : { faults: options.faults }),
   });
   const e2e = await startMockE2e({
     token: values.INTERNAL_API_TOKEN,
+    builtinHelpdesk: options.builtinHelpdesk ?? false,
     accessClientId: values.CF_ACCESS_CLIENT_ID,
     accessClientSecret: values.CF_ACCESS_CLIENT_SECRET,
     slackSigningSecret: slackVars.E2E_SLACK_SIGNING_SECRET,

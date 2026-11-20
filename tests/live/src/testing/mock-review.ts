@@ -393,6 +393,7 @@ export function createMockReview(options: MockReviewOptions): MockReview {
       notifications: [],
       autofix: [],
       incident: null,
+      helpdesk: null,
     };
   }
 

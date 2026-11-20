@@ -52,11 +52,14 @@ export interface MockHelpdeskFaults {
 }
 
 export interface MockHelpdeskOptions {
+  readonly builtinHelpdesk?: boolean;
   readonly now: () => number;
   /** Where created incidents and work notes go; the scenario reads this data. */
   readonly data: MockSnData;
   /** The channel a signed decision must name; any channel when unset. */
   readonly channelId?: string;
+  /** Records the mock review card in the Slack fixture. */
+  readonly onReviewCard?: (ts: string) => void;
   /** The 2-minute review timeout of the e2e app (H14). */
   readonly reviewTimeoutMs?: number;
   /** The Resend mock a sent email goes to; without it no email row is written. */
@@ -119,6 +122,7 @@ export interface MockHelpdeskTicket {
   pendingDecision: { decision: "approve" | "reject"; at: number } | null;
   asleepAttempts: number;
   incident: { number: string; sysId: string } | null;
+  builtinNumber: string | null;
 }
 
 export interface MockHelpdesk {
@@ -260,6 +264,10 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
 
   /** Creates `count` incidents for the ticket at `at`, like the connector. */
   function createIncidents(t: MockHelpdeskTicket, at: number, count: number): void {
+    if (options.builtinHelpdesk === true) {
+      if (count > 0) t.builtinNumber = `HD${t.number.slice(4).padStart(7, "0")}`;
+      return;
+    }
     for (let i = 0; i < count; i++) {
       const n = data.incidents.length + 1;
       const row: Record<string, string> = {
@@ -332,6 +340,7 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
             decidedAt: null,
           };
           t.reviewPendingAt = pendingAt;
+          options.onReviewCard?.(t.review.slackTs);
           push(t, "review_requested", pendingAt);
           t.status = "review_pending";
           // The `needs_info` email starts after `review_requested` (resolved point 15).
@@ -473,6 +482,7 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
       pendingDecision: null,
       asleepAttempts: 0,
       incident: null,
+      builtinNumber: null,
     };
     tickets.set(testId, ticket);
     return {
@@ -537,6 +547,12 @@ export function createMockHelpdesk(options: MockHelpdeskOptions): MockHelpdesk {
       })),
       autofix: [],
       incident: t.incident === null ? null : { number: t.incident.number, sysId: t.incident.sysId },
+      helpdesk:
+        t.builtinNumber !== null
+          ? { kind: "builtin", number: t.builtinNumber, state: "new" }
+          : t.incident === null
+            ? null
+            : { kind: "servicenow", number: t.incident.number, state: null },
     };
   }
 

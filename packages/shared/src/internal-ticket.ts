@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ASSIGNMENT_GROUPS, CATEGORIES, PRIORITIES, ROUTES, URGENCIES } from "./triage.js";
+import { HELPDESK_STATES } from "./helpdesk-state.js";
 import { TICKET_STATUSES } from "./status.js";
 import { NOTIFICATION_KINDS, ticketNumberSchema } from "./ticket.js";
 
@@ -78,6 +79,20 @@ export const internalTicketViewSchema = z.strictObject({
   // P5-T5b: the helpdesk incident, or null. Both fields or neither: the
   // database holds them as a pair, and a stray key here is an error.
   incident: nullable(z.strictObject({ number: z.string().min(1), sysId: z.string().min(1) })),
+  helpdesk: nullable(
+    z.discriminatedUnion("kind", [
+      z.strictObject({
+        kind: z.literal("builtin"),
+        number: z.string().regex(/^HD[0-9]{7}$/),
+        state: z.enum(HELPDESK_STATES),
+      }),
+      z.strictObject({
+        kind: z.literal("servicenow"),
+        number: z.string().regex(/^[A-Za-z0-9]{1,40}$/),
+        state: z.null(),
+      }),
+    ]),
+  ),
 });
 
 export type InternalTicketView = z.infer<typeof internalTicketViewSchema>;

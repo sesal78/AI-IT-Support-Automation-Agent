@@ -745,6 +745,7 @@ describe("getTicketView", () => {
     created_at: now,
     servicenow_number: null,
     servicenow_sys_id: null,
+    helpdesk_tickets: null,
   };
   const viewTriage = {
     sensitive: false,
@@ -807,7 +808,7 @@ describe("getTicketView", () => {
     }
     const tickets = calls.find((c) => c.url.pathname.endsWith("/tickets"));
     expect(tickets?.url.searchParams.get("select")).toBe(
-      "id,ticket_number,status,is_test,source,created_at,servicenow_number,servicenow_sys_id",
+      "id,ticket_number,status,is_test,source,created_at,servicenow_number,servicenow_sys_id,helpdesk_tickets(number,state)",
     );
   });
 
@@ -1615,6 +1616,7 @@ describe("reviews", () => {
       created_at: now,
       servicenow_number: null,
       servicenow_sys_id: null,
+      helpdesk_tickets: null,
     };
     const viewReview = {
       id: reviewId,
