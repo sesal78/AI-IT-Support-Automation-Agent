@@ -20,32 +20,47 @@ export interface TextHits {
 
 // A match may only start at the beginning of a local-part run, so matching
 // stays linear on a long run with no `@`.
-const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
-const PACKAGE_VERSION = /@\d+\.\d+\.\d+$/;
-const PNPM_PATH_BEFORE = /\bnode_modules[\\/]+\.pnpm[\\/]+[A-Za-z0-9@+._()-]*$/;
-const PNPM_PATH_AFTER = /^[A-Za-z0-9@+._()-]*[\\/]+node_modules[\\/]/;
+const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/;
+const PNPM_PATH =
+  /(\bnode_modules[\\/]+\.pnpm[\\/]+)([A-Za-z0-9@+._-]{1,512})([\\/]+node_modules[\\/]+)((?:@[a-z0-9][a-z0-9._-]*[\\/]+)?[a-z0-9][a-z0-9._-]*)(?=[\\/])/g;
+const VERSION =
+  /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const PEER = /^(?:@[a-z0-9][a-z0-9.-]*\+)?[a-z0-9][a-z0-9.-]*@(.+)$/;
+const PARTIAL_VERSION = /^\d+(?:\.\d*)?$/;
+const STORE_HASH = /^[a-f0-9]{32}$/;
 
-function hasEmail(text: string): boolean {
-  for (const match of text.matchAll(EMAIL)) {
-    const end = match.index + match[0].length;
-    // A bare numeric version can resemble an email inside a pnpm package
-    // directory. Check both sides of the match and keep scanning the line.
-    if (
-      PACKAGE_VERSION.test(match[0]) &&
-      PNPM_PATH_BEFORE.test(text.slice(Math.max(0, match.index - 512), match.index)) &&
-      PNPM_PATH_AFTER.test(text.slice(end, end + 512))
-    ) {
-      continue;
-    }
-    return true;
-  }
-  return false;
+function withoutPnpmStoreVersions(text: string): string {
+  return text.replace(
+    PNPM_PATH,
+    (path, prefix: string, entry: string, sep: string, pkg: string) => {
+      const encodedPackage = pkg.replace(/[\\/]+/g, "+");
+      if (!entry.startsWith(`${encodedPackage}@`)) return path;
+      const [version, ...peers] = entry.slice(encodedPackage.length + 1).split("_");
+      if (version === undefined || !VERSION.test(version)) return path;
+      // pnpm may cut the final peer version short and append a hash to the store directory.
+      const shortened = peers.length > 0 && STORE_HASH.test(peers.at(-1) ?? "");
+      if (shortened) peers.pop();
+      if (
+        !peers.every((peer, index) => {
+          const peerVersion = PEER.exec(peer)?.[1];
+          return (
+            peerVersion !== undefined &&
+            (VERSION.test(peerVersion) ||
+              (shortened && index === peers.length - 1 && PARTIAL_VERSION.test(peerVersion)))
+          );
+        })
+      ) {
+        return path;
+      }
+      return `${prefix}${encodedPackage}${sep}${pkg}`;
+    },
+  );
 }
 
 /** The hit types in `text` for the canaries of `runId`. Never returns a value. */
-export function scanText(text: string, runId: string): TextHits {
+export function scanText(text: string, runId: string, source: "trace" | "log" = "trace"): TextHits {
   const hard = findCanaries(text, runId).map((hit) => `canary:${hit.type}`);
-  if (hasEmail(text)) hard.push("email");
+  if (EMAIL.test(source === "log" ? withoutPnpmStoreVersions(text) : text)) hard.push("email");
   // EMAIL is already a hard hit; every other change redact() would make is a warning.
   const soft = redact(text)
     .log.filter((entry) => entry.type !== "EMAIL")
@@ -465,7 +480,7 @@ export async function scanLogs(
     content.split(/\r?\n/).forEach((line, index) => {
       if (line === "") return;
       lines++;
-      const hits = scanText(line, args.runId);
+      const hits = scanText(line, args.runId, "log");
       const secretHits = scanSecretText(line, secrets);
       for (const type of [...hits.hard, ...secretHits]) {
         out.stdout(`HARD ${file}:${index + 1} ${type}`);
