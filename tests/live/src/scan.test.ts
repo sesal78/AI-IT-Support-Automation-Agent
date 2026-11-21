@@ -281,12 +281,21 @@ describe("scan:logs", () => {
 
   const stackPaths = [
     SCOPED_STACK_FRAME,
+    JSON.stringify([{ stack: SCOPED_STACK_FRAME }]),
+    JSON.stringify({ stack: SCOPED_STACK_FRAME }).replace('"stack"', '"st\\u0061ck"'),
     "at run (/app/node_modules/.pnpm/@trigger.dev+sdk@4.6.4_ai@7_42c4d63a35a9577a149bcb46bba7c78c/node_modules/@trigger.dev/sdk/run.js:12:4)",
     "at run (/app/node_modules/.pnpm/@floating-ui+react-dom@2.1._735e95704ae5cf22d7cb7c1194888638/node_modules/@floating-ui/react-dom/dist/floating-ui.react-dom.esm.js:12:4)",
     "at run (/app/node_modules/.pnpm/@csstools+css-calc@3.4.1_@c_c27b91014f1d16725d86a05c76dde1c4/node_modules/@csstools/css-calc/dist/index.mjs:12:4)",
     "at run (/app/node_modules/.pnpm/pkg@1.2.3-rc.1_@scope+peer@2.3.4-beta.1/node_modules/pkg/run.js:12:4)",
     JSON.stringify({
       stacktrace: String.raw`at run (C:\app\node_modules\.pnpm\client@1.2.3_peer@2.3.4\node_modules\client\run.js:12:4)`,
+    }),
+    JSON.stringify({
+      stacktrace: [
+        "Error: test",
+        String.raw`at run (C:\app\node_modules\.pnpm\client@1.2.3\node_modules\client\run.js:12:4)`,
+        "",
+      ].join("\r\n"),
     }),
   ];
 
@@ -302,7 +311,7 @@ describe("scan:logs", () => {
     "contact someone@1.2.3.example.com",
     "version-like address someone@1.2.3",
   ])("still reports an email next to a pnpm package path: %s", async (address) => {
-    const path = file("trigger.log", `${stackPaths[0]} ${address}`);
+    const path = file("trigger.log", JSON.stringify({ stack: stackPaths[0], message: address }));
     const { code, text } = await logs(["logs", "--run", RUN, path]);
     expect(code).toBe(1);
     expect(text).toContain(`HARD ${path}:1 email`);
@@ -320,10 +329,39 @@ describe("scan:logs", () => {
     expect(text).toContain(`HARD ${path}:1 email`);
   });
 
+  it("does not treat a directory ending in node_modules as a pnpm store", async () => {
+    const frame =
+      "at run (/app/fake-node_modules/.pnpm/pkg@1.2.3_someone@1.2.3-test.example.com/node_modules/pkg/run.js:12:4)";
+    const path = file("trigger.log", frame);
+    const { code, text } = await logs(["logs", "--run", RUN, path]);
+    expect(code).toBe(1);
+    expect(text).toContain("email");
+  });
+
   it("reports an email in a path-like log message without a stack frame", async () => {
     const message =
       "node_modules/.pnpm/pkg@1.2.3_someone@1.2.3-test.example.com/node_modules/pkg/run.js";
     const path = file("trigger.log", JSON.stringify({ message }));
+    const { code, text } = await logs(["logs", "--run", RUN, path]);
+    expect(code).toBe(1);
+    expect(text).toContain("email");
+  });
+
+  it.each([
+    {
+      stack:
+        "message worked at run (/app/node_modules/.pnpm/pkg@1.2.3_someone@1.2.3-test.example.com/node_modules/pkg/run.js:12:4",
+    },
+    {
+      stack:
+        "at run (/app/node_modules/.pnpm/pkg@1.2.3_someone@1.2.3-test.example.com/node_modules/pkg/run.js:12:4",
+    },
+    {
+      message:
+        "at run (/app/node_modules/.pnpm/pkg@1.2.3_someone@1.2.3-test.example.com/node_modules/pkg/run.js:12:4)",
+    },
+  ])("reports emails in incomplete frames and frames in message text", async (record) => {
+    const path = file("trigger.log", JSON.stringify(record));
     const { code, text } = await logs(["logs", "--run", RUN, path]);
     expect(code).toBe(1);
     expect(text).toContain("email");

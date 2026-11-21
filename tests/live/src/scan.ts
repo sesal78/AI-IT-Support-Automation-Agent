@@ -22,7 +22,9 @@ export interface TextHits {
 // stays linear on a long run with no `@`.
 const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/;
 const PNPM_STACK_PATH =
-  /(\bat (?:[^\r\n"'\\()]{1,180} \()?(?:file:\/\/)?(?:[A-Za-z]:)?[\\/]+[^\r\n"'()]{0,768}?\bnode_modules[\\/]+\.pnpm[\\/]+)([A-Za-z0-9@+._-]{1,512})([\\/]+node_modules[\\/]+)((?:@[a-z0-9][a-z0-9._-]*[\\/]+)?[a-z0-9][a-z0-9._-]*)(?=[\\/][^\r\n"'():]{1,768}:\d+:\d+(?:[)\s"'\\]|$))/g;
+  /^([ \t]*at (?:[^\r\n"'\\()]{1,180} \()?(?:file:\/\/)?(?:[A-Za-z]:)?[\\/]+[^\r\n"'()]{0,768}?(?<=[\\/])node_modules[\\/]+\.pnpm[\\/]+)([A-Za-z0-9@+._-]{1,512})([\\/]+node_modules[\\/]+)((?:@[a-z0-9][a-z0-9._-]*[\\/]+)?[a-z0-9][a-z0-9._-]*)([\\/][^\r\n"'():]{1,768}:\d+:\d+)(\)?)[ \t]*$/;
+const JSON_PROPERTY_OR_STRING =
+  /("(?:[^"\\\r\n]|\\.)*")\s*:\s*("(?:[^"\\\r\n]|\\.)*")|"(?:[^"\\\r\n]|\\.)*"/g;
 const VERSION =
   /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const PEER = /^(?:@[a-z0-9][a-z0-9.-]*\+)?[a-z0-9][a-z0-9.-]*@(.+)$/;
@@ -30,10 +32,19 @@ const PARTIAL_VERSION = /^\d+(?:\.\d*){0,2}$/;
 const PARTIAL_PEER = /^(?:@[a-z0-9.-]+\+?)?[a-z0-9.-]*@?$/;
 const STORE_HASH = /^[a-f0-9]{32}$/;
 
-function withoutPnpmStoreVersions(text: string): string {
-  return text.replace(
+function withoutPnpmStoreVersions(frame: string): string {
+  return frame.replace(
     PNPM_STACK_PATH,
-    (path, prefix: string, entry: string, sep: string, pkg: string) => {
+    (
+      path,
+      prefix: string,
+      entry: string,
+      sep: string,
+      pkg: string,
+      file: string,
+      close: string,
+    ) => {
+      if (prefix.includes(" (") !== (close === ")")) return path;
       const encodedPackage = pkg.replace(/[\\/]+/g, "+");
       if (!entry.startsWith(`${encodedPackage}@`)) return path;
       const [version, ...peers] = entry.slice(encodedPackage.length + 1).split("_");
@@ -59,15 +70,35 @@ function withoutPnpmStoreVersions(text: string): string {
       ) {
         return path;
       }
-      return `${prefix}${encodedPackage}${sep}${pkg}`;
+      return `${prefix}${encodedPackage}${sep}${pkg}${file}${close}`;
     },
   );
+}
+
+function logTextForEmailScan(line: string): string {
+  const start = line.trimStart()[0];
+  if (start !== "{" && start !== "[") return withoutPnpmStoreVersions(line);
+  try {
+    JSON.parse(line);
+  } catch {
+    return line;
+  }
+  // Preserve raw text outside stack properties. Tokenizing quoted strings keeps
+  // a stack-like fragment inside a message from being treated as a property.
+  return line.replace(JSON_PROPERTY_OR_STRING, (match, key?: string, token?: string) => {
+    if (key === undefined || token === undefined) return match;
+    const name: unknown = JSON.parse(key);
+    if (name !== "stack" && name !== "stacktrace" && name !== "stackTrace") return match;
+    const stack = JSON.parse(token) as string;
+    const filtered = stack.replace(/[^\r\n]+/g, withoutPnpmStoreVersions);
+    return filtered === stack ? match : match.slice(0, -token.length) + JSON.stringify(filtered);
+  });
 }
 
 /** The hit types in `text` for the canaries of `runId`. Never returns a value. */
 export function scanText(text: string, runId: string, source: "trace" | "log" = "trace"): TextHits {
   const hard = findCanaries(text, runId).map((hit) => `canary:${hit.type}`);
-  if (EMAIL.test(source === "log" ? withoutPnpmStoreVersions(text) : text)) hard.push("email");
+  if (EMAIL.test(source === "log" ? logTextForEmailScan(text) : text)) hard.push("email");
   // EMAIL is already a hard hit; every other change redact() would make is a warning.
   const soft = redact(text)
     .log.filter((entry) => entry.type !== "EMAIL")
