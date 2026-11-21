@@ -270,6 +270,31 @@ describe("scan:logs", () => {
     expect(text).toContain("2 lines scanned; 0 hard hits");
   });
 
+  const stackPaths = [
+    "at run (/app/node_modules/.pnpm/@trigger.dev+sdk@4.6.4/node_modules/sdk/run.js:12:4)",
+    JSON.stringify({
+      stacktrace: String.raw`at run (C:\app\node_modules\.pnpm\client@1.2.3_peer@2.3.4\node_modules\client\run.js:12:4)`,
+    }),
+  ];
+
+  it.each(stackPaths)("does not report an email in a pnpm package path: %s", async (stack) => {
+    const path = file("trigger.log", stack);
+    const { code, text } = await logs(["logs", "--run", RUN, path]);
+    expect(code).toBe(0);
+    expect(text).toContain("0 hard hits");
+  });
+
+  it.each([
+    "contact someone@example.com",
+    "contact someone@1.2.3.example.com",
+    "version-like address someone@1.2.3",
+  ])("still reports an email next to a pnpm package path: %s", async (address) => {
+    const path = file("trigger.log", `${stackPaths[0]} ${address}`);
+    const { code, text } = await logs(["logs", "--run", RUN, path]);
+    expect(code).toBe(1);
+    expect(text).toContain(`HARD ${path}:1 email`);
+  });
+
   it("exits 2 on a missing file", async () => {
     const missing = join(tmpdir(), "scan-logs-missing-file.log");
     const { code, text } = await logs(["logs", "--run", RUN, missing]);

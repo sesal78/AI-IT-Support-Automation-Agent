@@ -20,12 +20,32 @@ export interface TextHits {
 
 // A match may only start at the beginning of a local-part run, so matching
 // stays linear on a long run with no `@`.
-const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/;
+const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
+const PACKAGE_VERSION = /@\d+\.\d+\.\d+$/;
+const PNPM_PATH_BEFORE = /\bnode_modules[\\/]+\.pnpm[\\/]+[A-Za-z0-9@+._()-]*$/;
+const PNPM_PATH_AFTER = /^[A-Za-z0-9@+._()-]*[\\/]+node_modules[\\/]/;
+
+function hasEmail(text: string): boolean {
+  for (const match of text.matchAll(EMAIL)) {
+    const end = match.index + match[0].length;
+    // A bare numeric version can resemble an email inside a pnpm package
+    // directory. Check both sides of the match and keep scanning the line.
+    if (
+      PACKAGE_VERSION.test(match[0]) &&
+      PNPM_PATH_BEFORE.test(text.slice(Math.max(0, match.index - 512), match.index)) &&
+      PNPM_PATH_AFTER.test(text.slice(end, end + 512))
+    ) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
 
 /** The hit types in `text` for the canaries of `runId`. Never returns a value. */
 export function scanText(text: string, runId: string): TextHits {
   const hard = findCanaries(text, runId).map((hit) => `canary:${hit.type}`);
-  if (EMAIL.test(text)) hard.push("email");
+  if (hasEmail(text)) hard.push("email");
   // EMAIL is already a hard hit; every other change redact() would make is a warning.
   const soft = redact(text)
     .log.filter((entry) => entry.type !== "EMAIL")
