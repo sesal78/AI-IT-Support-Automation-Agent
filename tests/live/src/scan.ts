@@ -21,33 +21,40 @@ export interface TextHits {
 // A match may only start at the beginning of a local-part run, so matching
 // stays linear on a long run with no `@`.
 const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/;
-const PNPM_PATH =
-  /(\bnode_modules[\\/]+\.pnpm[\\/]+)([A-Za-z0-9@+._-]{1,512})([\\/]+node_modules[\\/]+)((?:@[a-z0-9][a-z0-9._-]*[\\/]+)?[a-z0-9][a-z0-9._-]*)(?=[\\/])/g;
+const PNPM_STACK_PATH =
+  /(\bat (?:[^\r\n"'\\()]{1,180} \()?(?:file:\/\/)?(?:[A-Za-z]:)?[\\/]+[^\r\n"'()]{0,768}?\bnode_modules[\\/]+\.pnpm[\\/]+)([A-Za-z0-9@+._-]{1,512})([\\/]+node_modules[\\/]+)((?:@[a-z0-9][a-z0-9._-]*[\\/]+)?[a-z0-9][a-z0-9._-]*)(?=[\\/][^\r\n"'():]{1,768}:\d+:\d+(?:[)\s"'\\]|$))/g;
 const VERSION =
   /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const PEER = /^(?:@[a-z0-9][a-z0-9.-]*\+)?[a-z0-9][a-z0-9.-]*@(.+)$/;
-const PARTIAL_VERSION = /^\d+(?:\.\d*)?$/;
+const PARTIAL_VERSION = /^\d+(?:\.\d*){0,2}$/;
+const PARTIAL_PEER = /^(?:@[a-z0-9.-]+\+?)?[a-z0-9.-]*@?$/;
 const STORE_HASH = /^[a-f0-9]{32}$/;
 
 function withoutPnpmStoreVersions(text: string): string {
   return text.replace(
-    PNPM_PATH,
+    PNPM_STACK_PATH,
     (path, prefix: string, entry: string, sep: string, pkg: string) => {
       const encodedPackage = pkg.replace(/[\\/]+/g, "+");
       if (!entry.startsWith(`${encodedPackage}@`)) return path;
       const [version, ...peers] = entry.slice(encodedPackage.length + 1).split("_");
-      if (version === undefined || !VERSION.test(version)) return path;
-      // pnpm may cut the final peer version short and append a hash to the store directory.
+      if (version === undefined) return path;
+      // pnpm may cut the final version or peer fragment short and append a hash.
       const shortened = peers.length > 0 && STORE_HASH.test(peers.at(-1) ?? "");
       if (shortened) peers.pop();
       if (
+        !VERSION.test(version) &&
+        !(shortened && peers.length === 0 && PARTIAL_VERSION.test(version))
+      ) {
+        return path;
+      }
+      if (
         !peers.every((peer, index) => {
           const peerVersion = PEER.exec(peer)?.[1];
-          return (
-            peerVersion !== undefined &&
-            (VERSION.test(peerVersion) ||
-              (shortened && index === peers.length - 1 && PARTIAL_VERSION.test(peerVersion)))
-          );
+          if (peerVersion !== undefined && VERSION.test(peerVersion)) return true;
+          if (!shortened || index !== peers.length - 1) return false;
+          return peerVersion === undefined
+            ? PARTIAL_PEER.test(peer)
+            : PARTIAL_VERSION.test(peerVersion);
         })
       ) {
         return path;
